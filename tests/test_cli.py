@@ -273,3 +273,99 @@ def test_cli_attempt_rejects_unknown_outcome(tmp_path, monkeypatch, capsys):
 
     assert exc_info.value.code == 2
     assert "invalid choice" in captured.err.lower()
+
+
+def test_cli_skills_on_empty_workspace_reports_clearly(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    main(["init", "dev"])
+
+    exit_code = main(["skills"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "No skills recorded." in captured.out
+
+
+def test_cli_guard_reports_no_warnings_on_empty_workspace(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    main(["init", "dev"])
+
+    exit_code = main(["guard", "Modify refresh-token persistence logic"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "No known Cortex warnings for this action." in captured.out
+
+
+def test_cli_guard_rejects_empty_action(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    main(["init", "dev"])
+
+    exit_code = main(["guard", "   "])
+    captured = capsys.readouterr()
+
+    assert exit_code == 1
+    assert "error" in captured.err.lower()
+
+
+def test_cli_skills_and_guard_end_to_end(tmp_path, monkeypatch, capsys):
+    """The A5 end-to-end workflow surfaced through the CLI: an experience
+    is turned into a skill through the Python API (promotion stays
+    Python-API-only), and `cortex guard`/`cortex skills` can see it from
+    a fresh CLI invocation with no shared process state."""
+    monkeypatch.chdir(tmp_path)
+    main(["init", "dev"])
+
+    from cortex_memory import Cortex
+
+    cx = Cortex.discover()
+    error_evidence = cx.add_evidence(
+        "Refresh token was invalidated during rotation.", kind="error_observation"
+    )
+    cx.record_attempt(
+        task="Update authentication refresh logic.",
+        approach="Reuse the previous refresh token after rotation.",
+        outcome="failed",
+        evidence=[error_evidence],
+    )
+    validation = cx.add_evidence("Authentication tests passed.", kind="test_result")
+    cx.record_attempt(
+        task="Update authentication refresh logic.",
+        approach="Persist and use only the newly issued refresh token.",
+        outcome="succeeded",
+        evidence=[validation],
+    )
+    lesson = cx.learn(
+        "After token rotation, use only the newly issued refresh token.",
+        evidence=[error_evidence, validation],
+        verified=True,
+    )
+    cx.promote(
+        lesson,
+        name="Safely modify refresh-token rotation",
+        purpose="Modify token rotation without invalidating authentication.",
+        steps=[
+            "Inspect the refresh-token rotation flow.",
+            "Persist only the newly issued refresh token.",
+            "Do not reuse the previous token.",
+            "Run authentication refresh tests.",
+        ],
+    )
+
+    exit_code = main(["skills"])
+    skills_out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "(verified) Safely modify refresh-token rotation" in skills_out
+
+    exit_code = main(["guard", "Modify refresh-token persistence logic"])
+    guard_out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "CORTEX WARNING" in guard_out
+    assert "Reuse the previous refresh token after rotation." in guard_out
+    assert "Safely modify refresh-token rotation" in guard_out
+    assert "Authentication tests passed." in guard_out
+
+    exit_code = main(["guard", "Change CSS button color"])
+    unrelated_out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "No known Cortex warnings for this action." in unrelated_out

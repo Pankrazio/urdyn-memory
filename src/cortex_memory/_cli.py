@@ -74,6 +74,13 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     preflight_parser.add_argument("task", help="Task description")
 
+    subparsers.add_parser("skills", help="List recorded skills")
+
+    guard_parser = subparsers.add_parser(
+        "guard", help="Check whether prior experience directly bears on an action about to be taken"
+    )
+    guard_parser.add_argument("action", help="Action about to be taken")
+
     return parser
 
 
@@ -154,6 +161,41 @@ def main(argv: list[str] | None = None) -> int:
                 print("RECOMMENDED VALIDATION")
                 for evidence in result.recommended_validation:
                     print(f"- [{evidence.evidence_id}] {evidence.content}")
+            return 0
+
+        if args.command == "skills":
+            cx = Cortex.discover()
+            items = cx.skills()
+            if not items:
+                print("No skills recorded.")
+                return 0
+            for skill in items:
+                print(f"[{skill.skill_id}] ({skill.verification_state}) {skill.name}")
+            return 0
+
+        if args.command == "guard":
+            cx = Cortex.discover()
+            result = cx.guard(args.action)
+            if result.is_empty():
+                print("No known Cortex warnings for this action.")
+                return 0
+            print("CORTEX WARNING")
+            if result.known_failures:
+                print()
+                print("Known failure:")
+                for attempt in result.known_failures:
+                    print(f"- {attempt.approach}")
+            if result.applicable_skills:
+                print()
+                for skill in result.applicable_skills:
+                    label = "verified" if skill.verification_state == "verified" else "candidate"
+                    print(f"Applicable skill ({label}):")
+                    print(f"- {skill.name}")
+            if result.recommended_validation:
+                print()
+                print("Recommended validation:")
+                for evidence in result.recommended_validation:
+                    print(f"- {evidence.content}")
             return 0
 
         parser.error(f"unknown command {args.command!r}")

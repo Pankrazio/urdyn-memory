@@ -206,7 +206,7 @@ def test_full_chain_v1_database_reaches_v3_and_supports_a4_features(tmp_path):
     cx = Cortex.init(tmp_path, "dev")
     old_id = _build_v1_database(cx._db_path, content="a memory from A2")
 
-    # migration v1 -> v2 -> v3 happens transparently on first open
+    # migration v1 -> v2 -> v3 -> v4 happens transparently on first open
     attempt = cx.record_attempt(task="a task", approach="an approach", outcome="succeeded")
 
     connection = sqlite3.connect(cx._db_path)
@@ -221,7 +221,9 @@ def test_full_chain_v1_database_reaches_v3_and_supports_a4_features(tmp_path):
     finally:
         connection.close()
 
-    assert version == 3
+    # A5 adds schema v4 (Skill persistence) on top of A4's v3; a v1 database
+    # now migrates all the way through, not just to v3.
+    assert version == 4
     assert {"memories", "evidence", "memory_evidence", "events", "attempts", "attempt_evidence"} <= tables
 
     results = cx.recall("a memory from A2")

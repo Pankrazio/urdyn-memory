@@ -12,8 +12,10 @@ from ._errors import (
 )
 from ._attempt import Attempt
 from ._evidence import Evidence
+from ._guard import GuardResult
 from ._memory import Memory
 from ._preflight import Preflight
+from ._skill import Skill
 from ._workspace import Cortex
 
 __all__ = [
@@ -22,6 +24,8 @@ __all__ = [
     "Evidence",
     "Attempt",
     "Preflight",
+    "Skill",
+    "GuardResult",
     "CortexError",
     "CortexNotFoundError",
     "CortexAlreadyInitializedError",

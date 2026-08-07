@@ -18,10 +18,12 @@ from ._event import (
     EVENT_KIND_ATTEMPT_RECORDED,
     EVENT_KIND_MEMORY_RECORDED,
     EVENT_KIND_MEMORY_SUPERSEDED,
+    EVENT_KIND_SKILL_PROMOTED,
     Event,
 )
 from ._evidence import DEFAULT_EVIDENCE_KIND, VALID_EVIDENCE_KINDS, VERIFICATION_EVIDENCE_KINDS, Evidence
 from ._gitignore import ensure_gitignore_entry
+from ._guard import GuardResult, build_guard_result
 from ._manifest import CANONICAL_PROFILES, SCHEMA_VERSION, read_manifest, write_manifest
 from ._memory import (
     DEFAULT_KIND,
@@ -34,6 +36,7 @@ from ._memory import (
     Memory,
 )
 from ._preflight import Preflight, build_preflight
+from ._skill import Skill
 from ._store import MemoryStore, db_path_for
 
 CORTEX_DIRNAME = ".cortex"
@@ -392,6 +395,138 @@ class Cortex:
                 root_cause_memories=root_cause_memories,
                 verified_lesson_memories=verified_lesson_memories,
                 evidence_lookup=_must_get_evidence,
+            )
+
+    def promote(
+        self,
+        lesson: Memory,
+        *,
+        name: str,
+        purpose: str,
+        steps: Sequence[str],
+        conditions: Sequence[str] = (),
+    ) -> Skill:
+        """Explicitly turn a Lesson into a reusable Skill: a named,
+        ordered procedure, not just a restated conclusion.
+
+        Promotion is never automatic and never implicit: it always names
+        the Lesson it comes from (`lesson`, whose `memory_id` must belong
+        to an existing lesson memory Cortex actually has on record) and
+        always requires the caller to write the procedure out (`steps`)
+        rather than reusing the lesson's own sentence as-is.
+
+        `lesson` only supplies which memory_id to promote from. Nothing
+        else about the object the caller passed in is trusted: the
+        resulting Skill's `verification_state` and `evidence_ids` are
+        derived from the CANONICAL Lesson Cortex has actually persisted
+        under that id, not from `lesson.epistemic_state` or
+        `lesson.evidence_ids` as given here. A `Memory` object that
+        happens to share a real Lesson's `memory_id` but disagrees with
+        it (a stale copy, or a forged one) cannot elevate a Skill to
+        `verified` or redirect its provenance — it is `verified` only if
+        the *persisted* Lesson is itself `verified`, and `candidate`
+        otherwise. This is the same epistemic honesty `remember()`
+        already enforces, extended to Skill instead of duplicated for it.
+        """
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("Skill name must not be empty or whitespace-only")
+        if not isinstance(purpose, str) or not purpose.strip():
+            raise ValueError("Skill purpose must not be empty or whitespace-only")
+
+        if isinstance(steps, (str, bytes)):
+            raise ValueError("Skill steps must be a sequence of strings, not a single str or bytes")
+        steps = tuple(steps)
+        if not steps:
+            raise ValueError("Skill steps must not be empty")
+        for step in steps:
+            if not isinstance(step, str) or not step.strip():
+                raise ValueError("Skill steps must not contain empty or whitespace-only entries")
+
+        if isinstance(conditions, (str, bytes)):
+            raise ValueError("Skill conditions must be a sequence of strings, not a single str or bytes")
+        conditions = tuple(conditions)
+        for condition in conditions:
+            if not isinstance(condition, str) or not condition.strip():
+                raise ValueError("Skill conditions must not contain empty or whitespace-only entries")
+
+        skill_id = uuid.uuid4().hex
+        recorded_at = dt.datetime.now(dt.timezone.utc)
+        event = Event(
+            event_id=uuid.uuid4().hex,
+            kind=EVENT_KIND_SKILL_PROMOTED,
+            subject_id=skill_id,
+            occurred_at=recorded_at,
+        )
+
+        with MemoryStore.create_or_open(self._db_path) as store:
+            skill = store.add_skill(
+                skill_id,
+                name=name,
+                purpose=purpose,
+                steps=steps,
+                conditions=conditions,
+                source_lesson_id=lesson.memory_id,
+                recorded_at=recorded_at,
+                event=event,
+            )
+
+        return skill
+
+    def get_skill(self, skill_id: str) -> Skill:
+        """Resolve a skill_id to its persisted `Skill`. Raises `ValueError`
+        if unknown."""
+        store = MemoryStore.open_if_exists(self._db_path)
+        skill = None
+        if store is not None:
+            with store:
+                skill = store.get_skill(skill_id)
+        if skill is None:
+            raise ValueError(f"Unknown skill {skill_id!r}")
+        return skill
+
+    def skills(self) -> list[Skill]:
+        """Return every recorded Skill, oldest first."""
+        store = MemoryStore.open_if_exists(self._db_path)
+        if store is None:
+            return []
+        with store:
+            return store.list_skills()
+
+    def guard(self, action: str) -> GuardResult:
+        """Check whether prior experience directly bears on an action
+        about to be taken.
+
+        Answers a narrower question than `preflight()`: not "what is
+        worth knowing before this task" but "is there a known risk or an
+        applicable Skill for this specific action". A known failure is
+        only reported here if it shares Evidence with a Skill that
+        matches `action`; lexical relevance to a failed attempt alone is
+        not enough to produce a guard warning the way it is for
+        `preflight()`. This is advisory only: it never blocks, mutates,
+        or executes anything, only reports what Cortex found.
+        """
+        if not isinstance(action, str) or not action.strip():
+            raise ValueError("Guard action must not be empty or whitespace-only")
+
+        empty = GuardResult(action=action, known_failures=(), applicable_skills=(), recommended_validation=())
+        store = MemoryStore.open_if_exists(self._db_path)
+        if store is None:
+            return empty
+        with store:
+            skills = store.list_skills()
+            attempts = store.list_attempts()
+
+            def _must_get_evidence(evidence_id: str) -> Evidence:
+                evidence = store.get_evidence(evidence_id)
+                if evidence is None:
+                    raise CortexStorageError(
+                        f"Evidence {evidence_id!r} is referenced by a recorded skill but "
+                        "missing from the store"
+                    )
+                return evidence
+
+            return build_guard_result(
+                action, skills=skills, attempts=attempts, evidence_lookup=_must_get_evidence
             )
 
     def _count_memories(self) -> int:

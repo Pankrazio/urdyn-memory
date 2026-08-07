@@ -22,48 +22,15 @@ Relevance is decided two ways:
 from __future__ import annotations
 
 import dataclasses
-import re
 from collections.abc import Callable
 
 from ._attempt import OUTCOME_FAILED, OUTCOME_SUCCEEDED, Attempt
-from ._evidence import Evidence
+from ._evidence import RECOMMENDED_VALIDATION_EVIDENCE_KINDS, Evidence
 from ._memory import Memory
+from ._relevance import is_relevant as _is_relevant
+from ._relevance import tokens as _tokens
 
-_TOKEN_PATTERN = re.compile(r"[a-z0-9]+")
-
-# A small, fixed stopword list to keep single common words (e.g. "the",
-# "to") from making unrelated experience look relevant. Not a language
-# model, not configurable: just noise reduction for keyword overlap.
-_STOPWORDS = frozenset(
-    {
-        "a", "an", "the", "to", "of", "for", "on", "in", "and", "or", "is",
-        "are", "was", "were", "be", "been", "with", "this", "that", "it",
-        "its", "as", "by", "at", "from", "into", "during", "not", "do",
-        "does", "did",
-    }
-)
-
-_VALIDATION_EVIDENCE_KINDS = frozenset({"test_result", "command_output"})
-
-
-def _tokens(text: str) -> set[str]:
-    return {token for token in _TOKEN_PATTERN.findall(text.casefold()) if token not in _STOPWORDS}
-
-
-def _is_relevant(query_tokens: frozenset[str], text: str) -> bool:
-    """A candidate is relevant if it shares a strict majority of the
-    query's significant vocabulary — more than half, not just a fixed
-    count of two. A flat "two shared words" rule lets two completely
-    unrelated attempts both match a long, generic query (e.g. "update",
-    "error", and "change" all appearing somewhere) just because each
-    happens to share exactly those two common engineering words; scaling
-    the requirement with query length keeps that from happening, while a
-    one-word query still only needs that one word."""
-    if not query_tokens:
-        return False
-    shared = query_tokens & _tokens(text)
-    threshold = len(query_tokens) // 2 + 1
-    return len(shared) >= threshold
+_VALIDATION_EVIDENCE_KINDS = RECOMMENDED_VALIDATION_EVIDENCE_KINDS
 
 
 @dataclasses.dataclass(frozen=True, slots=True)

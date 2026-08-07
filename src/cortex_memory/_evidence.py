@@ -58,6 +58,13 @@ VERIFICATION_EVIDENCE_KINDS = frozenset(
     }
 )
 
+# Evidence kinds worth surfacing as "recommended validation" to run before
+# trusting a piece of experience (preflight) or acting on a warning (guard).
+# Narrower than `VERIFICATION_EVIDENCE_KINDS`: a `user_confirmation` can
+# justify calling a memory verified, but it is not itself something an
+# agent can re-run to check its own work the way a test or command is.
+RECOMMENDED_VALIDATION_EVIDENCE_KINDS = frozenset({"test_result", "command_output"})
+
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class Evidence:

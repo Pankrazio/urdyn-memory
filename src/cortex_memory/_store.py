@@ -13,9 +13,10 @@ Schema history:
        `memories.epistemic_state` gain new valid values (`lesson`,
        `root_cause`, `inferred`, `verified`) at the Python validation
        layer only — no column changes are needed for that.
+  v4 - adds `skills`, `skill_steps`, `skill_conditions`, `skill_evidence`.
 
-A v1 or v2 database opened by this module is migrated forward to v3 in
-place, one step at a time, without touching existing rows.
+A v1, v2, or v3 database opened by this module is migrated forward to v4
+in place, one step at a time, without touching existing rows.
 """
 
 from __future__ import annotations
@@ -28,18 +29,28 @@ from pathlib import Path
 
 from ._attempt import ATTEMPT_ID_PATTERN, VALID_OUTCOMES, Attempt
 from ._errors import CortexStorageError
-from ._event import EVENT_KIND_ATTEMPT_RECORDED, EVENT_KIND_MEMORY_RECORDED, Event
+from ._event import EVENT_KIND_ATTEMPT_RECORDED, EVENT_KIND_MEMORY_RECORDED, EVENT_KIND_SKILL_PROMOTED, Event
 from ._evidence import EVIDENCE_ID_PATTERN, Evidence
-from ._memory import MEMORY_ID_PATTERN, VALID_EPISTEMIC_STATES, VALID_KINDS, Memory
+from ._memory import (
+    EPISTEMIC_VERIFIED,
+    KIND_LESSON,
+    MEMORY_ID_PATTERN,
+    VALID_EPISTEMIC_STATES,
+    VALID_KINDS,
+    Memory,
+)
+from ._skill import SKILL_CANDIDATE, SKILL_ID_PATTERN, SKILL_VERIFIED, VALID_SKILL_VERIFICATION_STATES, Skill
 
 _SCHEMA_VERSION_V1 = 1
 _SCHEMA_VERSION_V2 = 2
 _SCHEMA_VERSION_V3 = 3
-STORE_SCHEMA_VERSION = _SCHEMA_VERSION_V3
+_SCHEMA_VERSION_V4 = 4
+STORE_SCHEMA_VERSION = _SCHEMA_VERSION_V4
 DB_FILENAME = "memory.db"
 
 _V2_TABLES = ("memories", "evidence", "memory_evidence", "events")
 _V3_TABLES = _V2_TABLES + ("attempts", "attempt_evidence")
+_V4_TABLES = _V3_TABLES + ("skills", "skill_steps", "skill_conditions", "skill_evidence")
 
 _CREATE_MEMORIES_V2_SQL = """
     CREATE TABLE memories (
@@ -96,6 +107,44 @@ _CREATE_ATTEMPT_EVIDENCE_SQL = """
         evidence_id TEXT NOT NULL,
         position INTEGER NOT NULL,
         PRIMARY KEY (attempt_id, evidence_id)
+    )
+"""
+
+_CREATE_SKILLS_SQL = """
+    CREATE TABLE skills (
+        skill_id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        purpose TEXT NOT NULL,
+        verification_state TEXT NOT NULL,
+        source_lesson_id TEXT NOT NULL,
+        recorded_at TEXT NOT NULL
+    )
+"""
+
+_CREATE_SKILL_STEPS_SQL = """
+    CREATE TABLE skill_steps (
+        skill_id TEXT NOT NULL,
+        step TEXT NOT NULL,
+        position INTEGER NOT NULL,
+        PRIMARY KEY (skill_id, position)
+    )
+"""
+
+_CREATE_SKILL_CONDITIONS_SQL = """
+    CREATE TABLE skill_conditions (
+        skill_id TEXT NOT NULL,
+        condition TEXT NOT NULL,
+        position INTEGER NOT NULL,
+        PRIMARY KEY (skill_id, position)
+    )
+"""
+
+_CREATE_SKILL_EVIDENCE_SQL = """
+    CREATE TABLE skill_evidence (
+        skill_id TEXT NOT NULL,
+        evidence_id TEXT NOT NULL,
+        position INTEGER NOT NULL,
+        PRIMARY KEY (skill_id, evidence_id)
     )
 """
 
@@ -359,6 +408,189 @@ class MemoryStore:
             results.append(_row_to_attempt(row, evidence_map.get(attempt_id, ())))
         return results
 
+    # -- skills ---------------------------------------------------------------
+
+    def add_skill(
+        self,
+        skill_id: str,
+        *,
+        name: str,
+        purpose: str,
+        steps: Sequence[str],
+        conditions: Sequence[str],
+        source_lesson_id: str,
+        recorded_at: dt.datetime,
+        event: Event,
+    ) -> Skill:
+        """Persist a new skill, its steps/conditions/evidence links, and its
+        event atomically, and return the persisted `Skill`.
+
+        `verification_state` and `evidence_ids` are never taken from the
+        caller. They are derived here, inside the same transaction, from
+        the CANONICAL Lesson memory actually persisted under
+        `source_lesson_id` — its own `epistemic_state` and its own
+        evidence links — so a caller cannot elevate a Skill's verification
+        or redirect its provenance by handing `Cortex.promote()` a
+        `Memory` object whose fields disagree with what Cortex itself has
+        on record for that id (e.g. a forged `epistemic_state="verified"`
+        or forged `evidence_ids` on an object that merely shares a real
+        Lesson's `memory_id`). The persisted Lesson row is the only
+        authority; nothing about the caller's object is trusted beyond
+        which id to look up.
+
+        Raises `ValueError` if `source_lesson_id` does not name an
+        existing memory of kind `lesson`. Raises `CortexStorageError` on
+        genuine storage corruption or I/O failure.
+        """
+        try:
+            with self._connection:
+                lesson_row = self._fetch_memory_row(source_lesson_id)
+                if lesson_row is None or lesson_row[2] != KIND_LESSON:
+                    raise ValueError(
+                        f"Cannot promote unknown lesson {source_lesson_id!r}; "
+                        "a skill can only be promoted from an existing lesson memory"
+                    )
+                canonical_lesson = _row_to_memory(lesson_row, self._memory_evidence_ids(source_lesson_id))
+
+                verification_state = (
+                    SKILL_VERIFIED if canonical_lesson.epistemic_state == EPISTEMIC_VERIFIED else SKILL_CANDIDATE
+                )
+
+                skill = Skill(
+                    skill_id=skill_id,
+                    name=name,
+                    purpose=purpose,
+                    steps=tuple(steps),
+                    conditions=tuple(conditions),
+                    verification_state=verification_state,
+                    source_lesson_id=source_lesson_id,
+                    evidence_ids=canonical_lesson.evidence_ids,
+                    recorded_at=recorded_at,
+                )
+
+                self._connection.execute(
+                    "INSERT INTO skills "
+                    "(skill_id, name, purpose, verification_state, source_lesson_id, recorded_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (
+                        skill.skill_id,
+                        skill.name,
+                        skill.purpose,
+                        skill.verification_state,
+                        skill.source_lesson_id,
+                        skill.recorded_at.isoformat(),
+                    ),
+                )
+                for position, step in enumerate(skill.steps):
+                    self._connection.execute(
+                        "INSERT INTO skill_steps (skill_id, step, position) VALUES (?, ?, ?)",
+                        (skill.skill_id, step, position),
+                    )
+                for position, condition in enumerate(skill.conditions):
+                    self._connection.execute(
+                        "INSERT INTO skill_conditions (skill_id, condition, position) VALUES (?, ?, ?)",
+                        (skill.skill_id, condition, position),
+                    )
+                for position, evidence_id in enumerate(skill.evidence_ids):
+                    self._connection.execute(
+                        "INSERT INTO skill_evidence (skill_id, evidence_id, position) VALUES (?, ?, ?)",
+                        (skill.skill_id, evidence_id, position),
+                    )
+                self._connection.execute(
+                    "INSERT INTO events (event_id, kind, subject_id, occurred_at) "
+                    "VALUES (?, ?, ?, ?)",
+                    (event.event_id, event.kind, event.subject_id, event.occurred_at.isoformat()),
+                )
+        except sqlite3.DatabaseError as exc:
+            raise CortexStorageError(f"Failed to persist skill {skill_id!r}: {exc}") from exc
+        return skill
+
+    def get_skill(self, skill_id: str) -> Skill | None:
+        row = self._fetch_skill_row(skill_id)
+        if row is None:
+            return None
+        return _row_to_skill(
+            row,
+            steps=self._skill_steps(skill_id),
+            conditions=self._skill_conditions(skill_id),
+            evidence_ids=self._skill_evidence(skill_id),
+        )
+
+    def list_skills(self) -> list[Skill]:
+        """Return every skill in the order Cortex recorded them, oldest
+        first. Skills are append-only: promoting a new skill never rewrites
+        or removes an earlier one."""
+        try:
+            cursor = self._connection.execute(
+                "SELECT subject_id FROM events WHERE kind = ? ORDER BY sequence",
+                (EVENT_KIND_SKILL_PROMOTED,),
+            )
+            skill_ids = [row[0] for row in cursor.fetchall()]
+        except sqlite3.DatabaseError as exc:
+            raise CortexStorageError(f"Failed to read Cortex event log: {exc}") from exc
+
+        results: list[Skill] = []
+        for skill_id in skill_ids:
+            row = self._fetch_skill_row(skill_id)
+            if row is None:
+                raise CortexStorageError(f"Event log references skill {skill_id!r} that does not exist")
+            results.append(
+                _row_to_skill(
+                    row,
+                    steps=self._skill_steps(skill_id),
+                    conditions=self._skill_conditions(skill_id),
+                    evidence_ids=self._skill_evidence(skill_id),
+                )
+            )
+        return results
+
+    def _fetch_skill_row(self, skill_id: str) -> tuple | None:
+        try:
+            return self._connection.execute(
+                "SELECT skill_id, name, purpose, verification_state, source_lesson_id, recorded_at "
+                "FROM skills WHERE skill_id = ?",
+                (skill_id,),
+            ).fetchone()
+        except sqlite3.DatabaseError as exc:
+            raise CortexStorageError(f"Failed to read Cortex skill store: {exc}") from exc
+
+    def _skill_steps(self, skill_id: str) -> tuple[str, ...]:
+        try:
+            rows = self._connection.execute(
+                "SELECT step FROM skill_steps WHERE skill_id = ? ORDER BY position", (skill_id,)
+            ).fetchall()
+        except sqlite3.DatabaseError as exc:
+            raise CortexStorageError(f"Failed to read Cortex skill store: {exc}") from exc
+        return tuple(row[0] for row in rows)
+
+    def _skill_conditions(self, skill_id: str) -> tuple[str, ...]:
+        try:
+            rows = self._connection.execute(
+                "SELECT condition FROM skill_conditions WHERE skill_id = ? ORDER BY position", (skill_id,)
+            ).fetchall()
+        except sqlite3.DatabaseError as exc:
+            raise CortexStorageError(f"Failed to read Cortex skill store: {exc}") from exc
+        return tuple(row[0] for row in rows)
+
+    def _skill_evidence(self, skill_id: str) -> tuple[str, ...]:
+        try:
+            rows = self._connection.execute(
+                "SELECT evidence_id FROM skill_evidence WHERE skill_id = ? ORDER BY position", (skill_id,)
+            ).fetchall()
+        except sqlite3.DatabaseError as exc:
+            raise CortexStorageError(f"Failed to read Cortex skill store: {exc}") from exc
+        return tuple(row[0] for row in rows)
+
+    def _memory_evidence_ids(self, memory_id: str) -> tuple[str, ...]:
+        try:
+            rows = self._connection.execute(
+                "SELECT evidence_id FROM memory_evidence WHERE memory_id = ? ORDER BY position",
+                (memory_id,),
+            ).fetchall()
+        except sqlite3.DatabaseError as exc:
+            raise CortexStorageError(f"Failed to read Cortex provenance links: {exc}") from exc
+        return tuple(row[0] for row in rows)
+
     # -- internal helpers -----------------------------------------------------
 
     def _fetch_all_memory_rows(self) -> list[tuple]:
@@ -450,13 +682,17 @@ def _table_exists(connection: sqlite3.Connection, name: str) -> bool:
     )
 
 
-def _create_v3_schema(connection: sqlite3.Connection) -> None:
+def _create_v4_schema(connection: sqlite3.Connection) -> None:
     connection.execute(_CREATE_MEMORIES_V2_SQL)
     connection.execute(_CREATE_EVIDENCE_SQL)
     connection.execute(_CREATE_MEMORY_EVIDENCE_SQL)
     connection.execute(_CREATE_EVENTS_SQL)
     connection.execute(_CREATE_ATTEMPTS_SQL)
     connection.execute(_CREATE_ATTEMPT_EVIDENCE_SQL)
+    connection.execute(_CREATE_SKILLS_SQL)
+    connection.execute(_CREATE_SKILL_STEPS_SQL)
+    connection.execute(_CREATE_SKILL_CONDITIONS_SQL)
+    connection.execute(_CREATE_SKILL_EVIDENCE_SQL)
 
 
 def _migrate_v1_to_v2(connection: sqlite3.Connection) -> None:
@@ -514,18 +750,39 @@ def _migrate_v2_to_v3(connection: sqlite3.Connection) -> None:
         connection.execute(f"PRAGMA user_version = {_SCHEMA_VERSION_V3}")
 
 
+def _migrate_v3_to_v4(connection: sqlite3.Connection) -> None:
+    """Upgrade a v3 store to v4 by adding the `skills`/`skill_steps`/
+    `skill_conditions`/`skill_evidence` tables. There is no v3 data to
+    backfill: Skill is a wholly new concept in A5, so nothing pre-existing
+    needs reinterpreting.
+    """
+    missing = [name for name in _V3_TABLES if not _table_exists(connection, name)]
+    if missing:
+        raise CortexStorageError(
+            f"Cortex memory store is stamped with schema version 3 but is missing "
+            f"table(s) {missing!r}; refusing to migrate a possibly corrupted store"
+        )
+    connection.execute("BEGIN")
+    with connection:
+        connection.execute(_CREATE_SKILLS_SQL)
+        connection.execute(_CREATE_SKILL_STEPS_SQL)
+        connection.execute(_CREATE_SKILL_CONDITIONS_SQL)
+        connection.execute(_CREATE_SKILL_EVIDENCE_SQL)
+        connection.execute(f"PRAGMA user_version = {_SCHEMA_VERSION_V4}")
+
+
 def _ensure_schema(connection: sqlite3.Connection) -> None:
     (version,) = connection.execute("PRAGMA user_version").fetchone()
 
     if version == 0:
-        if any(_table_exists(connection, name) for name in _V3_TABLES):
+        if any(_table_exists(connection, name) for name in _V4_TABLES):
             raise CortexStorageError(
                 "Cortex memory store has no recognized schema version but already "
                 "contains data tables; refusing to open a possibly corrupted store"
             )
         connection.execute("BEGIN")
         with connection:
-            _create_v3_schema(connection)
+            _create_v4_schema(connection)
             connection.execute(f"PRAGMA user_version = {STORE_SCHEMA_VERSION}")
         return
 
@@ -537,13 +794,17 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
         _migrate_v2_to_v3(connection)
         version = _SCHEMA_VERSION_V3
 
+    if version == _SCHEMA_VERSION_V3:
+        _migrate_v3_to_v4(connection)
+        version = _SCHEMA_VERSION_V4
+
     if version != STORE_SCHEMA_VERSION:
         raise CortexStorageError(
             f"Cortex memory store schema version {version} is not supported by this "
             f"version of Cortex (expected {STORE_SCHEMA_VERSION})"
         )
 
-    missing = [name for name in _V3_TABLES if not _table_exists(connection, name)]
+    missing = [name for name in _V4_TABLES if not _table_exists(connection, name)]
     if missing:
         raise CortexStorageError(
             f"Cortex memory store is stamped with schema version {version} but is "
@@ -617,4 +878,40 @@ def _row_to_attempt(row: tuple[str, str, str, str, str], evidence_ids: tuple[str
         outcome=outcome,
         recorded_at=recorded_at,
         evidence_ids=evidence_ids,
+    )
+
+
+def _row_to_skill(
+    row: tuple[str, str, str, str, str, str],
+    *,
+    steps: tuple[str, ...],
+    conditions: tuple[str, ...],
+    evidence_ids: tuple[str, ...],
+) -> Skill:
+    skill_id, name, purpose, verification_state, source_lesson_id, recorded_at_raw = row
+
+    if not isinstance(skill_id, str) or not SKILL_ID_PATTERN.fullmatch(skill_id):
+        raise CortexStorageError(f"Corrupted skill_id {skill_id!r} in Cortex skill store")
+    if verification_state not in VALID_SKILL_VERIFICATION_STATES:
+        raise CortexStorageError(
+            f"Corrupted verification_state {verification_state!r} for skill {skill_id!r}"
+        )
+    if not isinstance(source_lesson_id, str) or not MEMORY_ID_PATTERN.fullmatch(source_lesson_id):
+        raise CortexStorageError(f"Corrupted source_lesson_id {source_lesson_id!r} for skill {skill_id!r}")
+    try:
+        recorded_at = dt.datetime.fromisoformat(recorded_at_raw)
+    except ValueError as exc:
+        raise CortexStorageError(
+            f"Corrupted recorded_at value {recorded_at_raw!r} for skill {skill_id!r}"
+        ) from exc
+    return Skill(
+        skill_id=skill_id,
+        name=name,
+        purpose=purpose,
+        steps=steps,
+        conditions=conditions,
+        verification_state=verification_state,
+        source_lesson_id=source_lesson_id,
+        evidence_ids=evidence_ids,
+        recorded_at=recorded_at,
     )

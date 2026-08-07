@@ -1,5 +1,7 @@
 """Tests for the `cortex` command-line interface."""
 
+import pytest
+
 from cortex_memory._cli import main
 
 
@@ -205,3 +207,69 @@ def test_cli_remember_supersede_unknown_id_fails_clearly(tmp_path, monkeypatch, 
 
     assert exit_code == 1
     assert "error" in captured.err.lower()
+
+
+def test_cli_attempt_and_preflight_end_to_end(tmp_path, monkeypatch, capsys):
+    """The A4 end-to-end workflow: record a failed attempt, then check
+    that a fresh `preflight` invocation on a related task surfaces it."""
+    monkeypatch.chdir(tmp_path)
+    main(["init", "dev"])
+
+    exit_code = main(
+        [
+            "attempt",
+            "--task",
+            "Update authentication refresh logic.",
+            "--approach",
+            "Modify token refresh handling directly.",
+            "--outcome",
+            "failed",
+        ]
+    )
+    attempt_out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "Recorded attempt" in attempt_out
+    assert "(failed)" in attempt_out
+
+    exit_code = main(["preflight", "Modify authentication refresh logic"])
+    preflight_out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "KNOWN FAILURES" in preflight_out
+    assert "Modify token refresh handling directly." in preflight_out
+
+
+def test_cli_preflight_on_unrelated_task_reports_clearly(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    main(["init", "dev"])
+    main(
+        [
+            "attempt",
+            "--task",
+            "Update authentication refresh logic.",
+            "--approach",
+            "Modify token refresh handling directly.",
+            "--outcome",
+            "failed",
+        ]
+    )
+    capsys.readouterr()
+
+    exit_code = main(["preflight", "Refactor CSS button styles"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "No relevant experience found." in captured.out
+
+
+def test_cli_attempt_rejects_unknown_outcome(tmp_path, monkeypatch, capsys):
+    # argparse's own `choices=` validation raises SystemExit(2) directly,
+    # the same as an invalid `--kind` would for `remember`/`recall`.
+    monkeypatch.chdir(tmp_path)
+    main(["init", "dev"])
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["attempt", "--task", "t", "--approach", "a", "--outcome", "not-an-outcome"])
+    captured = capsys.readouterr()
+
+    assert exc_info.value.code == 2
+    assert "invalid choice" in captured.err.lower()

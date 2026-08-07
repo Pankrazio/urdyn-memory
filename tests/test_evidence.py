@@ -30,6 +30,17 @@ def test_add_evidence_accepts_explicit_kind(tmp_path):
     assert evidence.kind == "test_result"
 
 
+def test_add_evidence_accepts_user_confirmation_kind(tmp_path):
+    """`user_confirmation` is distinct from `user_statement`: it is what
+    lets a verified memory be backed by something a user explicitly
+    confirmed, as opposed to a bare unchecked opinion."""
+    cx = Cortex.init(tmp_path, "dev")
+
+    evidence = cx.add_evidence("I ran it and the bug is gone.", kind="user_confirmation")
+
+    assert evidence.kind == "user_confirmation"
+
+
 def test_add_evidence_rejects_unknown_kind(tmp_path):
     cx = Cortex.init(tmp_path, "dev")
 

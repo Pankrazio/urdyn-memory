@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import sys
 
+from ._attempt import VALID_OUTCOMES
 from ._errors import CortexError
 from ._manifest import CANONICAL_PROFILES
 from ._memory import DEFAULT_KIND, VALID_KINDS
@@ -63,6 +64,16 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Only show memories of this kind",
     )
 
+    attempt_parser = subparsers.add_parser("attempt", help="Record an attempt at a task")
+    attempt_parser.add_argument("--task", required=True, help="What was being worked on")
+    attempt_parser.add_argument("--approach", required=True, help="What was tried")
+    attempt_parser.add_argument("--outcome", required=True, choices=sorted(VALID_OUTCOMES))
+
+    preflight_parser = subparsers.add_parser(
+        "preflight", help="Show prior experience relevant to a task, before starting it"
+    )
+    preflight_parser.add_argument("task", help="Task description")
+
     return parser
 
 
@@ -113,6 +124,36 @@ def main(argv: list[str] | None = None) -> int:
             for memory in history:
                 status = "current" if memory.memory_id in current_ids else "superseded"
                 print(f"[{memory.memory_id}] ({status}) {memory.content}")
+            return 0
+
+        if args.command == "attempt":
+            cx = Cortex.discover()
+            attempt = cx.record_attempt(task=args.task, approach=args.approach, outcome=args.outcome)
+            print(f"Recorded attempt [{attempt.attempt_id}] ({attempt.outcome})")
+            return 0
+
+        if args.command == "preflight":
+            cx = Cortex.discover()
+            result = cx.preflight(args.task)
+            if result.is_empty():
+                print("No relevant experience found.")
+                return 0
+            if result.known_failures:
+                print("KNOWN FAILURES")
+                for attempt in result.known_failures:
+                    print(f"- [{attempt.attempt_id}] {attempt.task} -- {attempt.approach}")
+            if result.root_causes:
+                print("ROOT CAUSES")
+                for memory in result.root_causes:
+                    print(f"- [{memory.memory_id}] {memory.content}")
+            if result.verified_lessons:
+                print("VERIFIED LESSONS")
+                for memory in result.verified_lessons:
+                    print(f"- [{memory.memory_id}] {memory.content}")
+            if result.recommended_validation:
+                print("RECOMMENDED VALIDATION")
+                for evidence in result.recommended_validation:
+                    print(f"- [{evidence.evidence_id}] {evidence.content}")
             return 0
 
         parser.error(f"unknown command {args.command!r}")

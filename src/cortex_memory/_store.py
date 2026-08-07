@@ -1,16 +1,21 @@
-"""SQLite-backed persistence for canonical memories, evidence, and events.
+"""SQLite-backed persistence for canonical memories, evidence, events, and
+attempts.
 
 This module is the only place in Cortex that knows about SQL, cursors,
 connections, or row layout. `Cortex` and the public API depend only on
-`MemoryStore`, `Memory`, `Evidence`, and `Event`; SQLite is an
+`MemoryStore`, `Memory`, `Evidence`, `Event`, and `Attempt`; SQLite is an
 implementation detail that can be replaced without changing any of them.
 
 Schema history:
   v1 - `memories` table only (content, kind, epistemic_state, recorded_at).
   v2 - adds `memories.supersedes`, `evidence`, `memory_evidence`, `events`.
+  v3 - adds `attempts`, `attempt_evidence`. `memories.kind` and
+       `memories.epistemic_state` gain new valid values (`lesson`,
+       `root_cause`, `inferred`, `verified`) at the Python validation
+       layer only — no column changes are needed for that.
 
-A v1 database opened by this module is migrated to v2 in place, in a
-single transaction, without touching existing memory rows.
+A v1 or v2 database opened by this module is migrated forward to v3 in
+place, one step at a time, without touching existing rows.
 """
 
 from __future__ import annotations
@@ -21,15 +26,20 @@ import uuid
 from collections.abc import Sequence
 from pathlib import Path
 
+from ._attempt import ATTEMPT_ID_PATTERN, VALID_OUTCOMES, Attempt
 from ._errors import CortexStorageError
-from ._event import EVENT_KIND_MEMORY_RECORDED, Event
+from ._event import EVENT_KIND_ATTEMPT_RECORDED, EVENT_KIND_MEMORY_RECORDED, Event
 from ._evidence import EVIDENCE_ID_PATTERN, Evidence
 from ._memory import MEMORY_ID_PATTERN, VALID_EPISTEMIC_STATES, VALID_KINDS, Memory
 
-STORE_SCHEMA_VERSION = 2
+_SCHEMA_VERSION_V1 = 1
+_SCHEMA_VERSION_V2 = 2
+_SCHEMA_VERSION_V3 = 3
+STORE_SCHEMA_VERSION = _SCHEMA_VERSION_V3
 DB_FILENAME = "memory.db"
 
 _V2_TABLES = ("memories", "evidence", "memory_evidence", "events")
+_V3_TABLES = _V2_TABLES + ("attempts", "attempt_evidence")
 
 _CREATE_MEMORIES_V2_SQL = """
     CREATE TABLE memories (
@@ -70,14 +80,33 @@ _CREATE_EVENTS_SQL = """
     )
 """
 
+_CREATE_ATTEMPTS_SQL = """
+    CREATE TABLE attempts (
+        attempt_id TEXT PRIMARY KEY,
+        task TEXT NOT NULL,
+        approach TEXT NOT NULL,
+        outcome TEXT NOT NULL,
+        recorded_at TEXT NOT NULL
+    )
+"""
+
+_CREATE_ATTEMPT_EVIDENCE_SQL = """
+    CREATE TABLE attempt_evidence (
+        attempt_id TEXT NOT NULL,
+        evidence_id TEXT NOT NULL,
+        position INTEGER NOT NULL,
+        PRIMARY KEY (attempt_id, evidence_id)
+    )
+"""
+
 
 def db_path_for(cortex_dir: Path) -> Path:
     return cortex_dir / DB_FILENAME
 
 
 class MemoryStore:
-    """Boundary around the persisted memory/evidence/event tables for a
-    single workspace."""
+    """Boundary around the persisted memory/evidence/event/attempt tables
+    for a single workspace."""
 
     def __init__(self, connection: sqlite3.Connection) -> None:
         self._connection = connection
@@ -185,7 +214,7 @@ class MemoryStore:
         needle = query.casefold()
         rows = self._fetch_all_memory_rows()
         current_ids = self._current_ids_from_rows(rows) if current_only else None
-        evidence_map = self._all_evidence_map()
+        evidence_map = self._all_memory_evidence_map()
 
         matches: list[tuple[int, Memory]] = []
         for row in rows:
@@ -218,7 +247,7 @@ class MemoryStore:
         except sqlite3.DatabaseError as exc:
             raise CortexStorageError(f"Failed to read Cortex event log: {exc}") from exc
 
-        evidence_map = self._all_evidence_map()
+        evidence_map = self._all_memory_evidence_map()
         results: list[Memory] = []
         for memory_id in subject_ids:
             row = self._fetch_memory_row(memory_id)
@@ -266,6 +295,70 @@ class MemoryStore:
             return None
         return _row_to_evidence(row)
 
+    # -- attempts -----------------------------------------------------------
+
+    def add_attempt(self, attempt: Attempt, event: Event) -> None:
+        """Persist a new attempt, its evidence links, and its event atomically.
+
+        Raises `ValueError` if any `attempt.evidence_ids` entry names
+        unknown evidence. Raises `CortexStorageError` on genuine storage
+        corruption or I/O failure.
+        """
+        try:
+            with self._connection:
+                for evidence_id in attempt.evidence_ids:
+                    if not self._evidence_exists(evidence_id):
+                        raise ValueError(f"Unknown evidence reference {evidence_id!r}")
+
+                self._connection.execute(
+                    "INSERT INTO attempts (attempt_id, task, approach, outcome, recorded_at) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (
+                        attempt.attempt_id,
+                        attempt.task,
+                        attempt.approach,
+                        attempt.outcome,
+                        attempt.recorded_at.isoformat(),
+                    ),
+                )
+                for position, evidence_id in enumerate(attempt.evidence_ids):
+                    self._connection.execute(
+                        "INSERT INTO attempt_evidence (attempt_id, evidence_id, position) "
+                        "VALUES (?, ?, ?)",
+                        (attempt.attempt_id, evidence_id, position),
+                    )
+                self._connection.execute(
+                    "INSERT INTO events (event_id, kind, subject_id, occurred_at) "
+                    "VALUES (?, ?, ?, ?)",
+                    (event.event_id, event.kind, event.subject_id, event.occurred_at.isoformat()),
+                )
+        except sqlite3.DatabaseError as exc:
+            raise CortexStorageError(f"Failed to persist attempt {attempt.attempt_id!r}: {exc}") from exc
+
+    def list_attempts(self) -> list[Attempt]:
+        """Return every attempt in the order Cortex recorded them, oldest
+        first. Attempts are append-only: nothing here is ever rewritten,
+        including failed ones."""
+        try:
+            cursor = self._connection.execute(
+                "SELECT subject_id FROM events WHERE kind = ? ORDER BY sequence",
+                (EVENT_KIND_ATTEMPT_RECORDED,),
+            )
+            attempt_ids = [row[0] for row in cursor.fetchall()]
+        except sqlite3.DatabaseError as exc:
+            raise CortexStorageError(f"Failed to read Cortex event log: {exc}") from exc
+
+        evidence_map = self._all_attempt_evidence_map()
+        results: list[Attempt] = []
+        for attempt_id in attempt_ids:
+            row = self._fetch_attempt_row(attempt_id)
+            if row is None:
+                raise CortexStorageError(
+                    f"Event log references attempt {attempt_id!r} that does not exist"
+                )
+            results.append(_row_to_attempt(row, evidence_map.get(attempt_id, ())))
+        return results
+
     # -- internal helpers -----------------------------------------------------
 
     def _fetch_all_memory_rows(self) -> list[tuple]:
@@ -288,17 +381,33 @@ class MemoryStore:
         except sqlite3.DatabaseError as exc:
             raise CortexStorageError(f"Failed to read Cortex memory store: {exc}") from exc
 
-    def _all_evidence_map(self) -> dict[str, tuple[str, ...]]:
+    def _fetch_attempt_row(self, attempt_id: str) -> tuple | None:
+        try:
+            return self._connection.execute(
+                "SELECT attempt_id, task, approach, outcome, recorded_at "
+                "FROM attempts WHERE attempt_id = ?",
+                (attempt_id,),
+            ).fetchone()
+        except sqlite3.DatabaseError as exc:
+            raise CortexStorageError(f"Failed to read Cortex attempt store: {exc}") from exc
+
+    def _all_memory_evidence_map(self) -> dict[str, tuple[str, ...]]:
         try:
             rows = self._connection.execute(
                 "SELECT memory_id, evidence_id FROM memory_evidence ORDER BY memory_id, position"
             ).fetchall()
         except sqlite3.DatabaseError as exc:
             raise CortexStorageError(f"Failed to read Cortex provenance links: {exc}") from exc
-        grouped: dict[str, list[str]] = {}
-        for memory_id, evidence_id in rows:
-            grouped.setdefault(memory_id, []).append(evidence_id)
-        return {memory_id: tuple(ids) for memory_id, ids in grouped.items()}
+        return _group_ordered(rows)
+
+    def _all_attempt_evidence_map(self) -> dict[str, tuple[str, ...]]:
+        try:
+            rows = self._connection.execute(
+                "SELECT attempt_id, evidence_id FROM attempt_evidence ORDER BY attempt_id, position"
+            ).fetchall()
+        except sqlite3.DatabaseError as exc:
+            raise CortexStorageError(f"Failed to read Cortex provenance links: {exc}") from exc
+        return _group_ordered(rows)
 
     @staticmethod
     def _current_ids_from_rows(rows: list[tuple]) -> set[str]:
@@ -325,6 +434,13 @@ class MemoryStore:
         return row is not None
 
 
+def _group_ordered(rows: list[tuple[str, str]]) -> dict[str, tuple[str, ...]]:
+    grouped: dict[str, list[str]] = {}
+    for owner_id, linked_id in rows:
+        grouped.setdefault(owner_id, []).append(linked_id)
+    return {owner_id: tuple(ids) for owner_id, ids in grouped.items()}
+
+
 def _table_exists(connection: sqlite3.Connection, name: str) -> bool:
     return (
         connection.execute(
@@ -334,11 +450,13 @@ def _table_exists(connection: sqlite3.Connection, name: str) -> bool:
     )
 
 
-def _create_v2_schema(connection: sqlite3.Connection) -> None:
+def _create_v3_schema(connection: sqlite3.Connection) -> None:
     connection.execute(_CREATE_MEMORIES_V2_SQL)
     connection.execute(_CREATE_EVIDENCE_SQL)
     connection.execute(_CREATE_MEMORY_EVIDENCE_SQL)
     connection.execute(_CREATE_EVENTS_SQL)
+    connection.execute(_CREATE_ATTEMPTS_SQL)
+    connection.execute(_CREATE_ATTEMPT_EVIDENCE_SQL)
 
 
 def _migrate_v1_to_v2(connection: sqlite3.Connection) -> None:
@@ -375,27 +493,49 @@ def _migrate_v1_to_v2(connection: sqlite3.Connection) -> None:
                 (uuid.uuid4().hex, EVENT_KIND_MEMORY_RECORDED, memory_id, recorded_at),
             )
 
-        connection.execute(f"PRAGMA user_version = {STORE_SCHEMA_VERSION}")
+        connection.execute(f"PRAGMA user_version = {_SCHEMA_VERSION_V2}")
+
+
+def _migrate_v2_to_v3(connection: sqlite3.Connection) -> None:
+    """Upgrade a v2 store to v3 by adding the `attempts`/`attempt_evidence`
+    tables. There is no v2 data to backfill: attempts are a wholly new
+    concept in A4, so nothing pre-existing needs reinterpreting.
+    """
+    missing = [name for name in _V2_TABLES if not _table_exists(connection, name)]
+    if missing:
+        raise CortexStorageError(
+            f"Cortex memory store is stamped with schema version 2 but is missing "
+            f"table(s) {missing!r}; refusing to migrate a possibly corrupted store"
+        )
+    connection.execute("BEGIN")
+    with connection:
+        connection.execute(_CREATE_ATTEMPTS_SQL)
+        connection.execute(_CREATE_ATTEMPT_EVIDENCE_SQL)
+        connection.execute(f"PRAGMA user_version = {_SCHEMA_VERSION_V3}")
 
 
 def _ensure_schema(connection: sqlite3.Connection) -> None:
     (version,) = connection.execute("PRAGMA user_version").fetchone()
 
     if version == 0:
-        if any(_table_exists(connection, name) for name in _V2_TABLES):
+        if any(_table_exists(connection, name) for name in _V3_TABLES):
             raise CortexStorageError(
                 "Cortex memory store has no recognized schema version but already "
                 "contains data tables; refusing to open a possibly corrupted store"
             )
         connection.execute("BEGIN")
         with connection:
-            _create_v2_schema(connection)
+            _create_v3_schema(connection)
             connection.execute(f"PRAGMA user_version = {STORE_SCHEMA_VERSION}")
         return
 
-    if version == 1:
+    if version == _SCHEMA_VERSION_V1:
         _migrate_v1_to_v2(connection)
-        version = STORE_SCHEMA_VERSION
+        version = _SCHEMA_VERSION_V2
+
+    if version == _SCHEMA_VERSION_V2:
+        _migrate_v2_to_v3(connection)
+        version = _SCHEMA_VERSION_V3
 
     if version != STORE_SCHEMA_VERSION:
         raise CortexStorageError(
@@ -403,7 +543,7 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
             f"version of Cortex (expected {STORE_SCHEMA_VERSION})"
         )
 
-    missing = [name for name in _V2_TABLES if not _table_exists(connection, name)]
+    missing = [name for name in _V3_TABLES if not _table_exists(connection, name)]
     if missing:
         raise CortexStorageError(
             f"Cortex memory store is stamped with schema version {version} but is "
@@ -455,3 +595,26 @@ def _row_to_evidence(row: tuple[str, str, str, str]) -> Evidence:
             f"Corrupted recorded_at value {recorded_at_raw!r} for evidence {evidence_id!r}"
         ) from exc
     return Evidence(evidence_id=evidence_id, content=content, kind=kind, recorded_at=recorded_at)
+
+
+def _row_to_attempt(row: tuple[str, str, str, str, str], evidence_ids: tuple[str, ...]) -> Attempt:
+    attempt_id, task, approach, outcome, recorded_at_raw = row
+
+    if not isinstance(attempt_id, str) or not ATTEMPT_ID_PATTERN.fullmatch(attempt_id):
+        raise CortexStorageError(f"Corrupted attempt_id {attempt_id!r} in Cortex attempt store")
+    if outcome not in VALID_OUTCOMES:
+        raise CortexStorageError(f"Corrupted outcome {outcome!r} for attempt {attempt_id!r}")
+    try:
+        recorded_at = dt.datetime.fromisoformat(recorded_at_raw)
+    except ValueError as exc:
+        raise CortexStorageError(
+            f"Corrupted recorded_at value {recorded_at_raw!r} for attempt {attempt_id!r}"
+        ) from exc
+    return Attempt(
+        attempt_id=attempt_id,
+        task=task,
+        approach=approach,
+        outcome=outcome,
+        recorded_at=recorded_at,
+        evidence_ids=evidence_ids,
+    )

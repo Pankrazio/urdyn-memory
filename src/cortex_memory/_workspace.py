@@ -7,12 +7,33 @@ import uuid
 from collections.abc import Sequence
 from pathlib import Path
 
-from ._errors import CortexAlreadyInitializedError, CortexManifestError, CortexNotFoundError
-from ._event import EVENT_KIND_MEMORY_RECORDED, EVENT_KIND_MEMORY_SUPERSEDED, Event
-from ._evidence import DEFAULT_EVIDENCE_KIND, VALID_EVIDENCE_KINDS, Evidence
+from ._attempt import VALID_OUTCOMES, Attempt
+from ._errors import (
+    CortexAlreadyInitializedError,
+    CortexManifestError,
+    CortexNotFoundError,
+    CortexStorageError,
+)
+from ._event import (
+    EVENT_KIND_ATTEMPT_RECORDED,
+    EVENT_KIND_MEMORY_RECORDED,
+    EVENT_KIND_MEMORY_SUPERSEDED,
+    Event,
+)
+from ._evidence import DEFAULT_EVIDENCE_KIND, VALID_EVIDENCE_KINDS, VERIFICATION_EVIDENCE_KINDS, Evidence
 from ._gitignore import ensure_gitignore_entry
 from ._manifest import CANONICAL_PROFILES, SCHEMA_VERSION, read_manifest, write_manifest
-from ._memory import DEFAULT_KIND, EPISTEMIC_USER_ASSERTED, VALID_KINDS, Memory
+from ._memory import (
+    DEFAULT_KIND,
+    EPISTEMIC_USER_ASSERTED,
+    EPISTEMIC_VERIFIED,
+    KIND_LESSON,
+    KIND_ROOT_CAUSE,
+    VALID_EPISTEMIC_STATES,
+    VALID_KINDS,
+    Memory,
+)
+from ._preflight import Preflight, build_preflight
 from ._store import MemoryStore, db_path_for
 
 CORTEX_DIRNAME = ".cortex"
@@ -101,6 +122,7 @@ class Cortex:
         content: str,
         *,
         kind: str = DEFAULT_KIND,
+        epistemic_state: str = EPISTEMIC_USER_ASSERTED,
         supersedes: str | None = None,
         evidence: Sequence[Evidence] = (),
     ) -> Memory:
@@ -112,27 +134,49 @@ class Cortex:
         If `supersedes` is given, it must be the memory_id of an existing
         memory; that memory is preserved as history, not deleted or
         modified, and stops being "current". `evidence` records why this
-        memory exists (its provenance); Cortex does not treat evidence as
-        proof, so `epistemic_state` remains `user_asserted` regardless.
+        memory exists (its provenance).
+
+        `epistemic_state` defaults to `user_asserted`. Recording evidence
+        does not by itself imply verification: a memory may only be
+        marked `verified` if `evidence` includes at least one item whose
+        kind actually represents a check (a test result, a command or
+        tool output, an explicit user confirmation) — an opinion
+        (`user_statement`) or a bare file reference is not enough. Cortex
+        refuses to accept a verified claim resting on nothing, and
+        refuses one resting only on an unchecked assertion.
         """
         if not isinstance(content, str) or not content.strip():
             raise ValueError("Memory content must not be empty or whitespace-only")
         if kind not in VALID_KINDS:
             raise ValueError(f"Unknown memory kind {kind!r}; expected one of {sorted(VALID_KINDS)}")
+        if epistemic_state not in VALID_EPISTEMIC_STATES:
+            raise ValueError(
+                f"Unknown epistemic state {epistemic_state!r}; expected one of {sorted(VALID_EPISTEMIC_STATES)}"
+            )
 
         memory_id = uuid.uuid4().hex
         if supersedes is not None and supersedes == memory_id:
             raise ValueError("A memory cannot supersede itself")
+
+        evidence_ids = tuple(dict.fromkeys(item.evidence_id for item in evidence))
+        if epistemic_state == EPISTEMIC_VERIFIED:
+            if not evidence_ids:
+                raise ValueError("A memory cannot be marked verified without at least one piece of evidence")
+            if not any(item.kind in VERIFICATION_EVIDENCE_KINDS for item in evidence):
+                raise ValueError(
+                    "A memory can only be marked verified with evidence strong enough to justify it "
+                    f"(one of {sorted(VERIFICATION_EVIDENCE_KINDS)}), not an unchecked assertion or reference"
+                )
 
         recorded_at = dt.datetime.now(dt.timezone.utc)
         memory = Memory(
             memory_id=memory_id,
             content=content,
             kind=kind,
-            epistemic_state=EPISTEMIC_USER_ASSERTED,
+            epistemic_state=epistemic_state,
             recorded_at=recorded_at,
             supersedes=supersedes,
-            evidence_ids=tuple(dict.fromkeys(item.evidence_id for item in evidence)),
+            evidence_ids=evidence_ids,
         )
 
         events = [
@@ -239,6 +283,116 @@ class Cortex:
         if evidence is None:
             raise ValueError(f"Unknown evidence {evidence_id!r}")
         return evidence
+
+    def learn(
+        self,
+        content: str,
+        *,
+        evidence: Sequence[Evidence] = (),
+        verified: bool = False,
+        supersedes: str | None = None,
+    ) -> Memory:
+        """Persist a `Lesson`: a reusable conclusion drawn from experience.
+
+        A lesson is a `Memory` of kind `lesson`. By default it is recorded
+        as a candidate (`user_asserted`); pass `verified=True` together
+        with confirming `evidence` (e.g. a test result) to record it as a
+        verified lesson instead. A candidate can later be superseded by a
+        verified version of the same lesson via `supersedes`.
+        """
+        epistemic_state = EPISTEMIC_VERIFIED if verified else EPISTEMIC_USER_ASSERTED
+        return self.remember(
+            content,
+            kind=KIND_LESSON,
+            epistemic_state=epistemic_state,
+            supersedes=supersedes,
+            evidence=evidence,
+        )
+
+    def record_attempt(
+        self,
+        *,
+        task: str,
+        approach: str,
+        outcome: str,
+        evidence: Sequence[Evidence] = (),
+    ) -> Attempt:
+        """Persist a record of trying to do something and return it.
+
+        Attempts are append-only: recording a later successful attempt
+        never rewrites or removes an earlier failed one.
+        """
+        if not isinstance(task, str) or not task.strip():
+            raise ValueError("Attempt task must not be empty or whitespace-only")
+        if not isinstance(approach, str) or not approach.strip():
+            raise ValueError("Attempt approach must not be empty or whitespace-only")
+        if outcome not in VALID_OUTCOMES:
+            raise ValueError(f"Unknown attempt outcome {outcome!r}; expected one of {sorted(VALID_OUTCOMES)}")
+
+        recorded_at = dt.datetime.now(dt.timezone.utc)
+        attempt = Attempt(
+            attempt_id=uuid.uuid4().hex,
+            task=task,
+            approach=approach,
+            outcome=outcome,
+            recorded_at=recorded_at,
+            evidence_ids=tuple(dict.fromkeys(item.evidence_id for item in evidence)),
+        )
+        event = Event(
+            event_id=uuid.uuid4().hex,
+            kind=EVENT_KIND_ATTEMPT_RECORDED,
+            subject_id=attempt.attempt_id,
+            occurred_at=recorded_at,
+        )
+
+        with MemoryStore.create_or_open(self._db_path) as store:
+            store.add_attempt(attempt, event)
+
+        return attempt
+
+    def preflight(self, task: str) -> Preflight:
+        """Select prior experience relevant to `task`, before starting it.
+
+        Answers "what should an agent know before attempting this?" by
+        surfacing known failures (matching failed attempts), root causes,
+        verified lessons, and any test/command evidence recommended as
+        validation — each only if Cortex has something relevant on
+        record. This is lexical and deterministic, not a search engine:
+        it will not return everything, and it will not return nothing
+        just because the wording differs slightly.
+        """
+        if not isinstance(task, str) or not task.strip():
+            raise ValueError("Preflight task must not be empty or whitespace-only")
+
+        empty = Preflight(
+            task=task, known_failures=(), root_causes=(), verified_lessons=(), recommended_validation=()
+        )
+        store = MemoryStore.open_if_exists(self._db_path)
+        if store is None:
+            return empty
+        with store:
+            current_ids = store.current_ids()
+            root_cause_memories = [m for m in store.timeline(KIND_ROOT_CAUSE) if m.memory_id in current_ids]
+            lesson_memories = [m for m in store.timeline(KIND_LESSON) if m.memory_id in current_ids]
+            verified_lesson_memories = [m for m in lesson_memories if m.epistemic_state == EPISTEMIC_VERIFIED]
+            attempts = store.list_attempts()
+
+            def _must_get_evidence(evidence_id: str) -> Evidence:
+                evidence = store.get_evidence(evidence_id)
+                if evidence is None:
+                    raise CortexStorageError(
+                        f"Evidence {evidence_id!r} is referenced by recorded experience but "
+                        "missing from the store"
+                    )
+                return evidence
+
+            return build_preflight(
+                task,
+                attempts=attempts,
+                root_cause_memories=root_cause_memories,
+                verified_lesson_memories=verified_lesson_memories,
+                evidence_lookup=_must_get_evidence,
+            )
 
     def _count_memories(self) -> int:
         """Return the number of persisted memories, or 0 if none exist yet.

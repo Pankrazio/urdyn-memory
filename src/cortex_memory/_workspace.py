@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import uuid
 from pathlib import Path
 
 from ._errors import CortexAlreadyInitializedError, CortexManifestError, CortexNotFoundError
 from ._gitignore import ensure_gitignore_entry
 from ._manifest import CANONICAL_PROFILES, SCHEMA_VERSION, read_manifest, write_manifest
+from ._memory import DEFAULT_KIND, EPISTEMIC_USER_ASSERTED, VALID_KINDS, Memory
+from ._store import MemoryStore, db_path_for
 
 CORTEX_DIRNAME = ".cortex"
+DEFAULT_RECALL_LIMIT = 20
 
 
 class Cortex:
@@ -88,3 +92,57 @@ class Cortex:
             f"No Cortex workspace found in {current} or any parent directory. "
             "Run 'cortex init' to create one."
         )
+
+    def remember(self, content: str, *, kind: str = DEFAULT_KIND) -> Memory:
+        """Persist a new canonical memory and return it.
+
+        `content` is recorded verbatim; Cortex does not interpret,
+        summarize, or verify it. Rejects empty or whitespace-only input.
+        """
+        if not isinstance(content, str) or not content.strip():
+            raise ValueError("Memory content must not be empty or whitespace-only")
+        if kind not in VALID_KINDS:
+            raise ValueError(f"Unknown memory kind {kind!r}; expected one of {sorted(VALID_KINDS)}")
+
+        memory = Memory(
+            memory_id=uuid.uuid4().hex,
+            content=content,
+            kind=kind,
+            epistemic_state=EPISTEMIC_USER_ASSERTED,
+            recorded_at=dt.datetime.now(dt.timezone.utc),
+        )
+
+        with MemoryStore.create_or_open(self._db_path) as store:
+            store.add(memory)
+
+        return memory
+
+    def recall(self, query: str, *, limit: int = DEFAULT_RECALL_LIMIT) -> list[Memory]:
+        """Search persisted memories with deterministic lexical matching."""
+        if not isinstance(query, str) or not query.strip():
+            raise ValueError("Recall query must not be empty or whitespace-only")
+        if limit <= 0:
+            raise ValueError("limit must be a positive integer")
+
+        store = MemoryStore.open_if_exists(self._db_path)
+        if store is None:
+            return []
+        with store:
+            return store.search(query, limit)
+
+    def _count_memories(self) -> int:
+        """Return the number of persisted memories, or 0 if none exist yet.
+
+        Internal to the `cortex status` CLI command. Not part of the public
+        API: the future semantics of "count" (current vs. superseded vs.
+        invalidated memories) are not yet stable enough to commit to.
+        """
+        store = MemoryStore.open_if_exists(self._db_path)
+        if store is None:
+            return 0
+        with store:
+            return store.count()
+
+    @property
+    def _db_path(self) -> Path:
+        return db_path_for(self._path / CORTEX_DIRNAME)

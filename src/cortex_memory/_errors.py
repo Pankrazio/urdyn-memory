@@ -15,3 +15,8 @@ class CortexAlreadyInitializedError(CortexError):
 
 class CortexManifestError(CortexError):
     """Raised when a persisted Cortex manifest is missing or malformed."""
+
+
+class CortexStorageError(CortexError):
+    """Raised when the persisted memory store is missing, corrupted, or an
+    unsupported schema version."""

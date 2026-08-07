@@ -8,13 +8,17 @@ from ._errors import (
     CortexError,
     CortexManifestError,
     CortexNotFoundError,
+    CortexStorageError,
 )
+from ._memory import Memory
 from ._workspace import Cortex
 
 __all__ = [
     "Cortex",
+    "Memory",
     "CortexError",
     "CortexNotFoundError",
     "CortexAlreadyInitializedError",
     "CortexManifestError",
+    "CortexStorageError",
 ]

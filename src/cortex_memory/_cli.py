@@ -7,7 +7,8 @@ import sys
 
 from ._errors import CortexError
 from ._manifest import CANONICAL_PROFILES
-from ._workspace import Cortex
+from ._memory import DEFAULT_KIND, VALID_KINDS
+from ._workspace import DEFAULT_RECALL_LIMIT, Cortex
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -24,6 +25,24 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     subparsers.add_parser("status", help="Show the current Cortex workspace status")
+
+    remember_parser = subparsers.add_parser("remember", help="Record a new memory")
+    remember_parser.add_argument("text", help="Memory content")
+    remember_parser.add_argument(
+        "--kind",
+        default=DEFAULT_KIND,
+        choices=sorted(VALID_KINDS),
+        help=f"Memory kind (default: {DEFAULT_KIND})",
+    )
+
+    recall_parser = subparsers.add_parser("recall", help="Search recorded memories")
+    recall_parser.add_argument("query", help="Search text")
+    recall_parser.add_argument(
+        "--limit",
+        type=int,
+        default=DEFAULT_RECALL_LIMIT,
+        help=f"Maximum number of results (default: {DEFAULT_RECALL_LIMIT})",
+    )
 
     return parser
 
@@ -44,11 +63,28 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Cortex workspace: {cx.path}")
             print(f"Profile: {cx.profile}")
             print(f"Cortex ID: {cx.cortex_id}")
+            print(f"Memories: {cx._count_memories()}")
+            return 0
+
+        if args.command == "remember":
+            cx = Cortex.discover()
+            memory = cx.remember(args.text, kind=args.kind)
+            print(f"Remembered [{memory.memory_id}] ({memory.kind})")
+            return 0
+
+        if args.command == "recall":
+            cx = Cortex.discover()
+            results = cx.recall(args.query, limit=args.limit)
+            if not results:
+                print("No memories found.")
+                return 0
+            for memory in results:
+                print(f"[{memory.memory_id}] {memory.content}")
             return 0
 
         parser.error(f"unknown command {args.command!r}")
         return 2
-    except CortexError as exc:
+    except (CortexError, ValueError) as exc:
         print(f"cortex: error: {exc}", file=sys.stderr)
         return 1
 

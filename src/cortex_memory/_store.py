@@ -1,22 +1,74 @@
-"""SQLite-backed persistence for canonical memories.
+"""SQLite-backed persistence for canonical memories, evidence, and events.
 
 This module is the only place in Cortex that knows about SQL, cursors,
 connections, or row layout. `Cortex` and the public API depend only on
-`MemoryStore` and `Memory`; SQLite is an implementation detail that can
-be replaced without changing either.
+`MemoryStore`, `Memory`, `Evidence`, and `Event`; SQLite is an
+implementation detail that can be replaced without changing any of them.
+
+Schema history:
+  v1 - `memories` table only (content, kind, epistemic_state, recorded_at).
+  v2 - adds `memories.supersedes`, `evidence`, `memory_evidence`, `events`.
+
+A v1 database opened by this module is migrated to v2 in place, in a
+single transaction, without touching existing memory rows.
 """
 
 from __future__ import annotations
 
 import datetime as dt
 import sqlite3
+import uuid
+from collections.abc import Sequence
 from pathlib import Path
 
 from ._errors import CortexStorageError
+from ._event import EVENT_KIND_MEMORY_RECORDED, Event
+from ._evidence import EVIDENCE_ID_PATTERN, Evidence
 from ._memory import MEMORY_ID_PATTERN, VALID_EPISTEMIC_STATES, VALID_KINDS, Memory
 
-STORE_SCHEMA_VERSION = 1
+STORE_SCHEMA_VERSION = 2
 DB_FILENAME = "memory.db"
+
+_V2_TABLES = ("memories", "evidence", "memory_evidence", "events")
+
+_CREATE_MEMORIES_V2_SQL = """
+    CREATE TABLE memories (
+        memory_id TEXT PRIMARY KEY,
+        content TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        epistemic_state TEXT NOT NULL,
+        recorded_at TEXT NOT NULL,
+        supersedes TEXT
+    )
+"""
+
+_CREATE_EVIDENCE_SQL = """
+    CREATE TABLE evidence (
+        evidence_id TEXT PRIMARY KEY,
+        content TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        recorded_at TEXT NOT NULL
+    )
+"""
+
+_CREATE_MEMORY_EVIDENCE_SQL = """
+    CREATE TABLE memory_evidence (
+        memory_id TEXT NOT NULL,
+        evidence_id TEXT NOT NULL,
+        position INTEGER NOT NULL,
+        PRIMARY KEY (memory_id, evidence_id)
+    )
+"""
+
+_CREATE_EVENTS_SQL = """
+    CREATE TABLE events (
+        sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+        event_id TEXT NOT NULL UNIQUE,
+        kind TEXT NOT NULL,
+        subject_id TEXT NOT NULL,
+        occurred_at TEXT NOT NULL
+    )
+"""
 
 
 def db_path_for(cortex_dir: Path) -> Path:
@@ -24,7 +76,8 @@ def db_path_for(cortex_dir: Path) -> Path:
 
 
 class MemoryStore:
-    """Boundary around the persisted memory table for a single workspace."""
+    """Boundary around the persisted memory/evidence/event tables for a
+    single workspace."""
 
     def __init__(self, connection: sqlite3.Connection) -> None:
         self._connection = connection
@@ -63,20 +116,54 @@ class MemoryStore:
     def __exit__(self, *exc_info: object) -> None:
         self.close()
 
-    def add(self, memory: Memory) -> None:
+    # -- memories ---------------------------------------------------------
+
+    def add(self, memory: Memory, events: Sequence[Event]) -> None:
+        """Persist a new memory, its evidence links, and its events atomically.
+
+        Raises `ValueError` if `memory.supersedes` names an unknown memory,
+        or if any `memory.evidence_ids` entry names unknown evidence. Raises
+        `CortexStorageError` on genuine storage corruption or I/O failure.
+        """
         try:
             with self._connection:
+                if memory.supersedes is not None:
+                    if not self._memory_exists(memory.supersedes):
+                        raise ValueError(f"Cannot supersede unknown memory {memory.supersedes!r}")
+                    if self._has_superseder(memory.supersedes):
+                        raise ValueError(
+                            f"Memory {memory.supersedes!r} has already been superseded; "
+                            "a memory can only be superseded once"
+                        )
+                for evidence_id in memory.evidence_ids:
+                    if not self._evidence_exists(evidence_id):
+                        raise ValueError(f"Unknown evidence reference {evidence_id!r}")
+
                 self._connection.execute(
-                    "INSERT INTO memories (memory_id, content, kind, epistemic_state, recorded_at) "
-                    "VALUES (?, ?, ?, ?, ?)",
+                    "INSERT INTO memories "
+                    "(memory_id, content, kind, epistemic_state, recorded_at, supersedes) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
                     (
                         memory.memory_id,
                         memory.content,
                         memory.kind,
                         memory.epistemic_state,
                         memory.recorded_at.isoformat(),
+                        memory.supersedes,
                     ),
                 )
+                for position, evidence_id in enumerate(memory.evidence_ids):
+                    self._connection.execute(
+                        "INSERT INTO memory_evidence (memory_id, evidence_id, position) "
+                        "VALUES (?, ?, ?)",
+                        (memory.memory_id, evidence_id, position),
+                    )
+                for event in events:
+                    self._connection.execute(
+                        "INSERT INTO events (event_id, kind, subject_id, occurred_at) "
+                        "VALUES (?, ?, ?, ?)",
+                        (event.event_id, event.kind, event.subject_id, event.occurred_at.isoformat()),
+                    )
         except sqlite3.DatabaseError as exc:
             raise CortexStorageError(f"Failed to persist memory {memory.memory_id!r}: {exc}") from exc
 
@@ -88,24 +175,23 @@ class MemoryStore:
             raise CortexStorageError(f"Failed to read Cortex memory store: {exc}") from exc
         return total
 
-    def search(self, query: str, limit: int) -> list[Memory]:
+    def search(self, query: str, limit: int, *, current_only: bool) -> list[Memory]:
         """Case-insensitive substring search, ranked by match count.
 
         Ties are broken by most-recent-first, then by `memory_id`, so
         the result order never depends on incidental database order.
+        When `current_only` is True, superseded memories are excluded.
         """
         needle = query.casefold()
-        try:
-            cursor = self._connection.execute(
-                "SELECT memory_id, content, kind, epistemic_state, recorded_at FROM memories"
-            )
-            rows = cursor.fetchall()
-        except sqlite3.DatabaseError as exc:
-            raise CortexStorageError(f"Failed to read Cortex memory store: {exc}") from exc
+        rows = self._fetch_all_memory_rows()
+        current_ids = self._current_ids_from_rows(rows) if current_only else None
+        evidence_map = self._all_evidence_map()
 
         matches: list[tuple[int, Memory]] = []
         for row in rows:
-            memory = _row_to_memory(row)
+            memory = _row_to_memory(row, evidence_map.get(row[0], ()))
+            if current_ids is not None and memory.memory_id not in current_ids:
+                continue
             occurrences = memory.content.casefold().count(needle)
             if occurrences > 0:
                 matches.append((occurrences, memory))
@@ -116,36 +202,200 @@ class MemoryStore:
 
         return [memory for _, memory in matches[:limit]]
 
+    def timeline(self, kind: str | None) -> list[Memory]:
+        """Return memories in the order Cortex recorded them, oldest first.
 
-def _ensure_schema(connection: sqlite3.Connection) -> None:
-    (version,) = connection.execute("PRAGMA user_version").fetchone()
-    table_exists = (
+        Ordering follows the append-only event log's own sequence, not
+        `recorded_at` timestamps (which can collide) or incidental
+        database row order.
+        """
+        try:
+            cursor = self._connection.execute(
+                "SELECT subject_id FROM events WHERE kind = ? ORDER BY sequence",
+                (EVENT_KIND_MEMORY_RECORDED,),
+            )
+            subject_ids = [row[0] for row in cursor.fetchall()]
+        except sqlite3.DatabaseError as exc:
+            raise CortexStorageError(f"Failed to read Cortex event log: {exc}") from exc
+
+        evidence_map = self._all_evidence_map()
+        results: list[Memory] = []
+        for memory_id in subject_ids:
+            row = self._fetch_memory_row(memory_id)
+            if row is None:
+                raise CortexStorageError(
+                    f"Event log references memory {memory_id!r} that does not exist"
+                )
+            memory = _row_to_memory(row, evidence_map.get(memory_id, ()))
+            if kind is not None and memory.kind != kind:
+                continue
+            results.append(memory)
+        return results
+
+    def current_ids(self) -> set[str]:
+        rows = self._fetch_all_memory_rows()
+        return self._current_ids_from_rows(rows)
+
+    # -- evidence -----------------------------------------------------------
+
+    def add_evidence(self, evidence: Evidence) -> None:
+        try:
+            with self._connection:
+                self._connection.execute(
+                    "INSERT INTO evidence (evidence_id, content, kind, recorded_at) "
+                    "VALUES (?, ?, ?, ?)",
+                    (
+                        evidence.evidence_id,
+                        evidence.content,
+                        evidence.kind,
+                        evidence.recorded_at.isoformat(),
+                    ),
+                )
+        except sqlite3.DatabaseError as exc:
+            raise CortexStorageError(f"Failed to persist evidence {evidence.evidence_id!r}: {exc}") from exc
+
+    def get_evidence(self, evidence_id: str) -> Evidence | None:
+        try:
+            row = self._connection.execute(
+                "SELECT evidence_id, content, kind, recorded_at FROM evidence WHERE evidence_id = ?",
+                (evidence_id,),
+            ).fetchone()
+        except sqlite3.DatabaseError as exc:
+            raise CortexStorageError(f"Failed to read Cortex evidence store: {exc}") from exc
+        if row is None:
+            return None
+        return _row_to_evidence(row)
+
+    # -- internal helpers -----------------------------------------------------
+
+    def _fetch_all_memory_rows(self) -> list[tuple]:
+        try:
+            cursor = self._connection.execute(
+                "SELECT memory_id, content, kind, epistemic_state, recorded_at, supersedes "
+                "FROM memories"
+            )
+            return cursor.fetchall()
+        except sqlite3.DatabaseError as exc:
+            raise CortexStorageError(f"Failed to read Cortex memory store: {exc}") from exc
+
+    def _fetch_memory_row(self, memory_id: str) -> tuple | None:
+        try:
+            return self._connection.execute(
+                "SELECT memory_id, content, kind, epistemic_state, recorded_at, supersedes "
+                "FROM memories WHERE memory_id = ?",
+                (memory_id,),
+            ).fetchone()
+        except sqlite3.DatabaseError as exc:
+            raise CortexStorageError(f"Failed to read Cortex memory store: {exc}") from exc
+
+    def _all_evidence_map(self) -> dict[str, tuple[str, ...]]:
+        try:
+            rows = self._connection.execute(
+                "SELECT memory_id, evidence_id FROM memory_evidence ORDER BY memory_id, position"
+            ).fetchall()
+        except sqlite3.DatabaseError as exc:
+            raise CortexStorageError(f"Failed to read Cortex provenance links: {exc}") from exc
+        grouped: dict[str, list[str]] = {}
+        for memory_id, evidence_id in rows:
+            grouped.setdefault(memory_id, []).append(evidence_id)
+        return {memory_id: tuple(ids) for memory_id, ids in grouped.items()}
+
+    @staticmethod
+    def _current_ids_from_rows(rows: list[tuple]) -> set[str]:
+        all_ids = {row[0] for row in rows}
+        superseded = {row[5] for row in rows if row[5] is not None}
+        return all_ids - superseded
+
+    def _memory_exists(self, memory_id: str) -> bool:
+        row = self._connection.execute(
+            "SELECT 1 FROM memories WHERE memory_id = ?", (memory_id,)
+        ).fetchone()
+        return row is not None
+
+    def _has_superseder(self, memory_id: str) -> bool:
+        row = self._connection.execute(
+            "SELECT 1 FROM memories WHERE supersedes = ?", (memory_id,)
+        ).fetchone()
+        return row is not None
+
+    def _evidence_exists(self, evidence_id: str) -> bool:
+        row = self._connection.execute(
+            "SELECT 1 FROM evidence WHERE evidence_id = ?", (evidence_id,)
+        ).fetchone()
+        return row is not None
+
+
+def _table_exists(connection: sqlite3.Connection, name: str) -> bool:
+    return (
         connection.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'memories'"
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?", (name,)
         ).fetchone()
         is not None
     )
 
+
+def _create_v2_schema(connection: sqlite3.Connection) -> None:
+    connection.execute(_CREATE_MEMORIES_V2_SQL)
+    connection.execute(_CREATE_EVIDENCE_SQL)
+    connection.execute(_CREATE_MEMORY_EVIDENCE_SQL)
+    connection.execute(_CREATE_EVENTS_SQL)
+
+
+def _migrate_v1_to_v2(connection: sqlite3.Connection) -> None:
+    """Upgrade a v1 store to v2 in a single all-or-nothing transaction.
+
+    Also backfills a `memory_recorded` event for every memory that already
+    existed under v1, ordered by its own `recorded_at`, so that pre-A3
+    memories remain visible to `timeline()`/`state()` (which are event-log
+    projections, not raw table scans).
+
+    Python's `sqlite3` module does not open an implicit transaction before
+    DDL statements, so `BEGIN` is issued explicitly here: without it, a
+    failure partway through (e.g. a colliding table name) would leave
+    earlier DDL statements permanently committed instead of rolled back.
+    """
+    if not _table_exists(connection, "memories"):
+        raise CortexStorageError(
+            "Cortex memory store is stamped with schema version 1 but is missing the "
+            "'memories' table; refusing to migrate a possibly corrupted store"
+        )
+    connection.execute("BEGIN")
+    with connection:
+        connection.execute("ALTER TABLE memories ADD COLUMN supersedes TEXT")
+        connection.execute(_CREATE_EVIDENCE_SQL)
+        connection.execute(_CREATE_MEMORY_EVIDENCE_SQL)
+        connection.execute(_CREATE_EVENTS_SQL)
+
+        preexisting = connection.execute(
+            "SELECT memory_id, recorded_at FROM memories ORDER BY recorded_at, memory_id"
+        ).fetchall()
+        for memory_id, recorded_at in preexisting:
+            connection.execute(
+                "INSERT INTO events (event_id, kind, subject_id, occurred_at) VALUES (?, ?, ?, ?)",
+                (uuid.uuid4().hex, EVENT_KIND_MEMORY_RECORDED, memory_id, recorded_at),
+            )
+
+        connection.execute(f"PRAGMA user_version = {STORE_SCHEMA_VERSION}")
+
+
+def _ensure_schema(connection: sqlite3.Connection) -> None:
+    (version,) = connection.execute("PRAGMA user_version").fetchone()
+
     if version == 0:
-        if table_exists:
+        if any(_table_exists(connection, name) for name in _V2_TABLES):
             raise CortexStorageError(
                 "Cortex memory store has no recognized schema version but already "
-                "contains a 'memories' table; refusing to open a possibly corrupted store"
+                "contains data tables; refusing to open a possibly corrupted store"
             )
+        connection.execute("BEGIN")
         with connection:
-            connection.execute(
-                """
-                CREATE TABLE memories (
-                    memory_id TEXT PRIMARY KEY,
-                    content TEXT NOT NULL,
-                    kind TEXT NOT NULL,
-                    epistemic_state TEXT NOT NULL,
-                    recorded_at TEXT NOT NULL
-                )
-                """
-            )
+            _create_v2_schema(connection)
             connection.execute(f"PRAGMA user_version = {STORE_SCHEMA_VERSION}")
         return
+
+    if version == 1:
+        _migrate_v1_to_v2(connection)
+        version = STORE_SCHEMA_VERSION
 
     if version != STORE_SCHEMA_VERSION:
         raise CortexStorageError(
@@ -153,15 +403,16 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
             f"version of Cortex (expected {STORE_SCHEMA_VERSION})"
         )
 
-    if not table_exists:
+    missing = [name for name in _V2_TABLES if not _table_exists(connection, name)]
+    if missing:
         raise CortexStorageError(
             f"Cortex memory store is stamped with schema version {version} but is "
-            "missing the 'memories' table; refusing to silently recreate it"
+            f"missing table(s) {missing!r}; refusing to silently recreate them"
         )
 
 
-def _row_to_memory(row: tuple[str, str, str, str, str]) -> Memory:
-    memory_id, content, kind, epistemic_state, recorded_at_raw = row
+def _row_to_memory(row: tuple, evidence_ids: tuple[str, ...]) -> Memory:
+    memory_id, content, kind, epistemic_state, recorded_at_raw, supersedes = row
 
     if not isinstance(memory_id, str) or not MEMORY_ID_PATTERN.fullmatch(memory_id):
         raise CortexStorageError(f"Corrupted memory_id {memory_id!r} in Cortex memory store")
@@ -171,6 +422,10 @@ def _row_to_memory(row: tuple[str, str, str, str, str]) -> Memory:
         raise CortexStorageError(
             f"Corrupted epistemic_state {epistemic_state!r} for memory {memory_id!r}"
         )
+    if supersedes is not None and (
+        not isinstance(supersedes, str) or not MEMORY_ID_PATTERN.fullmatch(supersedes)
+    ):
+        raise CortexStorageError(f"Corrupted supersedes value {supersedes!r} for memory {memory_id!r}")
     try:
         recorded_at = dt.datetime.fromisoformat(recorded_at_raw)
     except ValueError as exc:
@@ -183,4 +438,20 @@ def _row_to_memory(row: tuple[str, str, str, str, str]) -> Memory:
         kind=kind,
         epistemic_state=epistemic_state,
         recorded_at=recorded_at,
+        supersedes=supersedes,
+        evidence_ids=evidence_ids,
     )
+
+
+def _row_to_evidence(row: tuple[str, str, str, str]) -> Evidence:
+    evidence_id, content, kind, recorded_at_raw = row
+
+    if not isinstance(evidence_id, str) or not EVIDENCE_ID_PATTERN.fullmatch(evidence_id):
+        raise CortexStorageError(f"Corrupted evidence_id {evidence_id!r} in Cortex evidence store")
+    try:
+        recorded_at = dt.datetime.fromisoformat(recorded_at_raw)
+    except ValueError as exc:
+        raise CortexStorageError(
+            f"Corrupted recorded_at value {recorded_at_raw!r} for evidence {evidence_id!r}"
+        ) from exc
+    return Evidence(evidence_id=evidence_id, content=content, kind=kind, recorded_at=recorded_at)

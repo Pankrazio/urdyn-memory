@@ -34,6 +34,12 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=sorted(VALID_KINDS),
         help=f"Memory kind (default: {DEFAULT_KIND})",
     )
+    remember_parser.add_argument(
+        "--supersedes",
+        default=None,
+        metavar="MEMORY_ID",
+        help="Memory ID that this memory supersedes",
+    )
 
     recall_parser = subparsers.add_parser("recall", help="Search recorded memories")
     recall_parser.add_argument("query", help="Search text")
@@ -42,6 +48,19 @@ def _build_parser() -> argparse.ArgumentParser:
         type=int,
         default=DEFAULT_RECALL_LIMIT,
         help=f"Maximum number of results (default: {DEFAULT_RECALL_LIMIT})",
+    )
+    recall_parser.add_argument(
+        "--include-superseded",
+        action="store_true",
+        help="Also search memories that have been superseded",
+    )
+
+    timeline_parser = subparsers.add_parser("timeline", help="Show the recorded history, oldest first")
+    timeline_parser.add_argument(
+        "--kind",
+        default=None,
+        choices=sorted(VALID_KINDS),
+        help="Only show memories of this kind",
     )
 
     return parser
@@ -68,18 +87,32 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.command == "remember":
             cx = Cortex.discover()
-            memory = cx.remember(args.text, kind=args.kind)
+            memory = cx.remember(args.text, kind=args.kind, supersedes=args.supersedes)
             print(f"Remembered [{memory.memory_id}] ({memory.kind})")
+            if memory.supersedes:
+                print(f"Supersedes [{memory.supersedes}]")
             return 0
 
         if args.command == "recall":
             cx = Cortex.discover()
-            results = cx.recall(args.query, limit=args.limit)
+            results = cx.recall(args.query, limit=args.limit, include_superseded=args.include_superseded)
             if not results:
                 print("No memories found.")
                 return 0
             for memory in results:
                 print(f"[{memory.memory_id}] {memory.content}")
+            return 0
+
+        if args.command == "timeline":
+            cx = Cortex.discover()
+            history = cx.timeline(kind=args.kind)
+            if not history:
+                print("No history found.")
+                return 0
+            current_ids = {memory.memory_id for memory in cx.state(kind=args.kind)}
+            for memory in history:
+                status = "current" if memory.memory_id in current_ids else "superseded"
+                print(f"[{memory.memory_id}] ({status}) {memory.content}")
             return 0
 
         parser.error(f"unknown command {args.command!r}")

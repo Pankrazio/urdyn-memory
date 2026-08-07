@@ -26,6 +26,14 @@ class Memory:
 
     `recorded_at` is when Cortex recorded the memory, in UTC. It is not
     a claim about when the underlying fact occurred or was observed.
+
+    `supersedes` is the memory_id of an older memory this one replaces,
+    or None. Superseding never mutates or deletes the older memory; it
+    only marks this memory as the newer one in that lineage.
+
+    `evidence_ids` is the stable provenance trail: the ids of Evidence
+    this memory was derived from, in the order they were given. It is
+    a reference, not a copy of evidence content.
     """
 
     memory_id: str
@@ -33,3 +41,5 @@ class Memory:
     kind: str
     epistemic_state: str
     recorded_at: dt.datetime
+    supersedes: str | None = None
+    evidence_ids: tuple[str, ...] = ()

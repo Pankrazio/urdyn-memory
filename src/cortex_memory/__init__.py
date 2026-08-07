@@ -10,12 +10,14 @@ from ._errors import (
     CortexNotFoundError,
     CortexStorageError,
 )
+from ._evidence import Evidence
 from ._memory import Memory
 from ._workspace import Cortex
 
 __all__ = [
     "Cortex",
     "Memory",
+    "Evidence",
     "CortexError",
     "CortexNotFoundError",
     "CortexAlreadyInitializedError",

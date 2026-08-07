@@ -147,3 +147,61 @@ def test_cli_memory_persists_across_separate_invocations(tmp_path, monkeypatch, 
 
     assert exit_code == 0
     assert "SQLite" in captured.out
+
+
+def test_cli_historical_workflow_end_to_end(tmp_path, monkeypatch, capsys):
+    """The end-to-end scenario the A3 milestone must demonstrate: an old
+    decision is superseded by a new one, both remain visible in the
+    timeline, and recall surfaces only the current one by default."""
+    monkeypatch.chdir(tmp_path)
+    main(["init", "dev"])
+
+    main(["remember", "PostgreSQL was selected.", "--kind", "decision"])
+    capsys.readouterr()
+
+    exit_code = main(["recall", "PostgreSQL"])
+    old_id = capsys.readouterr().out.strip().split("[")[1].split("]")[0]
+    assert exit_code == 0
+
+    exit_code = main(
+        ["remember", "SQLite was selected for V1.", "--kind", "decision", "--supersedes", old_id]
+    )
+    remember_out = capsys.readouterr().out
+    assert exit_code == 0
+    assert f"Supersedes [{old_id}]" in remember_out
+
+    exit_code = main(["recall", "selected"])
+    recall_out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "SQLite was selected for V1." in recall_out
+    assert "PostgreSQL was selected." not in recall_out
+
+    exit_code = main(["timeline", "--kind", "decision"])
+    timeline_out = capsys.readouterr().out
+    assert exit_code == 0
+    lines = timeline_out.strip().splitlines()
+    assert len(lines) == 2
+    assert "(superseded)" in lines[0] and "PostgreSQL was selected." in lines[0]
+    assert "(current)" in lines[1] and "SQLite was selected for V1." in lines[1]
+
+
+def test_cli_timeline_on_empty_workspace_reports_clearly(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    main(["init", "dev"])
+
+    exit_code = main(["timeline"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "No history found" in captured.out
+
+
+def test_cli_remember_supersede_unknown_id_fails_clearly(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    main(["init", "dev"])
+
+    exit_code = main(["remember", "orphaned", "--kind", "decision", "--supersedes", "0" * 32])
+    captured = capsys.readouterr()
+
+    assert exit_code == 1
+    assert "error" in captured.err.lower()

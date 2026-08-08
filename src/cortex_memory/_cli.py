@@ -110,6 +110,10 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Profile: {cx.profile}")
             print(f"Cortex ID: {cx.cortex_id}")
             print(f"Memories: {cx._count_memories()}")
+            print(f"Invariants: {len(cx.state(kind='invariant'))}")
+            print(f"Pending: {len(cx.state(kind='pending'))}")
+            print(f"Open questions: {len(cx.state(kind='question'))}")
+            print(f"Environment facts: {len(cx.state(kind='environment'))}")
             return 0
 
         if args.command == "remember":
@@ -170,6 +174,10 @@ def main(argv: list[str] | None = None) -> int:
                 print("RECOMMENDED VALIDATION")
                 for evidence in result.recommended_validation:
                     print(f"- [{evidence.evidence_id}] {evidence.content}")
+            if result.invariants:
+                print("INVARIANTS")
+                for memory in result.invariants:
+                    print(f"- [{memory.memory_id}] {memory.content}")
             return 0
 
         if args.command == "skills":

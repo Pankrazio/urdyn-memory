@@ -57,6 +57,18 @@ class Preflight:
     """Prior experience relevant to a task, grouped by what it means for
     an agent about to start work. A category is empty, not absent, when
     Cortex has nothing relevant on record for it.
+
+    `invariants` (A9.1) is the one exception to "relevant to a task": it
+    is every CURRENT project-wide operational invariant (`Memory` of kind
+    `invariant`), included unconditionally regardless of `task`'s own
+    wording. An invariant is not a piece of experience that may or may
+    not bear on this particular task the way a lesson or root cause
+    does -- it is a constraint the project holds at all times, so it
+    bypasses the lexical/FTS/semantic admission channels entirely and is
+    filtered only by current state (superseded invariants are excluded,
+    exactly like every other kind). Deliberately placed last and
+    defaulted to `()` to keep the pre-A9.1 four-field shape a valid,
+    unbroken prefix of this one.
     """
 
     task: str
@@ -64,10 +76,15 @@ class Preflight:
     root_causes: tuple[Memory, ...]
     verified_lessons: tuple[Memory, ...]
     recommended_validation: tuple[Evidence, ...]
+    invariants: tuple[Memory, ...] = ()
 
     def is_empty(self) -> bool:
         return not (
-            self.known_failures or self.root_causes or self.verified_lessons or self.recommended_validation
+            self.known_failures
+            or self.root_causes
+            or self.verified_lessons
+            or self.recommended_validation
+            or self.invariants
         )
 
 
@@ -82,6 +99,7 @@ def build_preflight(
     memory_fts_candidates: list[tuple[str, str]] = (),
     attempt_semantic_admitted: frozenset[str] = frozenset(),
     memory_semantic_admitted: frozenset[str] = frozenset(),
+    invariant_memories: list[Memory] = (),
 ) -> Preflight:
     """Pure selection logic, operating on data already fetched from
     storage. Takes no dependency on SQLite so it can be tested and
@@ -104,6 +122,12 @@ def build_preflight(
     memory's own `evidence_ids`, so a miss means the persisted provenance
     link is dangling, not that the caller asked about something that
     was never expected to exist.
+
+    `invariant_memories` (A9.1) bypasses relevance matching entirely: the
+    caller is expected to have already filtered it to current, kind
+    `invariant` memories (see `Cortex.preflight`), and every one of them
+    is included in the result regardless of `task`. No lexical/FTS/
+    semantic channel is consulted for this field.
     """
     query_tokens = frozenset(_tokens(task))
     attempt_admitted = _fts_admitted_ids(query_tokens, list(attempt_fts_candidates))
@@ -153,4 +177,5 @@ def build_preflight(
         root_causes=root_causes,
         verified_lessons=verified_lessons,
         recommended_validation=tuple(recommended_validation),
+        invariants=tuple(invariant_memories),
     )

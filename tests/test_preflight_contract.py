@@ -24,13 +24,35 @@ def test_preflight_is_exported_but_matching_internals_are_not():
 def test_preflight_dataclass_shape_has_no_matching_strategy_leakage():
     field_names = {f.name for f in dataclasses.fields(Preflight)}
 
+    # `invariants` (A9.1) is a deliberate, documented addition to this
+    # contract: unlike the other fields, it is populated without any
+    # matching strategy at all (see `Preflight.invariants`'s docstring),
+    # so its presence here does not reintroduce the leakage this test
+    # guards against.
     assert field_names == {
         "task",
         "known_failures",
         "root_causes",
         "verified_lessons",
         "recommended_validation",
+        "invariants",
     }
+
+
+def test_preflight_invariants_field_defaults_to_empty_tuple():
+    """The pre-A9.1 four-argument construction of `Preflight` must remain
+    valid: `invariants` defaults to `()` rather than being required, so
+    any existing caller that built a `Preflight` without naming it does
+    not break."""
+    preflight = Preflight(
+        task="a task",
+        known_failures=(),
+        root_causes=(),
+        verified_lessons=(),
+        recommended_validation=(),
+    )
+
+    assert preflight.invariants == ()
 
 
 def test_cortex_preflight_signature_takes_only_a_task_string(tmp_path):

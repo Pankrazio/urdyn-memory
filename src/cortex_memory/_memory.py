@@ -16,7 +16,52 @@ MEMORY_ID_PATTERN = re.compile(r"[0-9a-f]{32}")
 DEFAULT_KIND = "note"
 KIND_LESSON = "lesson"
 KIND_ROOT_CAUSE = "root_cause"
-VALID_KINDS = frozenset({"note", "decision", KIND_LESSON, KIND_ROOT_CAUSE})
+
+# Operational-memory kinds (A9.1): specializations of Memory, not new
+# canonical primitives. Current operational truth is derived exactly the
+# way any other Memory kind's current truth is derived -- `supersedes` +
+# `state(kind)` -- rather than through a dedicated dataclass or lifecycle
+# enum. See each kind's usage in `_workspace.py`/`_preflight.py` for its
+# exact semantics:
+#   - `pending`: unfinished operational work that is still current. A
+#     completed/cancelled pending is superseded by a memory of whatever
+#     kind fits the resolution (typically `note` or `decision`) -- here
+#     `supersedes` represents "this operational item is closed", not a
+#     belief revision, which is a second, distinct meaning layered onto
+#     the same mechanism. Deliberately no `pending_status`/done/cancelled
+#     enum: closure is "no longer current", exactly like every other kind.
+#   - `question`: an unresolved question that is currently open. Its
+#     `epistemic_state` describes the proposition "this question is
+#     currently open", not any future answer. Resolution is supersession
+#     by a `decision` or `note` carrying the answer -- never `verified`,
+#     which has no meaning for a question.
+#   - `invariant`: a PROJECT-WIDE operational constraint that must not be
+#     violated (e.g. ".cortex/ must remain gitignored"). A9.1 deliberately
+#     restricts this kind to project-wide constraints only -- a
+#     constraint that applies to a narrow subsystem is a FUTURE
+#     POSSIBILITY pending a real `scope` model, not something to force
+#     into this kind now. An invariant can be superseded if the project
+#     deliberately revises the constraint.
+#   - `environment`: a current project environment/toolchain fact (e.g.
+#     "Python 3.12 is required"). Superseded when the fact changes; no
+#     automatic staleness detection.
+KIND_PENDING = "pending"
+KIND_QUESTION = "question"
+KIND_INVARIANT = "invariant"
+KIND_ENVIRONMENT = "environment"
+
+VALID_KINDS = frozenset(
+    {
+        "note",
+        "decision",
+        KIND_LESSON,
+        KIND_ROOT_CAUSE,
+        KIND_PENDING,
+        KIND_QUESTION,
+        KIND_INVARIANT,
+        KIND_ENVIRONMENT,
+    }
+)
 
 EPISTEMIC_USER_ASSERTED = "user_asserted"
 EPISTEMIC_INFERRED = "inferred"

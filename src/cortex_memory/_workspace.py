@@ -31,6 +31,7 @@ from ._memory import (
     DEFAULT_KIND,
     EPISTEMIC_USER_ASSERTED,
     EPISTEMIC_VERIFIED,
+    KIND_INVARIANT,
     KIND_LESSON,
     KIND_ROOT_CAUSE,
     VALID_EPISTEMIC_STATES,
@@ -405,7 +406,12 @@ class Cortex:
             raise ValueError("Preflight task must not be empty or whitespace-only")
 
         empty = Preflight(
-            task=task, known_failures=(), root_causes=(), verified_lessons=(), recommended_validation=()
+            task=task,
+            known_failures=(),
+            root_causes=(),
+            verified_lessons=(),
+            recommended_validation=(),
+            invariants=(),
         )
         store = MemoryStore.open_if_exists(self._db_path)
         if store is None:
@@ -415,6 +421,10 @@ class Cortex:
             root_cause_memories = [m for m in store.timeline(KIND_ROOT_CAUSE) if m.memory_id in current_ids]
             lesson_memories = [m for m in store.timeline(KIND_LESSON) if m.memory_id in current_ids]
             verified_lesson_memories = [m for m in lesson_memories if m.epistemic_state == EPISTEMIC_VERIFIED]
+            # [A9.1] Every CURRENT project-wide invariant, unfiltered by
+            # task relevance -- see `Preflight.invariants`'s docstring for
+            # why this bypasses the lexical/FTS/semantic channels below.
+            invariant_memories = [m for m in store.timeline(KIND_INVARIANT) if m.memory_id in current_ids]
             attempts = store.list_attempts()
 
             def _must_get_evidence(evidence_id: str) -> Evidence:
@@ -467,6 +477,7 @@ class Cortex:
                 memory_fts_candidates=memory_fts_candidates,
                 attempt_semantic_admitted=attempt_semantic_admitted,
                 memory_semantic_admitted=memory_semantic_admitted,
+                invariant_memories=invariant_memories,
             )
 
     def promote(

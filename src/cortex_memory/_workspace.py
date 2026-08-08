@@ -2,16 +2,18 @@
 
 from __future__ import annotations
 
+import dataclasses
 import datetime as dt
 import uuid
 from collections.abc import Sequence
 from pathlib import Path
 
-from ._attempt import VALID_OUTCOMES, Attempt
+from ._attempt import OUTCOME_FAILED, VALID_OUTCOMES, Attempt
 from ._errors import (
     CortexAlreadyInitializedError,
     CortexManifestError,
     CortexNotFoundError,
+    CortexSemanticUnavailableError,
     CortexStorageError,
 )
 from ._event import (
@@ -36,11 +38,46 @@ from ._memory import (
     Memory,
 )
 from ._preflight import Preflight, build_preflight
+from ._relevance import attempt_search_text as _attempt_search_text
+from ._relevance import is_relevant as _is_relevant
+from ._relevance import memory_search_text as _memory_search_text
+from ._relevance import skill_search_text as _skill_search_text
+from ._relevance import tokens as _tokens
+from ._retrieval import ENTITY_ATTEMPT, ENTITY_MEMORY, ENTITY_SKILL
+from ._semantic_store import SemanticIndexStore, semantic_db_path_for
 from ._skill import Skill
 from ._store import MemoryStore, db_path_for
 
 CORTEX_DIRNAME = ".cortex"
 DEFAULT_RECALL_LIMIT = 20
+
+
+def _load_semantic_module():
+    """Lazily import the optional semantic channel (`model2vec`/`numpy`).
+    Returns None -- never raises -- if the `cortex-memory[semantic]`
+    extra is not installed, so every caller in this module degrades to
+    lexical/FTS-only exactly as if A7.4 did not exist. This is the ONLY
+    place outside `_semantic.py` itself that imports it."""
+    try:
+        from . import _semantic
+    except ImportError:
+        return None
+    return _semantic
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class SemanticSetupResult:
+    """Report returned by `Cortex.semantic_setup()`. Not a `Memory`, not
+    canonical data -- purely a summary of what the (re)build just did."""
+
+    provider: str
+    model_id: str
+    model_revision: str | None
+    dimensions: int
+    normalization: str
+    attempt_count: int
+    memory_count: int
+    skill_count: int
 
 
 class Cortex:
@@ -389,12 +426,47 @@ class Cortex:
                     )
                 return evidence
 
+            query_tokens = frozenset(_tokens(task))
+            attempt_fts_candidates = store.search_candidates(query_tokens, ENTITY_ATTEMPT)
+            memory_fts_candidates = store.search_candidates(query_tokens, ENTITY_MEMORY)
+
+            # [A7.7] Consumer-specific eligibility, computed here (this is
+            # exactly the same current+verified filtering already applied
+            # two lines above to build root_cause_memories/
+            # verified_lesson_memories -- reused, not duplicated) and
+            # passed down as a plain id set: the semantic ranking pool for
+            # MEMORY is restricted to these ids BEFORE ranking, so an
+            # ineligible memory (not current, or an unverified lesson) can
+            # no longer win the pool's single admission slot and starve a
+            # genuinely usable candidate of consideration. Attempts have no
+            # eligibility concept in preflight() (a succeeded attempt still
+            # legitimately contributes recommended_validation evidence), so
+            # that pool is intentionally left unrestricted.
+            memory_eligible_ids = frozenset(m.memory_id for m in (*root_cause_memories, *verified_lesson_memories))
+            attempt_semantic_admitted = self._semantic_widen(task, ENTITY_ATTEMPT)
+            memory_semantic_admitted = self._preflight_memory_semantic_widen(
+                task,
+                root_cause_memories=root_cause_memories,
+                verified_lesson_memories=verified_lesson_memories,
+                memory_eligible_ids=memory_eligible_ids,
+            ) or self._preflight_corroboration_admitted(
+                task,
+                root_cause_memories=root_cause_memories,
+                verified_lesson_memories=verified_lesson_memories,
+                attempts=attempts,
+                memory_eligible_ids=memory_eligible_ids,
+            )
+
             return build_preflight(
                 task,
                 attempts=attempts,
                 root_cause_memories=root_cause_memories,
                 verified_lesson_memories=verified_lesson_memories,
                 evidence_lookup=_must_get_evidence,
+                attempt_fts_candidates=attempt_fts_candidates,
+                memory_fts_candidates=memory_fts_candidates,
+                attempt_semantic_admitted=attempt_semantic_admitted,
+                memory_semantic_admitted=memory_semantic_admitted,
             )
 
     def promote(
@@ -525,8 +597,32 @@ class Cortex:
                     )
                 return evidence
 
+            query_tokens = frozenset(_tokens(action))
+            skill_fts_candidates = store.search_candidates(query_tokens, ENTITY_SKILL)
+            attempt_fts_candidates = store.search_candidates(query_tokens, ENTITY_ATTEMPT)
+
+            # [A7.7] Consumer-specific eligibility for guard()'s attempt
+            # pool: guard()'s known_failures can only ever be built from a
+            # FAILED attempt (see _guard.py's own generator condition,
+            # reused here rather than re-decided) -- a succeeded attempt
+            # can never appear in guard()'s output no matter how relevant,
+            # so it must not be allowed to occupy the semantic pool's
+            # single admission slot either. Skills have no eligibility
+            # concept in guard() (verification_state is reported, never
+            # gated on), so that pool is intentionally left unrestricted.
+            failed_attempt_ids = frozenset(a.attempt_id for a in attempts if a.outcome == OUTCOME_FAILED)
+            skill_semantic_admitted = self._semantic_widen(action, ENTITY_SKILL)
+            attempt_semantic_admitted = self._semantic_widen(action, ENTITY_ATTEMPT, eligible_ids=failed_attempt_ids)
+
             return build_guard_result(
-                action, skills=skills, attempts=attempts, evidence_lookup=_must_get_evidence
+                action,
+                skills=skills,
+                attempts=attempts,
+                evidence_lookup=_must_get_evidence,
+                skill_fts_candidates=skill_fts_candidates,
+                attempt_fts_candidates=attempt_fts_candidates,
+                skill_semantic_admitted=skill_semantic_admitted,
+                attempt_semantic_admitted=attempt_semantic_admitted,
             )
 
     def _count_memories(self) -> int:
@@ -545,3 +641,363 @@ class Cortex:
     @property
     def _db_path(self) -> Path:
         return db_path_for(self._path / CORTEX_DIRNAME)
+
+    @property
+    def _semantic_db_path(self) -> Path:
+        return semantic_db_path_for(self._path / CORTEX_DIRNAME)
+
+    # -- semantic retrieval (A7.4, optional) -------------------------------
+
+    def semantic_setup(self) -> SemanticSetupResult:
+        """(Re)build the derived semantic index for this workspace from
+        canonical data: attempts (task+approach), all memories (content),
+        and skills (name+purpose+conditions) -- the same three
+        representations `_relevance.py` already derives for FTS, no new
+        canonical field. Always safe to call again: fully rebuilds from
+        scratch every time (idempotent), which is also how a stale or
+        model-mismatched index gets fixed.
+
+        Raises `CortexSemanticUnavailableError` if the `[semantic]` extra
+        is not installed -- this is the one semantic entry point allowed
+        to fail loudly and to touch the network (to download the model if
+        it is not already cached); `preflight()`/`guard()` never do
+        either.
+        """
+        semantic = _load_semantic_module()
+        if semantic is None:
+            raise CortexSemanticUnavailableError(
+                "Semantic retrieval requires the 'semantic' optional dependency. "
+                "Install it with: pip install 'cortex-memory[semantic]'"
+            )
+
+        model = semantic.load_model_for_setup()
+        dimensions = semantic.model_dimensions(model)
+        revision = semantic.resolve_local_revision()
+        created_at = dt.datetime.now(dt.timezone.utc).isoformat()
+
+        store = MemoryStore.open_if_exists(self._db_path)
+        if store is None:
+            memories, attempts, skills = [], [], []
+        else:
+            with store:
+                memories = store.timeline(None)
+                attempts = store.list_attempts()
+                skills = store.list_skills()
+
+        pools = (
+            (ENTITY_ATTEMPT, [(a.attempt_id, _attempt_search_text(a.task, a.approach)) for a in attempts]),
+            (ENTITY_MEMORY, [(m.memory_id, _memory_search_text(m.content)) for m in memories]),
+            (ENTITY_SKILL, [(s.skill_id, _skill_search_text(s.name, s.purpose, s.conditions)) for s in skills]),
+        )
+
+        with SemanticIndexStore.create_or_open(self._semantic_db_path) as semantic_store:
+            semantic_store.begin_rebuild(
+                provider=semantic.SEMANTIC_PROVIDER,
+                model_id=semantic.SEMANTIC_MODEL_ID,
+                model_revision=revision,
+                dimensions=dimensions,
+                normalization=semantic.SEMANTIC_NORMALIZATION,
+                created_at=created_at,
+            )
+            for entity_type, entries in pools:
+                if not entries:
+                    continue
+                ids = [entity_id for entity_id, _ in entries]
+                texts = [text for _, text in entries]
+                vectors = semantic.embed(model, texts)
+                rows = [(entity_id, semantic.vector_to_blob(vec)) for entity_id, vec in zip(ids, vectors)]
+                semantic_store.add_vectors(entity_type, rows)
+            semantic_store.finish_rebuild()
+
+        return SemanticSetupResult(
+            provider=semantic.SEMANTIC_PROVIDER,
+            model_id=semantic.SEMANTIC_MODEL_ID,
+            model_revision=revision,
+            dimensions=dimensions,
+            normalization=semantic.SEMANTIC_NORMALIZATION,
+            attempt_count=len(attempts),
+            memory_count=len(memories),
+            skill_count=len(skills),
+        )
+
+    def _semantic_context(self):
+        """Shared degraded-condition handling for every semantic entry
+        point below: returns `None` for every condition that means "the
+        semantic channel cannot be used right now" (extra not installed,
+        index never built, mid-rebuild, model-config mismatch) -- never
+        raises. Returns `(semantic_module, model, meta)` otherwise. Model
+        loading is cached process-wide inside `_semantic.py`, so calling
+        this more than once per `preflight()`/`guard()` call is cheap.
+        """
+        semantic = _load_semantic_module()
+        if semantic is None:
+            return None
+        semantic_store = SemanticIndexStore.open_if_exists(self._semantic_db_path)
+        if semantic_store is None:
+            return None
+        with semantic_store:
+            meta = semantic_store.meta()
+            if meta is None or meta.status != "ready":
+                return None
+            if not meta.matches(
+                provider=semantic.SEMANTIC_PROVIDER,
+                model_id=semantic.SEMANTIC_MODEL_ID,
+                normalization=semantic.SEMANTIC_NORMALIZATION,
+            ):
+                return None
+        model = semantic.load_model_for_retrieval()
+        return semantic, model, meta
+
+    def _semantic_vectors(self, entity_type: str) -> list[tuple[str, bytes]]:
+        semantic_store = SemanticIndexStore.open_if_exists(self._semantic_db_path)
+        if semantic_store is None:
+            return []
+        with semantic_store:
+            return semantic_store.all_vectors(entity_type)
+
+    def _semantic_widen(
+        self, query_text: str, entity_type: str, *, eligible_ids: frozenset[str] | None = None
+    ) -> frozenset[str]:
+        """Best-effort semantic candidate widening for one entity-type
+        pool. Returns an empty set -- never raises -- for every degraded
+        condition this is expected to handle gracefully: extra not
+        installed, index never built, index mid-rebuild
+        (`status='building'`), index built for a different model
+        configuration, model files missing from the local cache (e.g.
+        after copying a workspace without its Hugging Face cache), or a
+        corrupted stored vector. `preflight()`/`guard()` must never crash
+        or hang because of this method.
+
+        `eligible_ids`, if given, is a plain id filter applied BEFORE
+        ranking (see `_semantic.py`'s [A7.7] module docstring note): this
+        method still has no idea what "verified" or "current" mean, it
+        only narrows the candidate pool to ids the caller already decided
+        are usable. `None` means "no restriction" (attempts in
+        preflight(), skills in guard() -- see call sites).
+        """
+        try:
+            context = self._semantic_context()
+            if context is None:
+                return frozenset()
+            semantic, model, meta = context
+            stored_vectors = self._semantic_vectors(entity_type)
+            if not stored_vectors:
+                return frozenset()
+            return semantic.semantic_admitted_ids(
+                query_text,
+                entity_type,
+                model=model,
+                stored_vectors=stored_vectors,
+                dimensions=meta.dimensions,
+                eligible_ids=eligible_ids,
+            )
+        except Exception:
+            return frozenset()
+
+    def _preflight_memory_semantic_widen(
+        self,
+        task: str,
+        *,
+        root_cause_memories: list[Memory],
+        verified_lesson_memories: list[Memory],
+        memory_eligible_ids: frozenset[str],
+    ) -> frozenset[str]:
+        """[A7.8] Semantic admission for preflight()'s MEMORY pool,
+        aware of shared provenance: a root cause and the verified
+        lesson drawn from it are the SAME underlying experience
+        described from two angles, not two candidates competing for
+        the pool's single admission slot.
+
+        Diagnosed in A7.8 from a real Human Acceptance miss: plain
+        `_semantic_widen`'s single-winner-plus-margin admission
+        (`_semantic.semantic_admitted_ids`) treats a root-cause/lesson
+        pair as competitors. A query relevant to the underlying
+        incident can score both comfortably above the pool's absolute
+        floor while their near-identical similarity to EACH OTHER
+        (rather than to any genuine competitor) collapses the margin
+        between them, rejecting a target that would otherwise be
+        admitted for a reason that has nothing to do with its
+        relevance. `build_preflight` already trusts shared Evidence as
+        proof of "same experience" for attempt-to-memory rescue (see
+        `_preflight.py`'s module docstring); this extends the identical
+        trust to memory-to-memory, since nothing about that reasoning
+        is specific to attempts.
+
+        Candidates are clustered by shared `evidence_ids`, restricted
+        to the already-eligible `root_cause_memories`/
+        `verified_lesson_memories` the caller computed (this method has
+        no independent idea of what "eligible" means, exactly like
+        `_semantic_widen`). The cluster containing the top-ranked
+        candidate is treated as a single admission unit: its
+        representative score is the top candidate's own score (nothing
+        in the pool can outscore the global top by construction), and
+        it competes on margin against the best-scoring candidate
+        OUTSIDE its own cluster -- never against its own sibling. If
+        the pool has no other cluster to compete against (every
+        eligible candidate shares the same experience), margin is
+        skipped entirely, generalizing the existing
+        single-candidate-pool exemption
+        (`_semantic.semantic_admitted_id`) to a single-CLUSTER pool.
+        When the winning cluster is admitted, EVERY eligible member of
+        it is admitted, not just the top-scoring one -- a rescued root
+        cause without its own verified lesson (or vice versa) is
+        exactly the partial, structurally-arbitrary result this method
+        exists to avoid.
+
+        Falls back to empty -- never raises -- on any degraded
+        condition, exactly like `_semantic_widen`.
+        """
+        try:
+            context = self._semantic_context()
+            if context is None:
+                return frozenset()
+            semantic, model, meta = context
+            memory_vectors = self._semantic_vectors(ENTITY_MEMORY)
+            if not memory_vectors:
+                return frozenset()
+
+            ranked = semantic.semantic_rank_eligible(
+                task,
+                model=model,
+                stored_vectors=memory_vectors,
+                dimensions=meta.dimensions,
+                eligible_ids=memory_eligible_ids,
+            )
+            if not ranked:
+                return frozenset()
+
+            policy = semantic.SEMANTIC_POLICY[ENTITY_MEMORY]
+            top_id, top_score = ranked[0]
+            if top_score < policy.absolute_floor:
+                return frozenset()
+
+            evidence_by_id = {
+                m.memory_id: frozenset(m.evidence_ids)
+                for m in (*root_cause_memories, *verified_lesson_memories)
+            }
+
+            def _cluster(start_id: str, ranked_ids: list[str]) -> frozenset[str]:
+                cluster = {start_id}
+                changed = True
+                while changed:
+                    changed = False
+                    cluster_evidence: frozenset[str] = frozenset().union(
+                        *(evidence_by_id.get(member, frozenset()) for member in cluster)
+                    )
+                    for candidate_id in ranked_ids:
+                        if candidate_id in cluster:
+                            continue
+                        if evidence_by_id.get(candidate_id, frozenset()) & cluster_evidence:
+                            cluster.add(candidate_id)
+                            changed = True
+                return frozenset(cluster)
+
+            ranked_ids = [entity_id for entity_id, _ in ranked]
+            top_cluster = _cluster(top_id, ranked_ids)
+
+            competitor_score = next(
+                (score for entity_id, score in ranked if entity_id not in top_cluster), None
+            )
+            if competitor_score is not None:
+                margin = top_score - competitor_score
+                if margin < policy.margin_floor:
+                    return frozenset()
+
+            return top_cluster
+        except Exception:
+            return frozenset()
+
+    def _preflight_corroboration_admitted(
+        self,
+        task: str,
+        *,
+        root_cause_memories: list[Memory],
+        verified_lesson_memories: list[Memory],
+        attempts: list[Attempt],
+        memory_eligible_ids: frozenset[str],
+    ) -> frozenset[str]:
+        """[A7.7] Rigorous query-conditioned structural corroboration --
+        `preflight()` ONLY (see `_guard.py`/A7.7 report for why `guard()`
+        deliberately does not get this: A7.6 measured that the same
+        mechanism, applied to the skill/attempt pools, could not be told
+        apart from the payment-guard-clause false positive on any
+        available signal).
+
+        Fires only as a FALLBACK when normal semantic admission
+        (`_semantic_widen`) found nothing. The top-ranked ELIGIBLE memory
+        candidate is admitted anyway if -- and only if -- a REAL,
+        canonically-linked Attempt (sharing at least one Evidence id with
+        that memory; the only relationship `_relevance`/`_store` already
+        expose) is INDEPENDENTLY relevant to the same task on its own
+        terms: lexically relevant on its own text, OR itself fully
+        admitted by the normal semantic policy within the attempt pool.
+        "The related entity merely exists" or "scores above some floor"
+        is deliberately NOT enough -- A7.6 found and rejected that
+        weaker version because it let the payment-guard-clause false
+        positive back in (a coincidentally-adjacent related memory
+        cleared a low floor without being genuinely, independently
+        relevant). Also refuses to corroborate a candidate whose own
+        score is not even within a wide sanity band of its pool's floor
+        -- this is not a rescue path for arbitrarily weak matches.
+        """
+        try:
+            context = self._semantic_context()
+            if context is None:
+                return frozenset()
+            semantic, model, meta = context
+            memory_vectors = self._semantic_vectors(ENTITY_MEMORY)
+            if not memory_vectors:
+                return frozenset()
+
+            ranked = semantic.semantic_rank_eligible(
+                task,
+                model=model,
+                stored_vectors=memory_vectors,
+                dimensions=meta.dimensions,
+                eligible_ids=memory_eligible_ids,
+            )
+            if not ranked:
+                return frozenset()
+            top_id, top_score = ranked[0]
+            policy = semantic.SEMANTIC_POLICY[ENTITY_MEMORY]
+            if top_score < policy.absolute_floor - 0.20:
+                return frozenset()
+
+            candidate = next(
+                (m for m in (*root_cause_memories, *verified_lesson_memories) if m.memory_id == top_id), None
+            )
+            if candidate is None or not candidate.evidence_ids:
+                return frozenset()
+
+            evidence_ids = frozenset(candidate.evidence_ids)
+            related_attempt_ids = frozenset(
+                a.attempt_id for a in attempts if not evidence_ids.isdisjoint(a.evidence_ids)
+            )
+            if not related_attempt_ids:
+                return frozenset()
+
+            query_tokens = frozenset(_tokens(task))
+            lexically_independent = any(
+                _is_relevant(query_tokens, _attempt_search_text(a.task, a.approach))
+                for a in attempts
+                if a.attempt_id in related_attempt_ids
+            )
+            if lexically_independent:
+                return frozenset({top_id})
+
+            attempt_vectors = self._semantic_vectors(ENTITY_ATTEMPT)
+            if not attempt_vectors:
+                return frozenset()
+            semantically_independent = semantic.semantic_admitted_ids(
+                task,
+                ENTITY_ATTEMPT,
+                model=model,
+                stored_vectors=attempt_vectors,
+                dimensions=meta.dimensions,
+                eligible_ids=related_attempt_ids,
+            )
+            if semantically_independent:
+                return frozenset({top_id})
+            return frozenset()
+        except Exception:
+            return frozenset()

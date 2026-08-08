@@ -1,15 +1,19 @@
 """Preflight: selecting prior experience relevant to an upcoming task.
 
-Deterministic and lexical: given experience Cortex already has on record
-(attempts, verified lessons, root causes), select the subset worth
-surfacing for a task. This is not a search engine and not the Context
-Compiler: no ranking scores, no semantic similarity, no summarization, no
-token budgeting.
+Deterministic, not a search engine and not the Context Compiler: no
+score is ever returned to a caller, no semantic similarity, no
+summarization, no token budgeting. Two independent, deterministic
+retrieval channels feed the same admission decision (see
+`_retrieval.py` for why): the structured lexical majority rule
+(`_relevance.is_relevant`), and FTS5/BM25 candidate widening for
+queries a natural phrasing dilutes past that rule's threshold. Either
+channel admitting a candidate is enough; a candidate need not clear
+both.
 
 Relevance is decided two ways:
 
 1. Direct vocabulary overlap with the task (an attempt's own task/approach
-   text, a lesson's or root cause's own content).
+   text, a lesson's or root cause's own content), through either channel.
 2. Shared provenance: a root cause or lesson that cites the same Evidence
    as an attempt already judged relevant is included even if its own
    wording shares no vocabulary with the task at all. A root cause like
@@ -17,6 +21,18 @@ Relevance is decided two ways:
    common with "authentication refresh logic" — it is relevant because it
    explains the *same observed failure*, which Evidence is what actually
    connects it to the matching attempt.
+
+A third, OPTIONAL channel (A7.4) can widen candidate recall further: a
+calibrated semantic-similarity admission (`_semantic.py`, brute-force
+cosine over static embeddings), passed in here as
+`attempt_semantic_admitted`/`memory_semantic_admitted` -- pre-computed
+sets of at most one id each, already filtered through the same
+abstention policy that decides "is this candidate semantically relevant
+enough" (see `_semantic.py`'s module docstring). This module never
+computes or sees a similarity score itself: it only checks id membership,
+exactly like the FTS channel above. Defaults to empty, so a workspace
+without the `[semantic]` extra installed (or without `cortex semantic
+setup` having been run) behaves exactly as it did before A7.4.
 """
 
 from __future__ import annotations
@@ -27,8 +43,11 @@ from collections.abc import Callable
 from ._attempt import OUTCOME_FAILED, OUTCOME_SUCCEEDED, Attempt
 from ._evidence import RECOMMENDED_VALIDATION_EVIDENCE_KINDS, Evidence
 from ._memory import Memory
+from ._relevance import attempt_search_text as _attempt_search_text
 from ._relevance import is_relevant as _is_relevant
+from ._relevance import memory_search_text as _memory_search_text
 from ._relevance import tokens as _tokens
+from ._retrieval import fts_admitted_ids as _fts_admitted_ids
 
 _VALIDATION_EVIDENCE_KINDS = RECOMMENDED_VALIDATION_EVIDENCE_KINDS
 
@@ -59,10 +78,26 @@ def build_preflight(
     root_cause_memories: list[Memory],
     verified_lesson_memories: list[Memory],
     evidence_lookup: Callable[[str], Evidence],
+    attempt_fts_candidates: list[tuple[str, str]] = (),
+    memory_fts_candidates: list[tuple[str, str]] = (),
+    attempt_semantic_admitted: frozenset[str] = frozenset(),
+    memory_semantic_admitted: frozenset[str] = frozenset(),
 ) -> Preflight:
     """Pure selection logic, operating on data already fetched from
     storage. Takes no dependency on SQLite so it can be tested and
     reasoned about independently of the storage boundary.
+
+    `attempt_fts_candidates`/`memory_fts_candidates` are `(entity_id,
+    text)` pairs already ranked best-first by BM25 for this `task` (see
+    `MemoryStore.search_candidates`), or `()` if FTS5 is unavailable --
+    channel B then contributes nothing and matching falls back to the
+    lexical channel alone, exactly as before A7. Only ids also present
+    in `attempts`/`root_cause_memories`/`verified_lesson_memories` can
+    ever be admitted through them: those lists are already filtered to
+    current state and, for lessons, to `verified` -- a candidate the FTS
+    channel ranks highly but that was excluded from those lists (a
+    superseded memory, an unverified lesson) is never even considered,
+    the same way a lexical match on such an item already isn't.
 
     `evidence_lookup` is expected to raise if given an id that does not
     resolve: every id passed to it here came from an attempt's or
@@ -71,9 +106,15 @@ def build_preflight(
     was never expected to exist.
     """
     query_tokens = frozenset(_tokens(task))
+    attempt_admitted = _fts_admitted_ids(query_tokens, list(attempt_fts_candidates))
+    memory_admitted = _fts_admitted_ids(query_tokens, list(memory_fts_candidates))
 
     def _attempt_matches(attempt: Attempt) -> bool:
-        return _is_relevant(query_tokens, f"{attempt.task} {attempt.approach}")
+        if _is_relevant(query_tokens, _attempt_search_text(attempt.task, attempt.approach)):
+            return True
+        if attempt.attempt_id in attempt_admitted:
+            return True
+        return attempt.attempt_id in attempt_semantic_admitted
 
     known_failures = tuple(a for a in attempts if a.outcome == OUTCOME_FAILED and _attempt_matches(a))
     relevant_successes = tuple(a for a in attempts if a.outcome == OUTCOME_SUCCEEDED and _attempt_matches(a))
@@ -83,7 +124,11 @@ def build_preflight(
     )
 
     def _memory_matches(memory: Memory) -> bool:
-        if _is_relevant(query_tokens, memory.content):
+        if _is_relevant(query_tokens, _memory_search_text(memory.content)):
+            return True
+        if memory.memory_id in memory_admitted:
+            return True
+        if memory.memory_id in memory_semantic_admitted:
             return True
         return not relevant_attempt_evidence_ids.isdisjoint(memory.evidence_ids)
 

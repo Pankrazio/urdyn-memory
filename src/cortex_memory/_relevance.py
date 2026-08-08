@@ -46,3 +46,27 @@ def is_relevant(query_tokens: frozenset[str], text: str) -> bool:
     shared = query_tokens & tokens(text)
     threshold = len(query_tokens) // 2 + 1
     return len(shared) >= threshold
+
+
+def attempt_search_text(task: str, approach: str) -> str:
+    """The derived text an Attempt is matched/indexed on. Not stored
+    anywhere as its own field: always rebuilt from the canonical `task`
+    and `approach` fields it is called with."""
+    return f"{task} {approach}"
+
+
+def memory_search_text(content: str) -> str:
+    """The derived text a Memory is matched/indexed on. Trivial today
+    (Memory has one text field), but named and called consistently with
+    `attempt_search_text`/`skill_search_text` so the three canonical
+    kinds share one place that decides "what text represents this
+    entity for retrieval", instead of each caller re-deciding it."""
+    return content
+
+
+def skill_search_text(name: str, purpose: str, conditions: tuple[str, ...]) -> str:
+    """The derived text a Skill is matched/indexed on: what it is
+    called and when/why it applies. Deliberately excludes `steps` — a
+    Skill should be found because it applies to the task, not because
+    one of its ordered steps happens to contain a matching word."""
+    return f"{name} {purpose} {' '.join(conditions)}"

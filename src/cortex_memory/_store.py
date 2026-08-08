@@ -17,6 +17,22 @@ Schema history:
 
 A v1, v2, or v3 database opened by this module is migrated forward to v4
 in place, one step at a time, without touching existing rows.
+
+Search index (derived, not versioned):
+  A FTS5 virtual table `search_index` provides candidate widening for
+  `preflight()`/`guard()` (see `_retrieval.py`). It is deliberately NOT
+  part of `STORE_SCHEMA_VERSION`: it holds no canonical truth, only a
+  rebuildable projection of `memories.content`, `attempts.task`/
+  `approach`, and `skills.name`/`purpose`/conditions, keyed by their own
+  canonical ids. Folding it into the versioned migration chain would
+  conflate "the data Cortex holds changed" with "a derived search aid
+  was (re)built" -- two different kinds of change with different
+  failure semantics (a missing/stale index degrades search; a missing
+  canonical table is corruption). Instead, `_ensure_schema` creates and
+  backfills it lazily, once, outside the version chain, safe to skip
+  entirely if this SQLite build has no FTS5 support: `preflight()`/
+  `guard()` still work in that case, using only the lexical channel
+  that predates A7.
 """
 
 from __future__ import annotations
@@ -39,6 +55,8 @@ from ._memory import (
     VALID_KINDS,
     Memory,
 )
+from ._relevance import attempt_search_text, memory_search_text, skill_search_text
+from ._retrieval import ENTITY_ATTEMPT, ENTITY_MEMORY, ENTITY_SKILL
 from ._skill import SKILL_CANDIDATE, SKILL_ID_PATTERN, SKILL_VERIFIED, VALID_SKILL_VERIFICATION_STATES, Skill
 
 _SCHEMA_VERSION_V1 = 1
@@ -51,6 +69,19 @@ DB_FILENAME = "memory.db"
 _V2_TABLES = ("memories", "evidence", "memory_evidence", "events")
 _V3_TABLES = _V2_TABLES + ("attempts", "attempt_evidence")
 _V4_TABLES = _V3_TABLES + ("skills", "skill_steps", "skill_conditions", "skill_evidence")
+
+# Derived search index: deliberately outside `_V4_TABLES`/`STORE_SCHEMA_VERSION`
+# (see module docstring). `SEARCH_INDEX_TABLE` is exported for tests that
+# need to simulate index loss/corruption against the real table name.
+SEARCH_INDEX_TABLE = "search_index"
+
+_CREATE_SEARCH_INDEX_SQL = f"""
+    CREATE VIRTUAL TABLE {SEARCH_INDEX_TABLE} USING fts5(
+        entity_type UNINDEXED,
+        entity_id UNINDEXED,
+        text
+    )
+"""
 
 _CREATE_MEMORIES_V2_SQL = """
     CREATE TABLE memories (
@@ -159,6 +190,19 @@ class MemoryStore:
 
     def __init__(self, connection: sqlite3.Connection) -> None:
         self._connection = connection
+        # Computed fresh on every open (not cached across process
+        # lifetimes): reflects whatever `_ensure_schema` just did, which
+        # itself degrades gracefully if this SQLite build has no FTS5.
+        self._fts_enabled = _table_exists(connection, SEARCH_INDEX_TABLE)
+
+    @property
+    def fts_enabled(self) -> bool:
+        """Whether the derived FTS5 search index is available in this
+        store. False on a SQLite build without FTS5 support -- an
+        expected, handled condition, not an error. `preflight()`/
+        `guard()` remain fully functional either way, using only the
+        lexical channel when this is False."""
+        return self._fts_enabled
 
     @classmethod
     def create_or_open(cls, db_path: Path) -> "MemoryStore":
@@ -230,6 +274,7 @@ class MemoryStore:
                         memory.supersedes,
                     ),
                 )
+                self._index_entity(ENTITY_MEMORY, memory.memory_id, memory_search_text(memory.content))
                 for position, evidence_id in enumerate(memory.evidence_ids):
                     self._connection.execute(
                         "INSERT INTO memory_evidence (memory_id, evidence_id, position) "
@@ -370,6 +415,9 @@ class MemoryStore:
                         attempt.recorded_at.isoformat(),
                     ),
                 )
+                self._index_entity(
+                    ENTITY_ATTEMPT, attempt.attempt_id, attempt_search_text(attempt.task, attempt.approach)
+                )
                 for position, evidence_id in enumerate(attempt.evidence_ids):
                     self._connection.execute(
                         "INSERT INTO attempt_evidence (attempt_id, evidence_id, position) "
@@ -481,6 +529,9 @@ class MemoryStore:
                         skill.recorded_at.isoformat(),
                     ),
                 )
+                self._index_entity(
+                    ENTITY_SKILL, skill.skill_id, skill_search_text(skill.name, skill.purpose, skill.conditions)
+                )
                 for position, step in enumerate(skill.steps):
                     self._connection.execute(
                         "INSERT INTO skill_steps (skill_id, step, position) VALUES (?, ?, ?)",
@@ -580,6 +631,68 @@ class MemoryStore:
         except sqlite3.DatabaseError as exc:
             raise CortexStorageError(f"Failed to read Cortex skill store: {exc}") from exc
         return tuple(row[0] for row in rows)
+
+    # -- search index (derived) --------------------------------------------
+
+    def _index_entity(self, entity_type: str, entity_id: str, text: str) -> None:
+        """Append one row to the derived search index, in the same
+        transaction as the canonical write it accompanies. A no-op when
+        this store has no FTS5 support: the canonical write is still
+        the source of truth, this is purely an optional search aid.
+        Must only be called from inside an already-open `with
+        self._connection:` block, exactly like the canonical inserts it
+        sits next to -- if that write rolls back, this row rolls back
+        with it, so the index can never drift ahead of canonical data.
+        """
+        if not self._fts_enabled:
+            return
+        self._connection.execute(
+            f"INSERT INTO {SEARCH_INDEX_TABLE} (entity_type, entity_id, text) VALUES (?, ?, ?)",
+            (entity_type, entity_id, text),
+        )
+
+    def search_candidates(self, query_tokens: frozenset[str], entity_type: str) -> list[tuple[str, str]]:
+        """Return `(entity_id, text)` candidates of `entity_type` ranked
+        best-first by BM25, ties broken by `entity_id` for deterministic
+        ordering. Returns `[]` without querying at all if the FTS index
+        is unavailable (`fts_enabled` is False) or `query_tokens` is
+        empty -- both expected conditions, not failures. Every token is
+        double-quoted in the generated MATCH expression so it is always
+        treated as a literal term, never as FTS5 query syntax (an
+        operator keyword, a column filter, punctuation): safe because
+        `query_tokens` only ever contains `_relevance.tokens()` output,
+        which cannot itself contain a quote character.
+        """
+        if not self._fts_enabled or not query_tokens:
+            return []
+        match_query = " OR ".join(f'"{token}"' for token in sorted(query_tokens))
+        try:
+            rows = self._connection.execute(
+                f"SELECT entity_id, text FROM {SEARCH_INDEX_TABLE} "
+                f"WHERE entity_type = ? AND {SEARCH_INDEX_TABLE} MATCH ? "
+                f"ORDER BY bm25({SEARCH_INDEX_TABLE}) ASC, entity_id ASC",
+                (entity_type, match_query),
+            ).fetchall()
+        except sqlite3.DatabaseError as exc:
+            raise CortexStorageError(f"Failed to search Cortex search index: {exc}") from exc
+        return [(row[0], row[1]) for row in rows]
+
+    def rebuild_search_index(self) -> None:
+        """Fully rebuild the derived search index from canonical data,
+        discarding whatever it currently holds first. Internal
+        maintenance primitive, not a public Cortex command: the index is
+        disposable and derived, so this is always safe to call, and is
+        exactly what recovers a store opened once without FTS5 support
+        (index missing) that is later opened by a build that has it.
+        No-op if this store has no FTS5 support at all.
+        """
+        if not self._fts_enabled:
+            return
+        try:
+            with self._connection:
+                _rebuild_search_index(self._connection)
+        except sqlite3.DatabaseError as exc:
+            raise CortexStorageError(f"Failed to rebuild Cortex search index: {exc}") from exc
 
     def _memory_evidence_ids(self, memory_id: str) -> tuple[str, ...]:
         try:
@@ -784,7 +897,7 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
         with connection:
             _create_v4_schema(connection)
             connection.execute(f"PRAGMA user_version = {STORE_SCHEMA_VERSION}")
-        return
+        version = STORE_SCHEMA_VERSION
 
     if version == _SCHEMA_VERSION_V1:
         _migrate_v1_to_v2(connection)
@@ -809,6 +922,96 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
         raise CortexStorageError(
             f"Cortex memory store is stamped with schema version {version} but is "
             f"missing table(s) {missing!r}; refusing to silently recreate them"
+        )
+
+    _ensure_search_index(connection)
+
+
+def _ensure_search_index(connection: sqlite3.Connection) -> None:
+    """Create and backfill the derived FTS5 search index if it does not
+    already exist, in its own transaction, separate from and after the
+    canonical version chain above (see module docstring for why this is
+    deliberately not part of `STORE_SCHEMA_VERSION`).
+
+    Idempotent: a store that already has `search_index` (from a prior
+    open) is left untouched here. A store opened once without FTS5
+    support and later reopened by a build that has it will pick the
+    index up automatically the next time this runs, fully backfilled --
+    the same recovery `rebuild_search_index()` offers on demand.
+
+    A missing FTS5 module in this SQLite build is an expected, handled
+    condition: `_try_create_search_index` reports it and this function
+    simply leaves the store without an index rather than failing to
+    open. A failure while creating the index in some other way (e.g.
+    disk I/O) is not swallowed here; it propagates like any other
+    `sqlite3.DatabaseError` in this module, to be wrapped by the
+    `CortexStorageError` handling in `MemoryStore.create_or_open`.
+    """
+    if _table_exists(connection, SEARCH_INDEX_TABLE):
+        return
+    connection.execute("BEGIN")
+    with connection:
+        if _try_create_search_index(connection):
+            _rebuild_search_index(connection)
+
+
+def _try_create_search_index(connection: sqlite3.Connection) -> bool:
+    """Attempt to create the (empty) search index table. Returns False,
+    without raising, only for the specific `sqlite3.OperationalError`
+    SQLite raises when the FTS5 module itself is not compiled in
+    ("no such module: fts5"). `CREATE VIRTUAL TABLE ... USING fts5`
+    raises the *same* `OperationalError` class for unrelated problems --
+    a malformed statement, a duplicate column, any other schema-level
+    bug in `_CREATE_SEARCH_INDEX_SQL` -- so catching the class alone
+    would silently relabel a genuine bug as "this SQLite build has no
+    FTS5" and leave the store open with no index and no visible error.
+    Matching on the "no such module" message (SQLite's own stable,
+    long-standing wording for this specific condition) is what keeps
+    that distinction; anything else propagates like any other
+    `sqlite3.DatabaseError` in this module.
+    """
+    try:
+        connection.execute(_CREATE_SEARCH_INDEX_SQL)
+    except sqlite3.OperationalError as exc:
+        if "no such module" in str(exc).lower():
+            return False
+        raise
+    return True
+
+
+def _rebuild_search_index(connection: sqlite3.Connection) -> None:
+    """(Re)populate `search_index` from canonical data. Must be called
+    only when the table exists and from inside an already-open
+    transaction (see `_ensure_search_index` and
+    `MemoryStore.rebuild_search_index`): clears every row first, so a
+    partial/failed run rolls back to the previous complete index rather
+    than leaving a half-populated one.
+    """
+    connection.execute(f"DELETE FROM {SEARCH_INDEX_TABLE}")
+
+    memory_rows = connection.execute("SELECT memory_id, content FROM memories").fetchall()
+    for memory_id, content in memory_rows:
+        connection.execute(
+            f"INSERT INTO {SEARCH_INDEX_TABLE} (entity_type, entity_id, text) VALUES (?, ?, ?)",
+            (ENTITY_MEMORY, memory_id, memory_search_text(content)),
+        )
+
+    attempt_rows = connection.execute("SELECT attempt_id, task, approach FROM attempts").fetchall()
+    for attempt_id, task, approach in attempt_rows:
+        connection.execute(
+            f"INSERT INTO {SEARCH_INDEX_TABLE} (entity_type, entity_id, text) VALUES (?, ?, ?)",
+            (ENTITY_ATTEMPT, attempt_id, attempt_search_text(task, approach)),
+        )
+
+    skill_rows = connection.execute("SELECT skill_id, name, purpose FROM skills").fetchall()
+    for skill_id, name, purpose in skill_rows:
+        condition_rows = connection.execute(
+            "SELECT condition FROM skill_conditions WHERE skill_id = ? ORDER BY position", (skill_id,)
+        ).fetchall()
+        conditions = tuple(row[0] for row in condition_rows)
+        connection.execute(
+            f"INSERT INTO {SEARCH_INDEX_TABLE} (entity_type, entity_id, text) VALUES (?, ?, ?)",
+            (ENTITY_SKILL, skill_id, skill_search_text(name, purpose, conditions)),
         )
 
 

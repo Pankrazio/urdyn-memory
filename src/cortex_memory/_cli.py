@@ -81,6 +81,15 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     guard_parser.add_argument("action", help="Action about to be taken")
 
+    semantic_parser = subparsers.add_parser(
+        "semantic", help="Manage the optional semantic retrieval channel"
+    )
+    semantic_subparsers = semantic_parser.add_subparsers(dest="semantic_command", required=True)
+    semantic_subparsers.add_parser(
+        "setup",
+        help="Download/prepare the semantic model and (re)build the semantic index for this workspace",
+    )
+
     return parser
 
 
@@ -197,6 +206,22 @@ def main(argv: list[str] | None = None) -> int:
                 for evidence in result.recommended_validation:
                     print(f"- {evidence.content}")
             return 0
+
+        if args.command == "semantic":
+            if args.semantic_command == "setup":
+                cx = Cortex.discover()
+                result = cx.semantic_setup()
+                print(f"Semantic model: {result.provider}/{result.model_id}")
+                print(f"Model revision: {result.model_revision or 'unknown (see A7.4 report)'}")
+                print(f"Dimensions: {result.dimensions} ({result.normalization})")
+                print(
+                    f"Indexed: {result.attempt_count} attempts, {result.memory_count} memories, "
+                    f"{result.skill_count} skills"
+                )
+                print("Semantic index ready.")
+                return 0
+            parser.error(f"unknown semantic command {args.semantic_command!r}")
+            return 2
 
         parser.error(f"unknown command {args.command!r}")
         return 2

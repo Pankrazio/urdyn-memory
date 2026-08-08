@@ -8,6 +8,7 @@ from ._errors import (
     CortexError,
     CortexManifestError,
     CortexNotFoundError,
+    CortexSemanticUnavailableError,
     CortexStorageError,
 )
 from ._attempt import Attempt
@@ -16,7 +17,7 @@ from ._guard import GuardResult
 from ._memory import Memory
 from ._preflight import Preflight
 from ._skill import Skill
-from ._workspace import Cortex
+from ._workspace import Cortex, SemanticSetupResult
 
 __all__ = [
     "Cortex",
@@ -26,9 +27,11 @@ __all__ = [
     "Preflight",
     "Skill",
     "GuardResult",
+    "SemanticSetupResult",
     "CortexError",
     "CortexNotFoundError",
     "CortexAlreadyInitializedError",
     "CortexManifestError",
     "CortexStorageError",
+    "CortexSemanticUnavailableError",
 ]

@@ -22,8 +22,22 @@ matching Skill. (3) alone is not enough either — that is exactly what
 different, more selective function. Both conditions together, plus (1),
 are what keeps guard selective instead of being `preflight()` under
 another name: a different, stricter admission rule, not just a renamed
-return type. Lexical relevance uses the same deterministic engine
-`preflight()` uses (`_relevance.py`), not a second one.
+return type.
+
+"Lexically relevant" in (3) is decided by the same channels `preflight()`
+uses (`_relevance.py`'s structured majority rule, FTS5/BM25 candidate
+widening via `_retrieval.py`, and A7.4's optional calibrated semantic
+channel via `_semantic.py`) — not a second, separate engine. What keeps
+`guard()` more conservative than `preflight()` is not a stricter version
+of relevance itself, but that relevance is only ever one of three
+conditions `guard()` requires together; widening which candidates can
+satisfy condition (3) does not loosen (1) or (2) — a Skill's own
+applicability match uses the SAME per-pool semantic abstention policy as
+`preflight()`, but that policy was itself calibrated more conservatively
+for the `skill` pool specifically (see `_semantic.SEMANTIC_POLICY` and
+the A7.4 report), so `guard()`'s applicable-skill matching stays harder
+to satisfy than `preflight()`'s memory matching even though both go
+through the same code path.
 """
 
 from __future__ import annotations
@@ -33,7 +47,8 @@ from collections.abc import Callable
 
 from ._attempt import OUTCOME_FAILED, Attempt
 from ._evidence import RECOMMENDED_VALIDATION_EVIDENCE_KINDS, Evidence
-from ._relevance import is_relevant, tokens
+from ._relevance import attempt_search_text, is_relevant, skill_search_text, tokens
+from ._retrieval import fts_admitted_ids
 from ._skill import Skill
 
 
@@ -63,6 +78,10 @@ def build_guard_result(
     skills: list[Skill],
     attempts: list[Attempt],
     evidence_lookup: Callable[[str], Evidence],
+    skill_fts_candidates: list[tuple[str, str]] = (),
+    attempt_fts_candidates: list[tuple[str, str]] = (),
+    skill_semantic_admitted: frozenset[str] = frozenset(),
+    attempt_semantic_admitted: frozenset[str] = frozenset(),
 ) -> GuardResult:
     """Pure selection logic, operating on data already fetched from
     storage. Takes no dependency on SQLite so it can be tested and
@@ -70,12 +89,26 @@ def build_guard_result(
 
     `skills` and `attempts` are expected in the order Cortex recorded
     them, so the result stays deterministic across calls.
+
+    `skill_fts_candidates`/`attempt_fts_candidates` are `(entity_id,
+    text)` pairs already ranked best-first by BM25 for this `action`
+    (see `MemoryStore.search_candidates`), or `()` if FTS5 is
+    unavailable -- matching then falls back to the lexical channel
+    alone, exactly as before A7. As in `preflight()`, only ids already
+    present in `skills`/`attempts` can be admitted through them; nothing
+    about current-state or evidence-sharing filtering changes.
     """
     query_tokens = frozenset(tokens(action))
+    skill_admitted = fts_admitted_ids(query_tokens, list(skill_fts_candidates))
+    attempt_admitted = fts_admitted_ids(query_tokens, list(attempt_fts_candidates))
 
     def _skill_matches(skill: Skill) -> bool:
-        haystack = f"{skill.name} {skill.purpose} {' '.join(skill.conditions)}"
-        return is_relevant(query_tokens, haystack)
+        haystack = skill_search_text(skill.name, skill.purpose, skill.conditions)
+        if is_relevant(query_tokens, haystack):
+            return True
+        if skill.skill_id in skill_admitted:
+            return True
+        return skill.skill_id in skill_semantic_admitted
 
     applicable_skills = tuple(skill for skill in skills if _skill_matches(skill))
 
@@ -84,7 +117,11 @@ def build_guard_result(
     )
 
     def _attempt_matches(attempt: Attempt) -> bool:
-        return is_relevant(query_tokens, f"{attempt.task} {attempt.approach}")
+        if is_relevant(query_tokens, attempt_search_text(attempt.task, attempt.approach)):
+            return True
+        if attempt.attempt_id in attempt_admitted:
+            return True
+        return attempt.attempt_id in attempt_semantic_admitted
 
     known_failures = tuple(
         attempt

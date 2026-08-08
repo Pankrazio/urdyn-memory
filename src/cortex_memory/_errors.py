@@ -20,3 +20,11 @@ class CortexManifestError(CortexError):
 class CortexStorageError(CortexError):
     """Raised when the persisted memory store is missing, corrupted, or an
     unsupported schema version."""
+
+
+class CortexSemanticUnavailableError(CortexError):
+    """Raised only by explicit semantic setup/maintenance calls (e.g. the
+    `cortex semantic setup` CLI command) when the `cortex-memory[semantic]`
+    optional dependency is not installed. Never raised by `preflight()` or
+    `guard()`: those degrade silently to lexical/FTS-only instead, per
+    A7.4's "no hidden download, no crash" requirement."""

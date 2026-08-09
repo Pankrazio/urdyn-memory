@@ -69,6 +69,21 @@ class Preflight:
     exactly like every other kind). Deliberately placed last and
     defaulted to `()` to keep the pre-A9.1 four-field shape a valid,
     unbroken prefix of this one.
+
+    `open_invalidations` (A11.3) is every CURRENT `Memory` of kind
+    `invalidation` relevant to `task`, using the same relevance-matching
+    machinery as `root_causes` and `verified_lessons`. Unlike `invariants`,
+    an invalidation is not project-wide by default and does not bypass
+    relevance matching. It answers a question none of the other fields
+    can: not "what do we currently know" but "what prior knowledge had
+    its current authority explicitly withdrawn without a replacement".
+    An agent must not confuse an empty `root_causes`/`verified_lessons`/
+    `invariants` (Cortex has nothing on record) with a non-empty
+    `open_invalidations` (Cortex had something on record and explicitly
+    stopped trusting it). Never contains the Memory that was invalidated
+    -- only the invalidation itself. Deliberately placed last and
+    defaulted to `()` for the same backward-compatibility reason as
+    `invariants`.
     """
 
     task: str
@@ -77,6 +92,7 @@ class Preflight:
     verified_lessons: tuple[Memory, ...]
     recommended_validation: tuple[Evidence, ...]
     invariants: tuple[Memory, ...] = ()
+    open_invalidations: tuple[Memory, ...] = ()
 
     def is_empty(self) -> bool:
         return not (
@@ -85,6 +101,7 @@ class Preflight:
             or self.verified_lessons
             or self.recommended_validation
             or self.invariants
+            or self.open_invalidations
         )
 
 
@@ -100,6 +117,7 @@ def build_preflight(
     attempt_semantic_admitted: frozenset[str] = frozenset(),
     memory_semantic_admitted: frozenset[str] = frozenset(),
     invariant_memories: list[Memory] = (),
+    invalidation_memories: list[Memory] = (),
 ) -> Preflight:
     """Pure selection logic, operating on data already fetched from
     storage. Takes no dependency on SQLite so it can be tested and
@@ -128,6 +146,17 @@ def build_preflight(
     `invariant` memories (see `Cortex.preflight`), and every one of them
     is included in the result regardless of `task`. No lexical/FTS/
     semantic channel is consulted for this field.
+
+    `invalidation_memories` (A11.3) is expected to already be filtered to
+    current, kind `invalidation` memories, exactly like
+    `root_cause_memories`/`verified_lesson_memories`. Unlike
+    `invariant_memories`, it goes through the SAME `_memory_matches`
+    relevance gate as root causes/lessons -- an invalidation is not
+    project-wide by default. `memory_semantic_admitted` is shared with
+    root causes/lessons only insofar as the caller chooses to union
+    independently-computed admission sets before calling this function;
+    this function itself does not know or care where that set's members
+    came from, so it cannot introduce cross-pool competition on its own.
     """
     query_tokens = frozenset(_tokens(task))
     attempt_admitted = _fts_admitted_ids(query_tokens, list(attempt_fts_candidates))
@@ -158,6 +187,7 @@ def build_preflight(
 
     root_causes = tuple(memory for memory in root_cause_memories if _memory_matches(memory))
     verified_lessons = tuple(memory for memory in verified_lesson_memories if _memory_matches(memory))
+    open_invalidations = tuple(memory for memory in invalidation_memories if _memory_matches(memory))
 
     candidate_evidence_ids: list[str] = []
     for source in (*verified_lessons, *relevant_successes):
@@ -178,4 +208,5 @@ def build_preflight(
         verified_lessons=verified_lessons,
         recommended_validation=tuple(recommended_validation),
         invariants=tuple(invariant_memories),
+        open_invalidations=open_invalidations,
     )

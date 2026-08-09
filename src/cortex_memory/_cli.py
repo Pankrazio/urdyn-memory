@@ -178,6 +178,10 @@ def main(argv: list[str] | None = None) -> int:
                 print("INVARIANTS")
                 for memory in result.invariants:
                     print(f"- [{memory.memory_id}] {memory.content}")
+            if result.open_invalidations:
+                print("OPEN INVALIDATIONS")
+                for memory in result.open_invalidations:
+                    print(f"- [{memory.memory_id}] {memory.content}")
             return 0
 
         if args.command == "skills":

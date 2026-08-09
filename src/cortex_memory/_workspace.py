@@ -31,6 +31,7 @@ from ._memory import (
     DEFAULT_KIND,
     EPISTEMIC_USER_ASSERTED,
     EPISTEMIC_VERIFIED,
+    KIND_INVALIDATION,
     KIND_INVARIANT,
     KIND_LESSON,
     KIND_ROOT_CAUSE,
@@ -425,6 +426,12 @@ class Cortex:
             # task relevance -- see `Preflight.invariants`'s docstring for
             # why this bypasses the lexical/FTS/semantic channels below.
             invariant_memories = [m for m in store.timeline(KIND_INVARIANT) if m.memory_id in current_ids]
+            # [A11.3] Every CURRENT invalidation -- UNLIKE invariants, this
+            # goes through the same relevance channels as root causes/
+            # lessons below (see `Preflight.open_invalidations`'s docstring
+            # for why it does not inherit the invariants' "always include"
+            # rule: an invalidation is not project-wide by default).
+            invalidation_memories = [m for m in store.timeline(KIND_INVALIDATION) if m.memory_id in current_ids]
             attempts = store.list_attempts()
 
             def _must_get_evidence(evidence_id: str) -> Evidence:
@@ -467,6 +474,28 @@ class Cortex:
                 memory_eligible_ids=memory_eligible_ids,
             )
 
+            # [A11.3] A DISJOINT, independently-ranked semantic pool,
+            # restricted to invalidation ids only. Deliberately NOT folded
+            # into `memory_eligible_ids` above: that pool feeds a
+            # winner-take-all race (`_preflight_memory_semantic_widen`/
+            # `_preflight_corroboration_admitted`), and an unrelated but
+            # strongly-scoring invalidation entering the SAME race could
+            # win the pool's single admission slot away from a genuine
+            # root cause/lesson, or collapse its margin -- a real
+            # regression, verified directly against the unmodified A7.8
+            # machinery in `test_preflight_invalidations.py`'s semantic
+            # competition gate. Running this as a separate call over a
+            # separate, invalidation-only `eligible_ids` restriction means
+            # it can never compete against root causes/lessons for the
+            # same slot, by construction. The two independently-computed
+            # results are combined by plain set union below: since neither
+            # race's outcome depended on the other, unioning cannot
+            # reintroduce the competition this separation avoids.
+            invalidation_eligible_ids = frozenset(m.memory_id for m in invalidation_memories)
+            invalidation_semantic_admitted = self._semantic_widen(
+                task, ENTITY_MEMORY, eligible_ids=invalidation_eligible_ids
+            )
+
             return build_preflight(
                 task,
                 attempts=attempts,
@@ -476,8 +505,9 @@ class Cortex:
                 attempt_fts_candidates=attempt_fts_candidates,
                 memory_fts_candidates=memory_fts_candidates,
                 attempt_semantic_admitted=attempt_semantic_admitted,
-                memory_semantic_admitted=memory_semantic_admitted,
+                memory_semantic_admitted=memory_semantic_admitted | invalidation_semantic_admitted,
                 invariant_memories=invariant_memories,
+                invalidation_memories=invalidation_memories,
             )
 
     def promote(

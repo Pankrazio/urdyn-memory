@@ -24,11 +24,15 @@ def test_preflight_is_exported_but_matching_internals_are_not():
 def test_preflight_dataclass_shape_has_no_matching_strategy_leakage():
     field_names = {f.name for f in dataclasses.fields(Preflight)}
 
-    # `invariants` (A9.1) is a deliberate, documented addition to this
-    # contract: unlike the other fields, it is populated without any
-    # matching strategy at all (see `Preflight.invariants`'s docstring),
-    # so its presence here does not reintroduce the leakage this test
-    # guards against.
+    # `invariants` (A9.1) and `open_invalidations` (A11.3) are deliberate,
+    # documented additions to this contract: unlike the other fields,
+    # `invariants` is populated without any matching strategy at all (see
+    # `Preflight.invariants`'s docstring), and `open_invalidations` goes
+    # through the SAME matching strategy as `root_causes`/
+    # `verified_lessons` (see `Preflight.open_invalidations`'s docstring)
+    # -- neither reintroduces the leakage this test guards against, since
+    # nothing about "shared lexical tokens" becomes observable from the
+    # field names or types themselves.
     assert field_names == {
         "task",
         "known_failures",
@@ -36,6 +40,7 @@ def test_preflight_dataclass_shape_has_no_matching_strategy_leakage():
         "verified_lessons",
         "recommended_validation",
         "invariants",
+        "open_invalidations",
     }
 
 
@@ -53,6 +58,23 @@ def test_preflight_invariants_field_defaults_to_empty_tuple():
     )
 
     assert preflight.invariants == ()
+    assert preflight.open_invalidations == ()
+
+
+def test_preflight_open_invalidations_field_defaults_to_empty_tuple():
+    """The pre-A11.3 five-argument construction of `Preflight` (task +
+    the four original fields + `invariants`) must remain valid:
+    `open_invalidations` defaults to `()` rather than being required."""
+    preflight = Preflight(
+        task="a task",
+        known_failures=(),
+        root_causes=(),
+        verified_lessons=(),
+        recommended_validation=(),
+        invariants=(),
+    )
+
+    assert preflight.open_invalidations == ()
 
 
 def test_cortex_preflight_signature_takes_only_a_task_string(tmp_path):

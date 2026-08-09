@@ -50,6 +50,18 @@ KIND_QUESTION = "question"
 KIND_INVARIANT = "invariant"
 KIND_ENVIRONMENT = "environment"
 
+# A11.1: another specialization of Memory, not a new canonical primitive.
+# An `invalidation` explicitly withdraws current authority from a prior
+# Memory -- it does not assert that Memory was false, only that it must
+# no longer be treated as current/authoritative. It normally supersedes
+# the Memory whose authority is being withdrawn, using `supersedes`
+# exactly as any other kind does: history stays append-only (the old
+# Memory is preserved, never rewritten), and a later positive Memory may
+# in turn supersede the invalidation once a replacement is known. Until
+# then, `state(kind=<original kind>)` simply has nothing current in that
+# lineage -- no separate "stale"/"invalidated" flag is introduced.
+KIND_INVALIDATION = "invalidation"
+
 VALID_KINDS = frozenset(
     {
         "note",
@@ -60,6 +72,7 @@ VALID_KINDS = frozenset(
         KIND_QUESTION,
         KIND_INVARIANT,
         KIND_ENVIRONMENT,
+        KIND_INVALIDATION,
     }
 )
 

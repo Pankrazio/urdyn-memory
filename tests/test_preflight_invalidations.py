@@ -497,10 +497,10 @@ def test_open_invalidations_works_without_the_semantic_extra(tmp_path, monkeypat
 def test_store_schema_version_still_unchanged(tmp_path):
     """A11.3 itself introduced no schema change, same reasoning as
     `test_invalidation.py`'s equivalent anchor -- see there for why the
-    literal below now reflects A12.1's legitimate v5 bump instead."""
+    literal below now reflects A13.1's legitimate v6 bump instead."""
     from cortex_memory._store import STORE_SCHEMA_VERSION
 
-    assert STORE_SCHEMA_VERSION == 5
+    assert STORE_SCHEMA_VERSION == 6
 
 
 # ---------------------------------------------------------------------------

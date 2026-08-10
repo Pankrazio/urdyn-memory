@@ -128,7 +128,7 @@ def test_v3_migration_reaches_v4_and_creates_skill_tables(tmp_path):
     cx = Cortex.init(tmp_path, "dev")
     _build_v3_database(cx._db_path)
 
-    # migration v3 -> v4 -> v5 happens transparently on first open
+    # migration v3 -> v4 -> v5 -> v6 happens transparently on first open
     cx.recall("a lesson from A4")
 
     connection = sqlite3.connect(cx._db_path)
@@ -143,7 +143,7 @@ def test_v3_migration_reaches_v4_and_creates_skill_tables(tmp_path):
     finally:
         connection.close()
 
-    assert version == 5
+    assert version == 6
     assert {"skills", "skill_steps", "skill_conditions", "skill_evidence"} <= tables
 
 

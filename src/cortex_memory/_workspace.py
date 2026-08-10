@@ -9,6 +9,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from ._attempt import OUTCOME_FAILED, VALID_OUTCOMES, Attempt
+from ._conflict import Conflict
 from ._errors import (
     CortexAlreadyInitializedError,
     CortexManifestError,
@@ -344,6 +345,69 @@ class Cortex:
         with store:
             current_ids = store.current_ids()
             return [memory for memory in store.timeline(kind) if memory.memory_id in current_ids]
+
+    def record_conflict(self, memory_a: Memory, memory_b: Memory) -> Conflict:
+        """Explicitly declare that two Memories cannot both be treated as a
+        coherent description of the same state, and return the canonical
+        `Conflict`.
+
+        This is a structural assertion, not a semantic judgment (A13):
+        Cortex does not evaluate whether `memory_a` and `memory_b` are
+        actually incompatible, only records that the caller says so. It
+        never mutates either Memory, never changes an `epistemic_state`,
+        and never implies invalidation or supersession -- both memories
+        keep whatever current/verified status they already had. Kinds
+        need not match: any two Memories may conflict.
+
+        Only `memory_id` is trusted from `memory_a`/`memory_b`; both ids
+        are validated against the canonically persisted store (exactly
+        like `promote()` trusts only `lesson.memory_id`), so an object
+        that merely shares a real Memory's id but disagrees with it
+        cannot smuggle in a nonexistent relation. Raises `ValueError` if
+        either id does not name an existing memory, or if the two ids are
+        the same (a memory cannot conflict with itself). Neither memory
+        is required to be current -- see `open_conflicts()` for the
+        current-state projection.
+
+        The relation is symmetric and idempotent: `record_conflict(a, b)`,
+        a repeat of the same call, and `record_conflict(b, a)` all
+        resolve to the same persisted relation and never create a second
+        one or change its original `recorded_at`.
+        """
+        recorded_at = dt.datetime.now(dt.timezone.utc)
+        with MemoryStore.create_or_open(self._db_path) as store:
+            return store.add_conflict(memory_a.memory_id, memory_b.memory_id, recorded_at)
+
+    def conflicts(self) -> list[Conflict]:
+        """Return every declared conflict relation, oldest first: the full
+        canonical history, including conflicts no longer open because one
+        or both participants stopped being current. Never rewritten or
+        removed by a later supersession/invalidation -- see
+        `open_conflicts()` for the current-state projection."""
+        store = MemoryStore.open_if_exists(self._db_path)
+        if store is None:
+            return []
+        with store:
+            return store.list_conflicts()
+
+    def open_conflicts(self) -> list[Conflict]:
+        """Return only the conflicts that are currently operative: a
+        `Conflict` is included here if and only if BOTH memories it names
+        are still current. This is a derived projection, not stored
+        state -- a supersession or invalidation of either participant
+        removes a conflict from here automatically, the same way it
+        already disappears from `state()`, with no separate resolution
+        step or status to update."""
+        store = MemoryStore.open_if_exists(self._db_path)
+        if store is None:
+            return []
+        with store:
+            current_ids = store.current_ids()
+            return [
+                conflict
+                for conflict in store.list_conflicts()
+                if conflict.memory_ids[0] in current_ids and conflict.memory_ids[1] in current_ids
+            ]
 
     def add_evidence(self, content: str, *, kind: str = DEFAULT_EVIDENCE_KIND) -> Evidence:
         """Persist a new piece of evidence and return it.

@@ -429,11 +429,12 @@ def test_verified_invalidation_requires_qualifying_evidence_like_any_other_kind(
 def test_store_schema_version_is_unchanged(tmp_path):
     """A11.1 itself introduced no schema change (kind='invalidation' is a
     pure Python-level `VALID_KINDS` addition, like A9.1's kinds). The
-    literal anchor below tracks whatever A12.1 (or later) legitimately
-    bumped it to since -- see `test_migration_v5.py` for that bump."""
+    literal anchor below tracks whatever A12.1/A13.1 (or later) legitimately
+    bumped it to since -- see `test_migration_v5.py`/`test_conflict.py` for
+    those bumps."""
     from cortex_memory._store import STORE_SCHEMA_VERSION
 
-    assert STORE_SCHEMA_VERSION == 5
+    assert STORE_SCHEMA_VERSION == 6
 
 
 # -- copied workspace (A11.1 section 19 test list) --------------------------

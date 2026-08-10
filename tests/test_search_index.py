@@ -306,7 +306,7 @@ def test_search_index_is_not_part_of_the_canonical_schema_version(tmp_path):
         assert _table_exists(connection, SEARCH_INDEX_TABLE)
     finally:
         connection.close()
-    assert version == 5
+    assert version == 6
 
 
 def test_entity_type_isolates_a_deliberate_id_collision(tmp_path):

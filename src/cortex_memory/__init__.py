@@ -12,6 +12,7 @@ from ._errors import (
     CortexStorageError,
 )
 from ._attempt import Attempt
+from ._conflict import Conflict
 from ._evidence import Evidence
 from ._guard import GuardResult
 from ._memory import Memory
@@ -28,6 +29,7 @@ __all__ = [
     "Skill",
     "GuardResult",
     "SemanticSetupResult",
+    "Conflict",
     "CortexError",
     "CortexNotFoundError",
     "CortexAlreadyInitializedError",

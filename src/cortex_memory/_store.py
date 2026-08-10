@@ -23,9 +23,21 @@ Schema history:
        are affected; `attempt_evidence`/`skill_evidence` are unchanged --
        A12.1 deliberately does not extend this concept to Attempt or
        Skill (see `_workspace.py`'s A12.1 notes).
+  v6 - adds `memory_conflicts` (A13.1): a single symmetric relation table
+       recording that two Memories are explicitly asserted to conflict.
+       No existing table changes shape. The pair `(memory_id_a,
+       memory_id_b)` is stored canonically ordered (ascending) so that
+       declaring A<->B and B<->A collapse onto the SAME row -- this is
+       the entire mechanism behind idempotent duplicate/reverse-duplicate
+       declarations (see `MemoryStore.add_conflict`). Deliberately no
+       `conflict_id`, no evidence link, no status/resolution column:
+       whether a conflict is "open" is derived at read time from
+       `current_ids()`, never stored (see `_conflict.py`'s module
+       docstring for the full reasoning).
 
-A v1, v2, v3, or v4 database opened by this module is migrated forward to
-v5 in place, one step at a time, without touching existing rows.
+A v1, v2, v3, v4, or v5 database opened by this module is migrated
+forward to v6 in place, one step at a time, without touching existing
+rows.
 
 Search index (derived, not versioned):
   A FTS5 virtual table `search_index` provides candidate widening for
@@ -53,6 +65,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from ._attempt import ATTEMPT_ID_PATTERN, VALID_OUTCOMES, Attempt
+from ._conflict import Conflict, canonical_pair
 from ._errors import CortexStorageError
 from ._event import EVENT_KIND_ATTEMPT_RECORDED, EVENT_KIND_MEMORY_RECORDED, EVENT_KIND_SKILL_PROMOTED, Event
 from ._evidence import EVIDENCE_ID_PATTERN, VERIFICATION_EVIDENCE_KINDS, Evidence
@@ -73,7 +86,8 @@ _SCHEMA_VERSION_V2 = 2
 _SCHEMA_VERSION_V3 = 3
 _SCHEMA_VERSION_V4 = 4
 _SCHEMA_VERSION_V5 = 5
-STORE_SCHEMA_VERSION = _SCHEMA_VERSION_V5
+_SCHEMA_VERSION_V6 = 6
+STORE_SCHEMA_VERSION = _SCHEMA_VERSION_V6
 DB_FILENAME = "memory.db"
 
 _V2_TABLES = ("memories", "evidence", "memory_evidence", "events")
@@ -82,6 +96,7 @@ _V4_TABLES = _V3_TABLES + ("skills", "skill_steps", "skill_conditions", "skill_e
 # v5 adds no new table, only a column on the existing `memory_evidence`
 # table (see module docstring) -- the set of required tables is unchanged.
 _V5_TABLES = _V4_TABLES
+_V6_TABLES = _V5_TABLES + ("memory_conflicts",)
 
 # Canonical values for `memory_evidence.role` (A12.1). Internal storage
 # vocabulary only -- never exposed as SQL or as these literal strings in
@@ -212,6 +227,32 @@ _CREATE_SKILL_EVIDENCE_SQL = """
         evidence_id TEXT NOT NULL,
         position INTEGER NOT NULL,
         PRIMARY KEY (skill_id, evidence_id)
+    )
+"""
+
+# v6 (A13.1): a single symmetric relation, keyed by the canonically
+# ordered pair itself -- see the module docstring and `_conflict.py`. No
+# `conflict_id`, no status, no evidence link: the pair's own primary key
+# is both the identity and the uniqueness/idempotency guarantee, and
+# `recorded_at` is written once and never updated by a later duplicate
+# declaration (see `MemoryStore.add_conflict`).
+#
+# (A13.1.1) The `CHECK` is defence in depth, not the primary enforcement:
+# `Cortex.record_conflict`/`add_conflict` already canonicalize the pair
+# and reject self-conflict in Python, before any SQL runs. Placing the
+# same invariant next to the canonical data means a row that is
+# non-canonically ordered (`b < a`) or self-referential (`a == a`, which
+# fails `a < b` too) cannot exist in the store AT ALL -- not even via a
+# future internal call path that forgets to canonicalize, or a
+# hand-edited database. This is a storage implementation detail: nothing
+# about it is visible in, or promised by, the public API.
+_CREATE_MEMORY_CONFLICTS_SQL = """
+    CREATE TABLE memory_conflicts (
+        memory_id_a TEXT NOT NULL,
+        memory_id_b TEXT NOT NULL,
+        recorded_at TEXT NOT NULL,
+        PRIMARY KEY (memory_id_a, memory_id_b),
+        CHECK (memory_id_a < memory_id_b)
     )
 """
 
@@ -715,6 +756,110 @@ class MemoryStore:
             raise CortexStorageError(f"Failed to read Cortex skill store: {exc}") from exc
         return tuple(row[0] for row in rows)
 
+    # -- conflicts ----------------------------------------------------------
+
+    def add_conflict(self, memory_id_a: str, memory_id_b: str, recorded_at: dt.datetime) -> Conflict:
+        """Idempotently persist a symmetric conflict relation between two
+        existing memories and return the canonical `Conflict`.
+
+        Raises `ValueError` if `memory_id_a == memory_id_b` (self-conflict)
+        or if either id does not name an existing memory. Neither memory
+        is required to be current: a conflict between historical memories
+        is a legitimate fact about the past (see `_conflict.py`'s module
+        docstring).
+
+        Idempotency (A13.1 review decision 3/4/5): `record_conflict(A, B)`,
+        `record_conflict(A, B)` again, and `record_conflict(B, A)` all
+        resolve to the SAME row (identified by the canonically ordered
+        pair, see `canonical_pair`) and never insert a second one. If the
+        pair was already declared, the ALREADY-persisted `recorded_at` is
+        returned -- the `recorded_at` argument passed on a later call is
+        silently discarded, exactly like `_migrate_v4_to_v5`'s DEFAULT-based
+        backfill discards any invented value: a repeat declaration is not
+        a new transition, so it must not appear to change when the
+        relation was first recorded.
+
+        (A13.1.1) That idempotency is deliberately expressed as
+        `ON CONFLICT(memory_id_a, memory_id_b) DO NOTHING` rather than
+        `INSERT OR IGNORE`. The two behave identically for the case this
+        method actually wants to absorb -- a repeated declaration of the
+        SAME canonical pair -- but `OR IGNORE` suppresses EVERY constraint
+        violation on the statement, including the table's own
+        `CHECK (memory_id_a < memory_id_b)` and its `NOT NULL`s. That
+        would turn a genuine canonical-integrity failure (a
+        non-canonically ordered or self-referential pair reaching SQL)
+        into a silent no-op that this method would then report as
+        success by returning the pre-existing row. Targeting the primary
+        key explicitly keeps "this exact relation was already declared"
+        as the only condition that is ever absorbed; anything else still
+        raises and is wrapped as `CortexStorageError` below.
+        """
+        if memory_id_a == memory_id_b:
+            raise ValueError("A memory cannot conflict with itself")
+        pair = canonical_pair(memory_id_a, memory_id_b)
+        try:
+            with self._connection:
+                for memory_id in pair:
+                    if not self._memory_exists(memory_id):
+                        raise ValueError(f"Cannot record conflict for unknown memory {memory_id!r}")
+                self._connection.execute(
+                    "INSERT INTO memory_conflicts (memory_id_a, memory_id_b, recorded_at) "
+                    "VALUES (?, ?, ?) "
+                    "ON CONFLICT(memory_id_a, memory_id_b) DO NOTHING",
+                    (pair[0], pair[1], recorded_at.isoformat()),
+                )
+                row = self._connection.execute(
+                    "SELECT memory_id_a, memory_id_b, recorded_at FROM memory_conflicts "
+                    "WHERE memory_id_a = ? AND memory_id_b = ?",
+                    pair,
+                ).fetchone()
+        except sqlite3.DatabaseError as exc:
+            raise CortexStorageError(f"Failed to persist conflict {pair!r}: {exc}") from exc
+        return _row_to_conflict(row)
+
+    def list_conflicts(self) -> list[Conflict]:
+        """Return every declared conflict relation, oldest first by
+        `recorded_at`, tie-broken by the canonical pair itself so ordering
+        never depends on incidental database row order (mirrors the
+        tie-break discipline `search()` already applies to memories).
+
+        (A13.1.1) Every participant is verified to name a memory this
+        store actually holds, and a dangling one raises
+        `CortexStorageError`. `_row_to_conflict` alone is not enough:
+        it validates that each id is well-FORMED (32 hex, canonically
+        ordered), which a corrupted or hand-edited row can satisfy while
+        still pointing at a memory that does not exist. Returning such a
+        row would hand callers a `Conflict` that claims to be a canonical
+        relation between two recorded Memories when one of them is not
+        recorded at all -- and, worse, `open_conflicts()` would quietly
+        drop it (a nonexistent id is never in `current_ids()`), making
+        storage corruption indistinguishable from the legitimate,
+        expected "this conflict is no longer open" answer. Cortex does
+        not repair or delete the row: it refuses to reinterpret it, the
+        same standard `_all_memory_supporting_evidence_map` already
+        applies to an unrecognized `memory_evidence.role`.
+        """
+        try:
+            rows = self._connection.execute(
+                "SELECT memory_id_a, memory_id_b, recorded_at FROM memory_conflicts "
+                "ORDER BY recorded_at ASC, memory_id_a ASC, memory_id_b ASC"
+            ).fetchall()
+            known_ids = {
+                row[0] for row in self._connection.execute("SELECT memory_id FROM memories").fetchall()
+            }
+        except sqlite3.DatabaseError as exc:
+            raise CortexStorageError(f"Failed to read Cortex conflict store: {exc}") from exc
+
+        conflicts = [_row_to_conflict(row) for row in rows]
+        for conflict in conflicts:
+            for memory_id in conflict.memory_ids:
+                if memory_id not in known_ids:
+                    raise CortexStorageError(
+                        f"Conflict {conflict.memory_ids!r} references memory {memory_id!r} "
+                        "that does not exist in the Cortex memory store"
+                    )
+        return conflicts
+
     # -- search index (derived) --------------------------------------------
 
     def _index_entity(self, entity_type: str, entity_id: str, text: str) -> None:
@@ -941,9 +1086,9 @@ def _table_exists(connection: sqlite3.Connection, name: str) -> bool:
     )
 
 
-def _create_v5_schema(connection: sqlite3.Connection) -> None:
-    """Create every table at its CURRENT (v5) shape, for a brand-new
-    store only. Not part of the v1->v5 migration chain below, which
+def _create_v6_schema(connection: sqlite3.Connection) -> None:
+    """Create every table at its CURRENT (v6) shape, for a brand-new
+    store only. Not part of the v1->v6 migration chain below, which
     upgrades each table incrementally instead."""
     connection.execute(_CREATE_MEMORIES_V2_SQL)
     connection.execute(_CREATE_EVIDENCE_SQL)
@@ -955,6 +1100,7 @@ def _create_v5_schema(connection: sqlite3.Connection) -> None:
     connection.execute(_CREATE_SKILL_STEPS_SQL)
     connection.execute(_CREATE_SKILL_CONDITIONS_SQL)
     connection.execute(_CREATE_SKILL_EVIDENCE_SQL)
+    connection.execute(_CREATE_MEMORY_CONFLICTS_SQL)
 
 
 def _migrate_v1_to_v2(connection: sqlite3.Connection) -> None:
@@ -1059,18 +1205,37 @@ def _migrate_v4_to_v5(connection: sqlite3.Connection) -> None:
         connection.execute(f"PRAGMA user_version = {_SCHEMA_VERSION_V5}")
 
 
+def _migrate_v5_to_v6(connection: sqlite3.Connection) -> None:
+    """Upgrade a v5 store to v6 (A13.1) by adding the `memory_conflicts`
+    table. There is no v5 data to backfill: Conflict is a wholly new
+    relation in A13.1, so nothing pre-existing needs reinterpreting --
+    no pre-v6 row ever asserted a conflict, so there is nothing to infer
+    retroactively. No other table changes shape in this step.
+    """
+    missing = [name for name in _V5_TABLES if not _table_exists(connection, name)]
+    if missing:
+        raise CortexStorageError(
+            f"Cortex memory store is stamped with schema version 5 but is missing "
+            f"table(s) {missing!r}; refusing to migrate a possibly corrupted store"
+        )
+    connection.execute("BEGIN")
+    with connection:
+        connection.execute(_CREATE_MEMORY_CONFLICTS_SQL)
+        connection.execute(f"PRAGMA user_version = {_SCHEMA_VERSION_V6}")
+
+
 def _ensure_schema(connection: sqlite3.Connection) -> None:
     (version,) = connection.execute("PRAGMA user_version").fetchone()
 
     if version == 0:
-        if any(_table_exists(connection, name) for name in _V5_TABLES):
+        if any(_table_exists(connection, name) for name in _V6_TABLES):
             raise CortexStorageError(
                 "Cortex memory store has no recognized schema version but already "
                 "contains data tables; refusing to open a possibly corrupted store"
             )
         connection.execute("BEGIN")
         with connection:
-            _create_v5_schema(connection)
+            _create_v6_schema(connection)
             connection.execute(f"PRAGMA user_version = {STORE_SCHEMA_VERSION}")
         version = STORE_SCHEMA_VERSION
 
@@ -1090,13 +1255,17 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
         _migrate_v4_to_v5(connection)
         version = _SCHEMA_VERSION_V5
 
+    if version == _SCHEMA_VERSION_V5:
+        _migrate_v5_to_v6(connection)
+        version = _SCHEMA_VERSION_V6
+
     if version != STORE_SCHEMA_VERSION:
         raise CortexStorageError(
             f"Cortex memory store schema version {version} is not supported by this "
             f"version of Cortex (expected {STORE_SCHEMA_VERSION})"
         )
 
-    missing = [name for name in _V5_TABLES if not _table_exists(connection, name)]
+    missing = [name for name in _V6_TABLES if not _table_exists(connection, name)]
     if missing:
         raise CortexStorageError(
             f"Cortex memory store is stamped with schema version {version} but is "
@@ -1264,6 +1433,26 @@ def _row_to_attempt(row: tuple[str, str, str, str, str], evidence_ids: tuple[str
         recorded_at=recorded_at,
         evidence_ids=evidence_ids,
     )
+
+
+def _row_to_conflict(row: tuple[str, str, str]) -> Conflict:
+    memory_id_a, memory_id_b, recorded_at_raw = row
+
+    for memory_id in (memory_id_a, memory_id_b):
+        if not isinstance(memory_id, str) or not MEMORY_ID_PATTERN.fullmatch(memory_id):
+            raise CortexStorageError(f"Corrupted memory_id {memory_id!r} in Cortex conflict store")
+    if not memory_id_a < memory_id_b:
+        raise CortexStorageError(
+            f"Corrupted conflict pair ordering ({memory_id_a!r}, {memory_id_b!r}) in Cortex conflict store"
+        )
+    try:
+        recorded_at = dt.datetime.fromisoformat(recorded_at_raw)
+    except ValueError as exc:
+        raise CortexStorageError(
+            f"Corrupted recorded_at value {recorded_at_raw!r} for conflict "
+            f"({memory_id_a!r}, {memory_id_b!r})"
+        ) from exc
+    return Conflict(memory_ids=(memory_id_a, memory_id_b), recorded_at=recorded_at)
 
 
 def _row_to_skill(

@@ -13,7 +13,7 @@ from cortex_memory._workspace import CORTEX_DIRNAME
 
 
 def test_schema_version_unchanged_by_new_kinds(tmp_path):
-    assert STORE_SCHEMA_VERSION == 5
+    assert STORE_SCHEMA_VERSION == 6
 
     cx = Cortex.init(tmp_path, "dev")
     cx.remember("Python 3.12 is required.", kind="environment")
@@ -29,7 +29,7 @@ def test_schema_version_unchanged_by_new_kinds(tmp_path):
     finally:
         connection.close()
 
-    assert version == STORE_SCHEMA_VERSION == 5
+    assert version == STORE_SCHEMA_VERSION == 6
 
 
 def test_reopening_after_new_kinds_does_not_remigrate(tmp_path):
@@ -57,7 +57,7 @@ def test_reopening_after_new_kinds_does_not_remigrate(tmp_path):
     finally:
         connection.close()
 
-    assert version == STORE_SCHEMA_VERSION == 5
+    assert version == STORE_SCHEMA_VERSION == 6
     # exactly the same table set A5 (schema v4) already established --
     # no new table was added for the new kinds.
     assert tables >= {

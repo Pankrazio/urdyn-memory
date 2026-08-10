@@ -34,7 +34,8 @@ def _build_refresh_token_experience(cx):
     )
     lesson = cx.learn(
         "After token rotation, use only the newly issued refresh token.",
-        evidence=[error_evidence, validation],
+        evidence=[error_evidence],
+        supporting_evidence=[validation],
         verified=True,
     )
     skill = cx.promote(

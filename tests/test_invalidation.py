@@ -162,7 +162,7 @@ def test_invalidated_verified_lesson_disappears_from_preflight(tmp_path):
     validation = cx.add_evidence("Authentication tests passed.", kind="test_result")
     lesson = cx.learn(
         "Update authentication refresh logic using only the newly issued refresh token.",
-        evidence=[validation],
+        supporting_evidence=[validation],
         verified=True,
     )
 
@@ -396,7 +396,7 @@ def test_verified_invalidation_does_not_retag_the_original_memory(tmp_path):
         kind="invalidation",
         supersedes=old.memory_id,
         epistemic_state="verified",
-        evidence=[ci_evidence],
+        supporting_evidence=[ci_evidence],
     )
 
     assert inv.epistemic_state == "verified"
@@ -427,9 +427,13 @@ def test_verified_invalidation_requires_qualifying_evidence_like_any_other_kind(
 
 
 def test_store_schema_version_is_unchanged(tmp_path):
+    """A11.1 itself introduced no schema change (kind='invalidation' is a
+    pure Python-level `VALID_KINDS` addition, like A9.1's kinds). The
+    literal anchor below tracks whatever A12.1 (or later) legitimately
+    bumped it to since -- see `test_migration_v5.py` for that bump."""
     from cortex_memory._store import STORE_SCHEMA_VERSION
 
-    assert STORE_SCHEMA_VERSION == 4
+    assert STORE_SCHEMA_VERSION == 5
 
 
 # -- copied workspace (A11.1 section 19 test list) --------------------------

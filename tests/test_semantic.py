@@ -405,7 +405,7 @@ def test_semantic_representation_excludes_skill_steps(tmp_path, fake_semantic):
     component on that concept's axis if steps leaked in)."""
     cx = Cortex.init(tmp_path, "dev")
     ev = cx.add_evidence("checked", kind="test_result")
-    lesson = cx.learn("something about beta", evidence=[ev], verified=True)
+    lesson = cx.learn("something about beta", supporting_evidence=[ev], verified=True)
     cx.promote(
         lesson,
         name="unrelated name",
@@ -431,7 +431,7 @@ def test_semantic_representation_excludes_skill_steps(tmp_path, fake_semantic):
 
 def _verified_lesson(cx, content):
     ev = cx.add_evidence("checked", kind="test_result")
-    return cx.learn(content, evidence=[ev], verified=True)
+    return cx.learn(content, supporting_evidence=[ev], verified=True)
 
 
 def test_preflight_admits_a_semantic_paraphrase_lexical_alone_would_miss(tmp_path, fake_semantic):
@@ -646,7 +646,7 @@ def test_superseded_memory_is_not_resurrected_via_semantic_channel(tmp_path, fak
     # now actually supersede the old one with a fresh verified lesson
     ev = cx.add_evidence("checked again", kind="test_result")
     cx.remember(
-        "alpha replacement content", kind="lesson", epistemic_state="verified", evidence=[ev], supersedes=old.memory_id
+        "alpha replacement content", kind="lesson", epistemic_state="verified", supporting_evidence=[ev], supersedes=old.memory_id
     )
     cx.semantic_setup()
 
@@ -791,7 +791,7 @@ def test_preflight_superseded_current_does_not_block_verified_lesson(tmp_path, f
     new = _verified_lesson(cx, "alpha beta")
     ev = cx.add_evidence("superseding check", kind="test_result")
     cx.remember(
-        "alpha beta gamma", kind="lesson", epistemic_state="verified", evidence=[ev], supersedes=old.memory_id
+        "alpha beta gamma", kind="lesson", epistemic_state="verified", supporting_evidence=[ev], supersedes=old.memory_id
     )
     cx.semantic_setup()
 
@@ -810,7 +810,7 @@ def test_guard_attempt_pool_ignores_succeeded_attempts_for_eligibility(tmp_path,
     cx.record_attempt(task="alpha", approach="alpha", outcome="succeeded")  # cos=1.0, but never eligible
     ev = cx.add_evidence("observed failure", kind="test_result")
     failed = cx.record_attempt(task="alpha beta", approach="alpha beta", outcome="failed", evidence=[ev])
-    lesson = cx.learn("alpha beta lesson", evidence=[ev], verified=True)
+    lesson = cx.learn("alpha beta lesson", supporting_evidence=[ev], verified=True)
     cx.promote(lesson, name="alpha beta skill", purpose="alpha beta purpose", steps=["step"])
     cx.semantic_setup()
 
@@ -833,7 +833,7 @@ def test_preflight_corroboration_admits_a_near_floor_lesson_with_independently_r
     the tied candidate instead of leaving preflight() empty."""
     cx = Cortex.init(tmp_path, "dev")
     ev = cx.add_evidence("shared evidence for corroboration", kind="test_result")
-    cx.learn("alpha", evidence=[ev], verified=True)
+    cx.learn("alpha", supporting_evidence=[ev], verified=True)
     _verified_lesson(cx, "alpha")  # exact tie -> margin floor rejects both on its own
     # related Attempt, sharing `ev`, independently and strongly relevant
     # to the same query on its own terms (own score clears ATTEMPT's floor)
@@ -859,7 +859,7 @@ def test_preflight_corroboration_rejects_a_merely_present_unrelated_attempt(tmp_
     must NOT fire, and the tie must remain unresolved (abstain)."""
     cx = Cortex.init(tmp_path, "dev")
     ev = cx.add_evidence("shared evidence, unrelated attempt", kind="test_result")
-    cx.learn("alpha", evidence=[ev], verified=True)
+    cx.learn("alpha", supporting_evidence=[ev], verified=True)
     _verified_lesson(cx, "alpha")  # exact tie, same as the case above
     # related Attempt shares the SAME evidence, but its own text has
     # nothing to do with the query -- must not count as corroboration
@@ -877,7 +877,7 @@ def test_preflight_corroboration_requires_a_real_canonical_relationship(tmp_path
     it either, even if its own text would independently score well."""
     cx = Cortex.init(tmp_path, "dev")
     ev1 = cx.add_evidence("evidence for the tied lesson", kind="test_result")
-    cx.learn("alpha", evidence=[ev1], verified=True)
+    cx.learn("alpha", supporting_evidence=[ev1], verified=True)
     _verified_lesson(cx, "alpha")
     # a DIFFERENT, unrelated attempt: independently strong on "alpha" but
     # shares no Evidence with either tied lesson
@@ -899,7 +899,7 @@ def test_guard_never_gets_structural_corroboration_widening(tmp_path, fake_seman
     ev = cx.add_evidence("shared evidence", kind="test_result")
     lesson_a = _verified_lesson(cx, "alpha")
     cx.promote(lesson_a, name="alpha skill a", purpose="alpha", steps=["s"])
-    lesson_b = cx.learn("alpha", evidence=[ev], verified=True)
+    lesson_b = cx.learn("alpha", supporting_evidence=[ev], verified=True)
     cx.promote(lesson_b, name="alpha skill b", purpose="alpha", steps=["s"])
     cx.record_attempt(task="alpha", approach="alpha", outcome="failed", evidence=[ev])
     cx.semantic_setup()
@@ -921,7 +921,7 @@ def test_preflight_favors_recall_guard_favors_precision_on_the_same_query(tmp_pa
     two APIs are not required to agree."""
     cx = Cortex.init(tmp_path, "dev")
     ev = cx.add_evidence("shared evidence for corroboration", kind="test_result")
-    lesson = cx.learn("alpha", evidence=[ev], verified=True)
+    lesson = cx.learn("alpha", supporting_evidence=[ev], verified=True)
     _verified_lesson(cx, "alpha")  # tie partner, forces the memory-pool margin abstain path
     skill = cx.promote(lesson, name="alpha related skill", purpose="alpha", steps=["s"])
     other_lesson = _verified_lesson(cx, "alpha")
@@ -965,7 +965,7 @@ def test_stale_semantic_index_disables_corroboration_too(tmp_path, fake_semantic
     same way -- verified explicitly rather than assumed from shared code."""
     cx = Cortex.init(tmp_path, "dev")
     ev = cx.add_evidence("shared evidence", kind="test_result")
-    cx.learn("alpha", evidence=[ev], verified=True)
+    cx.learn("alpha", supporting_evidence=[ev], verified=True)
     _verified_lesson(cx, "alpha")
     cx.record_attempt(task="alpha", approach="alpha", outcome="failed", evidence=[ev])
     cx.semantic_setup()
@@ -985,7 +985,7 @@ def test_stale_semantic_index_disables_corroboration_too(tmp_path, fake_semantic
 def test_corroboration_does_not_crash_without_the_extra(tmp_path, monkeypatch):
     cx = Cortex.init(tmp_path, "dev")
     ev = cx.add_evidence("shared evidence", kind="test_result")
-    cx.learn("alpha", evidence=[ev], verified=True)
+    cx.learn("alpha", supporting_evidence=[ev], verified=True)
     cx.record_attempt(task="alpha", approach="alpha", outcome="failed", evidence=[ev])
 
     _block_model2vec(monkeypatch)

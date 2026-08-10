@@ -81,7 +81,7 @@ def test_capture_workflow_end_to_end(tmp_path):
     # cause is derived automatically.
     lesson = process_a.learn(
         "Persistent schema migrations should execute atomically so a failure cannot leave partial state.",
-        evidence=[verification_evidence],
+        supporting_evidence=[verification_evidence],
         verified=True,
     )
     assert lesson.epistemic_state == "verified"
@@ -264,7 +264,7 @@ def test_capture_workflow_does_not_depend_on_the_semantic_channel(tmp_path, monk
     )
     cx.learn(
         "Persistent schema migrations should execute atomically so a failure cannot leave partial state.",
-        evidence=[verification_evidence],
+        supporting_evidence=[verification_evidence],
         verified=True,
     )
 

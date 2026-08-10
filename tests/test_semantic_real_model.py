@@ -101,7 +101,8 @@ def _build_human_acceptance_workspace(tmp_path):
     lesson = cx.learn(
         "preflight() and guard() can miss relevant experience that exists when the "
         "task is worded differently than how it was recorded.",
-        evidence=[root_cause_evidence, verification],
+        evidence=[root_cause_evidence],
+        supporting_evidence=[verification],
         verified=True,
     )
     skill = cx.promote(
@@ -279,7 +280,7 @@ def test_safe_unsafe_contradiction_never_surfaces_the_wrong_lesson_as_authoritat
         unsafe_lesson = cx.learn(
             "After rotating a refresh token, reusing the old token is unsafe and can "
             "lead to session hijacking; always use the newly issued token.",
-            evidence=[unsafe_evidence],
+            supporting_evidence=[unsafe_evidence],
             verified=True,
         )
         contradiction_evidence = cx.add_evidence("grace-window claim, unverified", kind="user_statement")

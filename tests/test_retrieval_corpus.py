@@ -33,7 +33,8 @@ def _build_connection_pool_experience(cx):
     lesson = cx.learn(
         "Close database connections explicitly after each request instead of "
         "relying on garbage collection to reclaim the pool.",
-        evidence=[error_evidence, validation],
+        evidence=[error_evidence],
+        supporting_evidence=[validation],
         verified=True,
     )
     skill = cx.promote(

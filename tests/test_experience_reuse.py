@@ -40,7 +40,8 @@ def test_attempt_lesson_skill_guard_end_to_end(tmp_path):
 
     lesson = process_a.learn(
         "After token rotation, use only the newly issued refresh token.",
-        evidence=[error_evidence, validation],
+        evidence=[error_evidence],
+        supporting_evidence=[validation],
         verified=True,
     )
 
@@ -90,7 +91,7 @@ def test_workspace_is_portable_after_promotion(tmp_path):
     validation = cx.add_evidence("Authentication tests passed.", kind="test_result")
     lesson = cx.learn(
         "After token rotation, use only the newly issued refresh token.",
-        evidence=[validation],
+        supporting_evidence=[validation],
         verified=True,
     )
     original_skill = cx.promote(

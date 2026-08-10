@@ -42,12 +42,12 @@ def test_fts_channel_does_not_resurrect_a_superseded_verified_lesson(tmp_path):
     validation = cx.add_evidence("Confirmed via load test.", kind="test_result")
     old_lesson = cx.learn(
         "Database connection pool exhaustion happens under sustained load.",
-        evidence=[validation],
+        supporting_evidence=[validation],
         verified=True,
     )
     new_lesson = cx.learn(
         "Close database connections explicitly to avoid pool exhaustion under sustained load.",
-        evidence=[validation],
+        supporting_evidence=[validation],
         verified=True,
         supersedes=old_lesson.memory_id,
     )

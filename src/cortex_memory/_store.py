@@ -14,9 +14,18 @@ Schema history:
        `root_cause`, `inferred`, `verified`) at the Python validation
        layer only — no column changes are needed for that.
   v4 - adds `skills`, `skill_steps`, `skill_conditions`, `skill_evidence`.
+  v5 - adds `memory_evidence.role` (A12.1): distinguishes Evidence the
+       caller explicitly designated as SUPPORTING a memory from Evidence
+       that is merely generically related/provenance. Existing rows are
+       backfilled to `'related'` (never `'supporting'`: a pre-v5 row
+       never recorded an explicit support assertion, and none is
+       invented for it retroactively). Only `memories`/`memory_evidence`
+       are affected; `attempt_evidence`/`skill_evidence` are unchanged --
+       A12.1 deliberately does not extend this concept to Attempt or
+       Skill (see `_workspace.py`'s A12.1 notes).
 
-A v1, v2, or v3 database opened by this module is migrated forward to v4
-in place, one step at a time, without touching existing rows.
+A v1, v2, v3, or v4 database opened by this module is migrated forward to
+v5 in place, one step at a time, without touching existing rows.
 
 Search index (derived, not versioned):
   A FTS5 virtual table `search_index` provides candidate widening for
@@ -46,7 +55,7 @@ from pathlib import Path
 from ._attempt import ATTEMPT_ID_PATTERN, VALID_OUTCOMES, Attempt
 from ._errors import CortexStorageError
 from ._event import EVENT_KIND_ATTEMPT_RECORDED, EVENT_KIND_MEMORY_RECORDED, EVENT_KIND_SKILL_PROMOTED, Event
-from ._evidence import EVIDENCE_ID_PATTERN, Evidence
+from ._evidence import EVIDENCE_ID_PATTERN, VERIFICATION_EVIDENCE_KINDS, Evidence
 from ._memory import (
     EPISTEMIC_VERIFIED,
     KIND_LESSON,
@@ -63,12 +72,24 @@ _SCHEMA_VERSION_V1 = 1
 _SCHEMA_VERSION_V2 = 2
 _SCHEMA_VERSION_V3 = 3
 _SCHEMA_VERSION_V4 = 4
-STORE_SCHEMA_VERSION = _SCHEMA_VERSION_V4
+_SCHEMA_VERSION_V5 = 5
+STORE_SCHEMA_VERSION = _SCHEMA_VERSION_V5
 DB_FILENAME = "memory.db"
 
 _V2_TABLES = ("memories", "evidence", "memory_evidence", "events")
 _V3_TABLES = _V2_TABLES + ("attempts", "attempt_evidence")
 _V4_TABLES = _V3_TABLES + ("skills", "skill_steps", "skill_conditions", "skill_evidence")
+# v5 adds no new table, only a column on the existing `memory_evidence`
+# table (see module docstring) -- the set of required tables is unchanged.
+_V5_TABLES = _V4_TABLES
+
+# Canonical values for `memory_evidence.role` (A12.1). Internal storage
+# vocabulary only -- never exposed as SQL or as these literal strings in
+# the public API; the public model expresses the same distinction via
+# `Memory.evidence_ids` (all) vs `Memory.supporting_evidence_ids` (the
+# `_ROLE_SUPPORTING` subset).
+_ROLE_RELATED = "related"
+_ROLE_SUPPORTING = "supporting"
 
 # Derived search index: deliberately outside `_V4_TABLES`/`STORE_SCHEMA_VERSION`
 # (see module docstring). `SEARCH_INDEX_TABLE` is exported for tests that
@@ -108,6 +129,21 @@ _CREATE_MEMORY_EVIDENCE_SQL = """
         memory_id TEXT NOT NULL,
         evidence_id TEXT NOT NULL,
         position INTEGER NOT NULL,
+        PRIMARY KEY (memory_id, evidence_id)
+    )
+"""
+
+# v5 shape of the same table (see module docstring): used only to create
+# a brand-new store directly at the current schema. A store migrating up
+# from v1 still passes through `_CREATE_MEMORY_EVIDENCE_SQL` (the v2
+# shape) at the v1->v2 step, then gains `role` via `_migrate_v4_to_v5`'s
+# `ALTER TABLE` -- this constant is never used by that migration chain.
+_CREATE_MEMORY_EVIDENCE_V5_SQL = f"""
+    CREATE TABLE memory_evidence (
+        memory_id TEXT NOT NULL,
+        evidence_id TEXT NOT NULL,
+        position INTEGER NOT NULL,
+        role TEXT NOT NULL DEFAULT '{_ROLE_RELATED}',
         PRIMARY KEY (memory_id, evidence_id)
     )
 """
@@ -244,8 +280,29 @@ class MemoryStore:
         """Persist a new memory, its evidence links, and its events atomically.
 
         Raises `ValueError` if `memory.supersedes` names an unknown memory,
-        or if any `memory.evidence_ids` entry names unknown evidence. Raises
-        `CortexStorageError` on genuine storage corruption or I/O failure.
+        if any `memory.evidence_ids` entry names unknown evidence, if
+        `memory.supporting_evidence_ids` is not a subset of
+        `memory.evidence_ids`, or (A12.1.1) if `memory.epistemic_state`
+        is `verified` without at least one supporting Evidence of a
+        qualifying kind. Raises `CortexStorageError` on genuine storage
+        corruption or I/O failure.
+
+        WRITE-BOUNDARY NOTE (A12.1.1): `Cortex.remember()` is still the
+        primary, user-facing enforcement point for the verified contract
+        (see its docstring) -- this repeats the SAME rule, against the
+        SAME `VERIFICATION_EVIDENCE_KINDS` constant, at the canonical
+        storage boundary itself, so the invariant does not depend
+        entirely on every future internal call path (a batch importer,
+        a repair tool, anything constructing a `Memory` directly and
+        calling `add()`) remembering to go through `remember()`. This is
+        a WRITE-time check only -- it runs once, here, when a row is
+        first inserted. It is deliberately NOT re-checked on any READ
+        path (`search`/`timeline`/`state` below): a `verified` memory
+        migrated from schema v4 legitimately has an empty
+        `supporting_evidence_ids` (A12.1 grandfathering -- that concept
+        did not exist when it was recorded) and must keep loading
+        exactly as recorded. Applying this rule on read would silently
+        contradict that grandfathering guarantee.
         """
         try:
             with self._connection:
@@ -260,6 +317,24 @@ class MemoryStore:
                 for evidence_id in memory.evidence_ids:
                     if not self._evidence_exists(evidence_id):
                         raise ValueError(f"Unknown evidence reference {evidence_id!r}")
+                if not set(memory.supporting_evidence_ids).issubset(memory.evidence_ids):
+                    raise ValueError(
+                        "supporting_evidence_ids must be a subset of evidence_ids"
+                    )
+                if memory.epistemic_state == EPISTEMIC_VERIFIED:
+                    if not memory.supporting_evidence_ids:
+                        raise ValueError(
+                            "A memory cannot be persisted as verified without at least one "
+                            "explicitly designated supporting Evidence"
+                        )
+                    supporting_kinds = {
+                        self._evidence_kind(evidence_id) for evidence_id in memory.supporting_evidence_ids
+                    }
+                    if supporting_kinds.isdisjoint(VERIFICATION_EVIDENCE_KINDS):
+                        raise ValueError(
+                            "A memory can only be persisted as verified with supporting evidence "
+                            f"of a qualifying kind (one of {sorted(VERIFICATION_EVIDENCE_KINDS)})"
+                        )
 
                 self._connection.execute(
                     "INSERT INTO memories "
@@ -275,11 +350,13 @@ class MemoryStore:
                     ),
                 )
                 self._index_entity(ENTITY_MEMORY, memory.memory_id, memory_search_text(memory.content))
+                supporting = frozenset(memory.supporting_evidence_ids)
                 for position, evidence_id in enumerate(memory.evidence_ids):
+                    role = _ROLE_SUPPORTING if evidence_id in supporting else _ROLE_RELATED
                     self._connection.execute(
-                        "INSERT INTO memory_evidence (memory_id, evidence_id, position) "
-                        "VALUES (?, ?, ?)",
-                        (memory.memory_id, evidence_id, position),
+                        "INSERT INTO memory_evidence (memory_id, evidence_id, position, role) "
+                        "VALUES (?, ?, ?, ?)",
+                        (memory.memory_id, evidence_id, position, role),
                     )
                 for event in events:
                     self._connection.execute(
@@ -309,10 +386,11 @@ class MemoryStore:
         rows = self._fetch_all_memory_rows()
         current_ids = self._current_ids_from_rows(rows) if current_only else None
         evidence_map = self._all_memory_evidence_map()
+        supporting_map = self._all_memory_supporting_evidence_map()
 
         matches: list[tuple[int, Memory]] = []
         for row in rows:
-            memory = _row_to_memory(row, evidence_map.get(row[0], ()))
+            memory = _row_to_memory(row, evidence_map.get(row[0], ()), supporting_map.get(row[0], ()))
             if current_ids is not None and memory.memory_id not in current_ids:
                 continue
             occurrences = memory.content.casefold().count(needle)
@@ -342,6 +420,7 @@ class MemoryStore:
             raise CortexStorageError(f"Failed to read Cortex event log: {exc}") from exc
 
         evidence_map = self._all_memory_evidence_map()
+        supporting_map = self._all_memory_supporting_evidence_map()
         results: list[Memory] = []
         for memory_id in subject_ids:
             row = self._fetch_memory_row(memory_id)
@@ -349,7 +428,7 @@ class MemoryStore:
                 raise CortexStorageError(
                     f"Event log references memory {memory_id!r} that does not exist"
                 )
-            memory = _row_to_memory(row, evidence_map.get(memory_id, ()))
+            memory = _row_to_memory(row, evidence_map.get(memory_id, ()), supporting_map.get(memory_id, ()))
             if kind is not None and memory.kind != kind:
                 continue
             results.append(memory)
@@ -498,7 +577,11 @@ class MemoryStore:
                         f"Cannot promote unknown lesson {source_lesson_id!r}; "
                         "a skill can only be promoted from an existing lesson memory"
                     )
-                canonical_lesson = _row_to_memory(lesson_row, self._memory_evidence_ids(source_lesson_id))
+                canonical_lesson = _row_to_memory(
+                    lesson_row,
+                    self._memory_evidence_ids(source_lesson_id),
+                    self._memory_supporting_evidence_ids(source_lesson_id),
+                )
 
                 verification_state = (
                     SKILL_VERIFIED if canonical_lesson.epistemic_state == EPISTEMIC_VERIFIED else SKILL_CANDIDATE
@@ -704,6 +787,27 @@ class MemoryStore:
             raise CortexStorageError(f"Failed to read Cortex provenance links: {exc}") from exc
         return tuple(row[0] for row in rows)
 
+    def _memory_supporting_evidence_ids(self, memory_id: str) -> tuple[str, ...]:
+        """(A12.1.1) Validates every row's `role` explicitly -- see
+        `_all_memory_supporting_evidence_map`'s docstring for why
+        filtering by `role = 'supporting'` alone is not enough."""
+        try:
+            rows = self._connection.execute(
+                "SELECT evidence_id, role FROM memory_evidence WHERE memory_id = ? ORDER BY position",
+                (memory_id,),
+            ).fetchall()
+        except sqlite3.DatabaseError as exc:
+            raise CortexStorageError(f"Failed to read Cortex provenance links: {exc}") from exc
+        result: list[str] = []
+        for evidence_id, role in rows:
+            if role not in (_ROLE_RELATED, _ROLE_SUPPORTING):
+                raise CortexStorageError(
+                    f"Corrupted memory_evidence.role {role!r} for memory {memory_id!r}"
+                )
+            if role == _ROLE_SUPPORTING:
+                result.append(evidence_id)
+        return tuple(result)
+
     # -- internal helpers -----------------------------------------------------
 
     def _fetch_all_memory_rows(self) -> list[tuple]:
@@ -745,6 +849,39 @@ class MemoryStore:
             raise CortexStorageError(f"Failed to read Cortex provenance links: {exc}") from exc
         return _group_ordered(rows)
 
+    def _all_memory_supporting_evidence_map(self) -> dict[str, tuple[str, ...]]:
+        """Same shape as `_all_memory_evidence_map`, restricted to rows
+        explicitly designated `role = 'supporting'` (A12.1). Order is the
+        same `position` sequence used for the full `evidence_ids` list --
+        a supporting Evidence keeps its relative position, not a
+        renumbered one, so ordering stays consistent between
+        `evidence_ids` and `supporting_evidence_ids` for the same memory.
+
+        (A12.1.1) Reads every row's `role`, not just ones already
+        matching `'supporting'` in SQL, so an unrecognized value (never
+        written by this codebase, but not impossible for hand-edited or
+        externally-touched data) is caught explicitly rather than
+        silently treated as "not supporting" -- filtering with `WHERE
+        role = 'supporting'` alone would make a corrupted role
+        indistinguishable from a legitimate `'related'` one, silently
+        dropping a real support designation with no error at all.
+        """
+        try:
+            rows = self._connection.execute(
+                "SELECT memory_id, evidence_id, role FROM memory_evidence ORDER BY memory_id, position"
+            ).fetchall()
+        except sqlite3.DatabaseError as exc:
+            raise CortexStorageError(f"Failed to read Cortex provenance links: {exc}") from exc
+        supporting_rows: list[tuple[str, str]] = []
+        for memory_id, evidence_id, role in rows:
+            if role not in (_ROLE_RELATED, _ROLE_SUPPORTING):
+                raise CortexStorageError(
+                    f"Corrupted memory_evidence.role {role!r} for memory {memory_id!r}"
+                )
+            if role == _ROLE_SUPPORTING:
+                supporting_rows.append((memory_id, evidence_id))
+        return _group_ordered(supporting_rows)
+
     def _all_attempt_evidence_map(self) -> dict[str, tuple[str, ...]]:
         try:
             rows = self._connection.execute(
@@ -778,6 +915,15 @@ class MemoryStore:
         ).fetchone()
         return row is not None
 
+    def _evidence_kind(self, evidence_id: str) -> str:
+        """Only called from `add()`'s write-boundary verified check
+        (A12.1.1), after `evidence_id` has already been confirmed to
+        exist via `_evidence_exists` -- assumes the row is present."""
+        (kind,) = self._connection.execute(
+            "SELECT kind FROM evidence WHERE evidence_id = ?", (evidence_id,)
+        ).fetchone()
+        return kind
+
 
 def _group_ordered(rows: list[tuple[str, str]]) -> dict[str, tuple[str, ...]]:
     grouped: dict[str, list[str]] = {}
@@ -795,10 +941,13 @@ def _table_exists(connection: sqlite3.Connection, name: str) -> bool:
     )
 
 
-def _create_v4_schema(connection: sqlite3.Connection) -> None:
+def _create_v5_schema(connection: sqlite3.Connection) -> None:
+    """Create every table at its CURRENT (v5) shape, for a brand-new
+    store only. Not part of the v1->v5 migration chain below, which
+    upgrades each table incrementally instead."""
     connection.execute(_CREATE_MEMORIES_V2_SQL)
     connection.execute(_CREATE_EVIDENCE_SQL)
-    connection.execute(_CREATE_MEMORY_EVIDENCE_SQL)
+    connection.execute(_CREATE_MEMORY_EVIDENCE_V5_SQL)
     connection.execute(_CREATE_EVENTS_SQL)
     connection.execute(_CREATE_ATTEMPTS_SQL)
     connection.execute(_CREATE_ATTEMPT_EVIDENCE_SQL)
@@ -884,18 +1033,44 @@ def _migrate_v3_to_v4(connection: sqlite3.Connection) -> None:
         connection.execute(f"PRAGMA user_version = {_SCHEMA_VERSION_V4}")
 
 
+def _migrate_v4_to_v5(connection: sqlite3.Connection) -> None:
+    """Upgrade a v4 store to v5 (A12.1) by adding `memory_evidence.role`.
+
+    Every pre-existing `memory_evidence` row is backfilled to `'related'`
+    via the column's own `DEFAULT` -- never `'supporting'`: a row written
+    before A12.1 never carried an explicit caller assertion of support,
+    and none is invented for it here. This is why the column is declared
+    `NOT NULL DEFAULT 'related'` rather than backfilled by a separate
+    `UPDATE` -- the default IS the backfill, applied atomically by SQLite
+    to every existing row as part of the single `ALTER TABLE`. No other
+    table changes shape in this step.
+    """
+    missing = [name for name in _V4_TABLES if not _table_exists(connection, name)]
+    if missing:
+        raise CortexStorageError(
+            f"Cortex memory store is stamped with schema version 4 but is missing "
+            f"table(s) {missing!r}; refusing to migrate a possibly corrupted store"
+        )
+    connection.execute("BEGIN")
+    with connection:
+        connection.execute(
+            f"ALTER TABLE memory_evidence ADD COLUMN role TEXT NOT NULL DEFAULT '{_ROLE_RELATED}'"
+        )
+        connection.execute(f"PRAGMA user_version = {_SCHEMA_VERSION_V5}")
+
+
 def _ensure_schema(connection: sqlite3.Connection) -> None:
     (version,) = connection.execute("PRAGMA user_version").fetchone()
 
     if version == 0:
-        if any(_table_exists(connection, name) for name in _V4_TABLES):
+        if any(_table_exists(connection, name) for name in _V5_TABLES):
             raise CortexStorageError(
                 "Cortex memory store has no recognized schema version but already "
                 "contains data tables; refusing to open a possibly corrupted store"
             )
         connection.execute("BEGIN")
         with connection:
-            _create_v4_schema(connection)
+            _create_v5_schema(connection)
             connection.execute(f"PRAGMA user_version = {STORE_SCHEMA_VERSION}")
         version = STORE_SCHEMA_VERSION
 
@@ -911,13 +1086,17 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
         _migrate_v3_to_v4(connection)
         version = _SCHEMA_VERSION_V4
 
+    if version == _SCHEMA_VERSION_V4:
+        _migrate_v4_to_v5(connection)
+        version = _SCHEMA_VERSION_V5
+
     if version != STORE_SCHEMA_VERSION:
         raise CortexStorageError(
             f"Cortex memory store schema version {version} is not supported by this "
             f"version of Cortex (expected {STORE_SCHEMA_VERSION})"
         )
 
-    missing = [name for name in _V4_TABLES if not _table_exists(connection, name)]
+    missing = [name for name in _V5_TABLES if not _table_exists(connection, name)]
     if missing:
         raise CortexStorageError(
             f"Cortex memory store is stamped with schema version {version} but is "
@@ -1015,7 +1194,9 @@ def _rebuild_search_index(connection: sqlite3.Connection) -> None:
         )
 
 
-def _row_to_memory(row: tuple, evidence_ids: tuple[str, ...]) -> Memory:
+def _row_to_memory(
+    row: tuple, evidence_ids: tuple[str, ...], supporting_evidence_ids: tuple[str, ...] = ()
+) -> Memory:
     memory_id, content, kind, epistemic_state, recorded_at_raw, supersedes = row
 
     if not isinstance(memory_id, str) or not MEMORY_ID_PATTERN.fullmatch(memory_id):
@@ -1044,6 +1225,7 @@ def _row_to_memory(row: tuple, evidence_ids: tuple[str, ...]) -> Memory:
         recorded_at=recorded_at,
         supersedes=supersedes,
         evidence_ids=evidence_ids,
+        supporting_evidence_ids=supporting_evidence_ids,
     )
 
 

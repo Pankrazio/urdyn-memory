@@ -88,7 +88,7 @@ def fake_semantic(monkeypatch):
 
 def _verified_lesson(cx, content):
     ev = cx.add_evidence("checked", kind="test_result")
-    return cx.learn(content, evidence=[ev], verified=True)
+    return cx.learn(content, supporting_evidence=[ev], verified=True)
 
 
 _DILUTED_QUERY = (
@@ -106,7 +106,7 @@ def test_preflight_admits_sibling_root_cause_and_lesson_tied_on_score(tmp_path, 
     ev = cx.add_evidence("observed failure", kind="error_observation")
     root_cause = cx.remember("alpha", kind="root_cause", epistemic_state="inferred", evidence=[ev])
     validation = cx.add_evidence("checked", kind="test_result")
-    lesson = cx.learn("alpha", evidence=[ev, validation], verified=True)
+    lesson = cx.learn("alpha", evidence=[ev], supporting_evidence=[validation], verified=True)
     cx.semantic_setup()
 
     result = cx.preflight(_DILUTED_QUERY)
@@ -144,7 +144,7 @@ def test_preflight_admits_low_scoring_sibling_via_cluster_membership(tmp_path, f
     root_cause = cx.remember("alpha beta", kind="root_cause", epistemic_state="inferred", evidence=[ev])
     # "gamma" alone scores 0.0 against a pure "alpha" query -- well below the memory floor on its own
     validation = cx.add_evidence("checked", kind="test_result")
-    lesson = cx.learn("gamma", evidence=[ev, validation], verified=True)
+    lesson = cx.learn("gamma", evidence=[ev], supporting_evidence=[validation], verified=True)
     cx.semantic_setup()
 
     result = cx.preflight(_DILUTED_QUERY)
@@ -163,7 +163,7 @@ def test_preflight_cluster_still_loses_to_a_stronger_unrelated_competitor(tmp_pa
     ev = cx.add_evidence("observed failure", kind="error_observation")
     validation = cx.add_evidence("checked", kind="test_result")
     cx.remember("alpha beta", kind="root_cause", epistemic_state="inferred", evidence=[ev])
-    cx.learn("alpha beta", evidence=[ev, validation], verified=True)
+    cx.learn("alpha beta", evidence=[ev], supporting_evidence=[validation], verified=True)
     # unrelated, exact match on the query's own concept -- strictly stronger, no shared evidence
     strong_unrelated = _verified_lesson(cx, "alpha")
     cx.semantic_setup()
@@ -254,7 +254,8 @@ def _build_database_migration_experience(cx):
     lesson = cx.learn(
         "Persistent schema upgrades should execute atomically so that a failure "
         "cannot leave only part of the migration applied.",
-        evidence=[failure_evidence, validation],
+        evidence=[failure_evidence],
+        supporting_evidence=[validation],
         verified=True,
     )
     cx.promote(

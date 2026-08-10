@@ -167,6 +167,7 @@ class Cortex:
         epistemic_state: str = EPISTEMIC_USER_ASSERTED,
         supersedes: str | None = None,
         evidence: Sequence[Evidence] = (),
+        supporting_evidence: Sequence[Evidence] = (),
     ) -> Memory:
         """Persist a new canonical memory and return it.
 
@@ -176,16 +177,43 @@ class Cortex:
         If `supersedes` is given, it must be the memory_id of an existing
         memory; that memory is preserved as history, not deleted or
         modified, and stops being "current". `evidence` records why this
-        memory exists (its provenance).
+        memory exists (its generic provenance) -- Evidence merely
+        related to or contextual for this memory, not necessarily proof
+        of it.
 
-        `epistemic_state` defaults to `user_asserted`. Recording evidence
-        does not by itself imply verification: a memory may only be
-        marked `verified` if `evidence` includes at least one item whose
-        kind actually represents a check (a test result, a command or
-        tool output, an explicit user confirmation) — an opinion
-        (`user_statement`) or a bare file reference is not enough. Cortex
-        refuses to accept a verified claim resting on nothing, and
-        refuses one resting only on an unchecked assertion.
+        `supporting_evidence` (A12.1) is a second, narrower pool: the
+        Evidence the caller explicitly designates as SUPPORTING this
+        specific memory, as opposed to generic provenance. Any item in
+        `supporting_evidence` is automatically folded into the memory's
+        `evidence_ids` as well (supporting implies related) -- the same
+        Evidence never needs to be listed in both `evidence` and
+        `supporting_evidence` to appear in both places. `evidence_ids`
+        preserves `evidence`'s own order first, then appends whatever
+        `supporting_evidence` contributes that wasn't already present,
+        deduplicated.
+
+        `epistemic_state` defaults to `user_asserted`. As of A12.1, a
+        memory may only be marked `verified` if `supporting_evidence`
+        (not generic `evidence`) includes at least one item whose kind
+        actually represents a check (a test result, a command or tool
+        output, an explicit user confirmation) -- an opinion
+        (`user_statement`) or a bare file reference is not enough, and
+        neither is a qualifying-kind Evidence cited only as generic
+        `evidence` without being explicitly designated supporting.
+        Cortex refuses to accept a verified claim resting on nothing,
+        refuses one resting only on an unchecked assertion, and refuses
+        one whose only qualifying Evidence was never explicitly asserted
+        as support for THIS memory.
+
+        This designation is a structural requirement, not a semantic
+        guarantee: Cortex does not judge whether the designated Evidence
+        actually is relevant to `content`, nor its direction (e.g. a
+        FAILED test explicitly designated as supporting is still
+        accepted) -- only that the caller made an explicit, auditable
+        assertion instead of `verified` being inferred from Evidence
+        kind alone. Memories recorded before A12.1 may be `verified`
+        with an empty `supporting_evidence_ids`; that is "verified under
+        the pre-A12.1 contract" and is never retroactively rewritten.
         """
         if not isinstance(content, str) or not content.strip():
             raise ValueError("Memory content must not be empty or whitespace-only")
@@ -201,13 +229,38 @@ class Cortex:
             raise ValueError("A memory cannot supersede itself")
 
         evidence_ids = tuple(dict.fromkeys(item.evidence_id for item in evidence))
+        supporting_ids_raw = tuple(dict.fromkeys(item.evidence_id for item in supporting_evidence))
+        # Supporting implies related: fold any supporting-only ids into the
+        # generic provenance trail, preserving `evidence`'s own order first.
+        all_evidence_ids = evidence_ids + tuple(
+            eid for eid in supporting_ids_raw if eid not in evidence_ids
+        )
+        # (A12.1.1) `evidence_ids` is the single master order (the only
+        # order the storage layer's `position` column can reconstruct on
+        # reload -- see `MemoryStore.add()`/`_all_memory_supporting_evidence_map`).
+        # `supporting_evidence_ids` is re-derived from THAT order rather
+        # than kept in the caller's own `supporting_evidence` order, so
+        # the object returned here is byte-identical, ordering included,
+        # to what a fresh `state()`/`recall()`/`timeline()` reload of the
+        # same row produces. Keeping the caller's raw order instead would
+        # silently diverge from the reloaded object the moment a
+        # supporting id was ALSO present in `evidence` at a different
+        # position -- an algorithm-dependent inconsistency, not a
+        # deliberate contract.
+        supporting_set = frozenset(supporting_ids_raw)
+        supporting_evidence_ids = tuple(eid for eid in all_evidence_ids if eid in supporting_set)
+
         if epistemic_state == EPISTEMIC_VERIFIED:
-            if not evidence_ids:
-                raise ValueError("A memory cannot be marked verified without at least one piece of evidence")
-            if not any(item.kind in VERIFICATION_EVIDENCE_KINDS for item in evidence):
+            if not supporting_ids_raw:
                 raise ValueError(
-                    "A memory can only be marked verified with evidence strong enough to justify it "
-                    f"(one of {sorted(VERIFICATION_EVIDENCE_KINDS)}), not an unchecked assertion or reference"
+                    "A memory cannot be marked verified without at least one explicitly designated "
+                    "supporting Evidence (pass it via `supporting_evidence`, not just `evidence`)"
+                )
+            if not any(item.kind in VERIFICATION_EVIDENCE_KINDS for item in supporting_evidence):
+                raise ValueError(
+                    "A memory can only be marked verified with supporting evidence strong enough to "
+                    f"justify it (one of {sorted(VERIFICATION_EVIDENCE_KINDS)}), not an unchecked "
+                    "assertion or reference"
                 )
 
         recorded_at = dt.datetime.now(dt.timezone.utc)
@@ -218,7 +271,8 @@ class Cortex:
             epistemic_state=epistemic_state,
             recorded_at=recorded_at,
             supersedes=supersedes,
-            evidence_ids=evidence_ids,
+            evidence_ids=all_evidence_ids,
+            supporting_evidence_ids=supporting_evidence_ids,
         )
 
         events = [
@@ -331,6 +385,7 @@ class Cortex:
         content: str,
         *,
         evidence: Sequence[Evidence] = (),
+        supporting_evidence: Sequence[Evidence] = (),
         verified: bool = False,
         supersedes: str | None = None,
     ) -> Memory:
@@ -338,9 +393,13 @@ class Cortex:
 
         A lesson is a `Memory` of kind `lesson`. By default it is recorded
         as a candidate (`user_asserted`); pass `verified=True` together
-        with confirming `evidence` (e.g. a test result) to record it as a
-        verified lesson instead. A candidate can later be superseded by a
-        verified version of the same lesson via `supersedes`.
+        with confirming `supporting_evidence` (e.g. a test result
+        explicitly designated as supporting this lesson -- see
+        `remember()`'s docstring for the exact A12.1 contract) to record
+        it as a verified lesson instead. `evidence` alone, even of a
+        qualifying kind, is not enough for `verified=True` since A12.1.
+        A candidate can later be superseded by a verified version of the
+        same lesson via `supersedes`.
         """
         epistemic_state = EPISTEMIC_VERIFIED if verified else EPISTEMIC_USER_ASSERTED
         return self.remember(
@@ -349,6 +408,7 @@ class Cortex:
             epistemic_state=epistemic_state,
             supersedes=supersedes,
             evidence=evidence,
+            supporting_evidence=supporting_evidence,
         )
 
     def record_attempt(

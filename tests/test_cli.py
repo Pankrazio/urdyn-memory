@@ -337,7 +337,8 @@ def test_cli_skills_and_guard_end_to_end(tmp_path, monkeypatch, capsys):
     )
     lesson = cx.learn(
         "After token rotation, use only the newly issued refresh token.",
-        evidence=[error_evidence, validation],
+        evidence=[error_evidence],
+        supporting_evidence=[validation],
         verified=True,
     )
     cx.promote(

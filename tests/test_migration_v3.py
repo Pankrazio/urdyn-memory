@@ -221,9 +221,10 @@ def test_full_chain_v1_database_reaches_v3_and_supports_a4_features(tmp_path):
     finally:
         connection.close()
 
-    # A5 adds schema v4 (Skill persistence) on top of A4's v3; a v1 database
-    # now migrates all the way through, not just to v3.
-    assert version == 4
+    # A5 adds schema v4 (Skill persistence) and A12.1 adds v5 (explicit
+    # support role) on top of A4's v3; a v1 database now migrates all the
+    # way through, not just to v3.
+    assert version == 5
     assert {"memories", "evidence", "memory_evidence", "events", "attempts", "attempt_evidence"} <= tables
 
     results = cx.recall("a memory from A2")

@@ -13,7 +13,7 @@ from cortex_memory._store import MemoryStore
 
 def _verified_lesson(cx, content="Use only the newly issued refresh token."):
     validation = cx.add_evidence("Authentication tests passed.", kind="test_result")
-    return cx.learn(content, evidence=[validation], verified=True)
+    return cx.learn(content, supporting_evidence=[validation], verified=True)
 
 
 def test_promote_assigns_stable_valid_id(tmp_path):

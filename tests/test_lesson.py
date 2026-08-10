@@ -27,12 +27,25 @@ def test_learn_verified_with_evidence_is_accepted(tmp_path):
 
     lesson = cx.learn(
         "Use only the newly issued refresh token.",
-        evidence=[validation],
+        supporting_evidence=[validation],
         verified=True,
     )
 
     assert lesson.epistemic_state == "verified"
     assert lesson.evidence_ids == (validation.evidence_id,)
+    assert lesson.supporting_evidence_ids == (validation.evidence_id,)
+
+
+def test_learn_verified_rejects_generic_evidence_without_explicit_support(tmp_path):
+    """[A12.1] A qualifying-kind Evidence cited only as generic `evidence`
+    (never explicitly designated `supporting_evidence`) must not verify a
+    memory: the caller must make an explicit support assertion, not just
+    generically relate the Evidence."""
+    cx = Cortex.init(tmp_path, "dev")
+    validation = cx.add_evidence("Authentication tests passed.", kind="test_result")
+
+    with pytest.raises(ValueError):
+        cx.learn("Use only the newly issued refresh token.", evidence=[validation], verified=True)
 
 
 def test_learn_verified_rejects_bare_user_statement(tmp_path):
@@ -43,7 +56,7 @@ def test_learn_verified_rejects_bare_user_statement(tmp_path):
     opinion = cx.add_evidence("I think this solution works.", kind="user_statement")
 
     with pytest.raises(ValueError):
-        cx.learn("This solution always works.", evidence=[opinion], verified=True)
+        cx.learn("This solution always works.", supporting_evidence=[opinion], verified=True)
 
 
 def test_learn_verified_rejects_bare_file_reference(tmp_path):
@@ -51,7 +64,7 @@ def test_learn_verified_rejects_bare_file_reference(tmp_path):
     reference = cx.add_evidence("src/auth/refresh.py", kind="file_reference")
 
     with pytest.raises(ValueError):
-        cx.learn("This solution always works.", evidence=[reference], verified=True)
+        cx.learn("This solution always works.", supporting_evidence=[reference], verified=True)
 
 
 def test_learn_verified_accepts_user_confirmation(tmp_path):
@@ -60,7 +73,9 @@ def test_learn_verified_accepts_user_confirmation(tmp_path):
         "I ran the auth flow manually and the bug is gone.", kind="user_confirmation"
     )
 
-    lesson = cx.learn("Use only the newly issued refresh token.", evidence=[confirmation], verified=True)
+    lesson = cx.learn(
+        "Use only the newly issued refresh token.", supporting_evidence=[confirmation], verified=True
+    )
 
     assert lesson.epistemic_state == "verified"
 
@@ -69,7 +84,7 @@ def test_learn_verified_accepts_command_output(tmp_path):
     cx = Cortex.init(tmp_path, "dev")
     output = cx.add_evidence("exit code 0, deploy succeeded", kind="command_output")
 
-    lesson = cx.learn("Use only the newly issued refresh token.", evidence=[output], verified=True)
+    lesson = cx.learn("Use only the newly issued refresh token.", supporting_evidence=[output], verified=True)
 
     assert lesson.epistemic_state == "verified"
 
@@ -77,16 +92,23 @@ def test_learn_verified_accepts_command_output(tmp_path):
 def test_learn_verified_accepts_mixed_evidence_if_any_qualifies(tmp_path):
     """A weak (user_statement) piece of evidence alongside a strong
     (test_result) one must not disqualify the verification: the rule is
-    'at least one qualifying piece', not 'every piece must qualify'."""
+    'at least one qualifying piece [of supporting evidence]', not 'every
+    supporting piece must qualify'. The unchecked opinion stays generic
+    provenance, not supporting."""
     cx = Cortex.init(tmp_path, "dev")
     opinion = cx.add_evidence("I think this solution works.", kind="user_statement")
     validation = cx.add_evidence("Authentication tests passed.", kind="test_result")
 
     lesson = cx.learn(
-        "Use only the newly issued refresh token.", evidence=[opinion, validation], verified=True
+        "Use only the newly issued refresh token.",
+        evidence=[opinion],
+        supporting_evidence=[validation],
+        verified=True,
     )
 
     assert lesson.epistemic_state == "verified"
+    assert lesson.supporting_evidence_ids == (validation.evidence_id,)
+    assert set(lesson.evidence_ids) == {opinion.evidence_id, validation.evidence_id}
 
 
 def test_recording_a_successful_attempt_does_not_verify_an_unrelated_lesson(tmp_path):
@@ -135,7 +157,7 @@ def test_lesson_candidate_can_be_superseded_by_verified_version(tmp_path):
 
     verified = cx.learn(
         "Use only the newly issued refresh token.",
-        evidence=[validation],
+        supporting_evidence=[validation],
         verified=True,
         supersedes=candidate.memory_id,
     )
@@ -149,7 +171,9 @@ def test_lesson_candidate_can_be_superseded_by_verified_version(tmp_path):
 def test_lesson_persists_across_reopening(tmp_path):
     cx = Cortex.init(tmp_path, "dev")
     validation = cx.add_evidence("Authentication tests passed.", kind="test_result")
-    original = cx.learn("Use only the newly issued refresh token.", evidence=[validation], verified=True)
+    original = cx.learn(
+        "Use only the newly issued refresh token.", supporting_evidence=[validation], verified=True
+    )
     del cx
 
     reopened = Cortex.open(tmp_path)
@@ -158,3 +182,4 @@ def test_lesson_persists_across_reopening(tmp_path):
     assert lesson.memory_id == original.memory_id
     assert lesson.epistemic_state == "verified"
     assert lesson.evidence_ids == (validation.evidence_id,)
+    assert lesson.supporting_evidence_ids == (validation.evidence_id,)

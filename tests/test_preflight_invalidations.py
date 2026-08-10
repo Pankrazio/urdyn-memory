@@ -131,7 +131,7 @@ def test_semantic_competition_gate_preserves_verified_lesson_admission(tmp_path,
     cx = Cortex.init(tmp_path, "dev")
     ev = cx.add_evidence("observed failure", kind="error_observation")
     validation = cx.add_evidence("checked", kind="test_result")
-    lesson = cx.learn("alpha beta", evidence=[ev, validation], verified=True)
+    lesson = cx.learn("alpha beta", evidence=[ev], supporting_evidence=[validation], verified=True)
     unrelated_env = cx.remember("some environment fact", kind="environment")
     invalidation = cx.remember("alpha", kind="invalidation", supersedes=unrelated_env.memory_id)
     cx.semantic_setup()
@@ -155,7 +155,7 @@ def test_preflight_regression_existing_fields_unaffected_by_irrelevant_and_close
     ev = cx.add_evidence("observed failure", kind="error_observation")
     root_cause = cx.remember("alpha beta", kind="root_cause", epistemic_state="inferred", evidence=[ev])
     validation = cx.add_evidence("checked", kind="test_result")
-    lesson = cx.learn("alpha beta", evidence=[ev, validation], verified=True)
+    lesson = cx.learn("alpha beta", evidence=[ev], supporting_evidence=[validation], verified=True)
     cx.semantic_setup()
 
     baseline = cx.preflight(_DILUTED_QUERY)
@@ -322,7 +322,7 @@ def test_invalidated_verified_lesson_disappears_and_invalidation_surfaces(tmp_pa
     validation = cx.add_evidence("Authentication tests passed.", kind="test_result")
     lesson = cx.learn(
         "Update authentication refresh logic by using only the newly issued refresh token.",
-        evidence=[validation],
+        supporting_evidence=[validation],
         verified=True,
     )
     task = "Update authentication refresh logic."
@@ -436,7 +436,7 @@ def test_open_invalidations_admits_verified(tmp_path):
         kind="invalidation",
         supersedes=old_decision.memory_id,
         epistemic_state="verified",
-        evidence=[ci_evidence],
+        supporting_evidence=[ci_evidence],
     )
 
     result = cx.preflight("Reconsider the SQLite storage decision given CI failures under load.")
@@ -495,9 +495,12 @@ def test_open_invalidations_works_without_the_semantic_extra(tmp_path, monkeypat
 
 
 def test_store_schema_version_still_unchanged(tmp_path):
+    """A11.3 itself introduced no schema change, same reasoning as
+    `test_invalidation.py`'s equivalent anchor -- see there for why the
+    literal below now reflects A12.1's legitimate v5 bump instead."""
     from cortex_memory._store import STORE_SCHEMA_VERSION
 
-    assert STORE_SCHEMA_VERSION == 4
+    assert STORE_SCHEMA_VERSION == 5
 
 
 # ---------------------------------------------------------------------------

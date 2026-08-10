@@ -64,7 +64,7 @@ def test_preflight_matches_the_a4_real_utility_scenario(tmp_path):
     )
     cx.learn(
         "Use only the newly issued refresh token.",
-        evidence=[validation],
+        supporting_evidence=[validation],
         verified=True,
     )
 
@@ -158,10 +158,10 @@ def test_preflight_excludes_successful_attempt_from_known_failures(tmp_path):
 def test_preflight_excludes_superseded_lesson(tmp_path):
     cx = Cortex.init(tmp_path, "dev")
     validation = cx.add_evidence("Authentication tests passed.", kind="test_result")
-    old = cx.learn("Refresh tokens for authentication need care.", evidence=[validation], verified=True)
+    old = cx.learn("Refresh tokens for authentication need care.", supporting_evidence=[validation], verified=True)
     cx.learn(
         "Use only the newly issued refresh token for authentication.",
-        evidence=[validation],
+        supporting_evidence=[validation],
         verified=True,
         supersedes=old.memory_id,
     )

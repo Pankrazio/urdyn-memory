@@ -95,15 +95,35 @@ class Memory:
 
     `evidence_ids` is the stable provenance trail: the ids of Evidence
     this memory was derived from, in the order they were given. It is
-    a reference, not a copy of evidence content.
+    a reference, not a copy of evidence content. It answers "where did
+    this come from", not "what proves it" — see `supporting_evidence_ids`.
 
     `epistemic_state` distinguishes how a memory came to be believed:
     `user_asserted` (stated, not checked), `inferred` (concluded without
     direct observation, e.g. a root cause deduced from symptoms), or
     `verified` (backed by evidence that represents an actual check, e.g.
-    a test result — Cortex refuses to record a `verified` memory with no
-    evidence at all, and refuses one backed only by an unchecked
-    assertion such as a bare `user_statement`).
+    a test result). The exact requirement for `verified` differs by when
+    the memory was recorded -- see `supporting_evidence_ids` below for
+    the current (A12.1) contract and its pre-A12.1 legacy exception.
+
+    `supporting_evidence_ids` (A12.1) is the subset of `evidence_ids`
+    the caller explicitly designated as supporting THIS memory, as
+    opposed to merely related/contextual provenance. It is always a
+    subset of `evidence_ids` by construction (`remember()` folds any
+    supporting evidence into the generic provenance trail automatically
+    -- a caller never has to cite the same Evidence twice). A `verified`
+    memory recorded from A12.1 onward always has at least one supporting
+    Evidence of a qualifying kind; generic `evidence_ids` alone is no
+    longer enough, even if it happens to contain a qualifying kind (see
+    `remember()`'s docstring for the exact gate). A memory recorded
+    before A12.1 shipped may be `verified` with an empty
+    `supporting_evidence_ids` -- this is "verified under the pre-A12.1
+    contract", preserved as-is, never rewritten or downgraded.
+
+    Explicit support is not truth: Cortex does not semantically judge
+    whether the designated Evidence actually proves this memory's
+    content, only that the caller deliberately asserted it does, with
+    a kind that represents an actual check having occurred.
     """
 
     memory_id: str
@@ -113,3 +133,4 @@ class Memory:
     recorded_at: dt.datetime
     supersedes: str | None = None
     evidence_ids: tuple[str, ...] = ()
+    supporting_evidence_ids: tuple[str, ...] = ()

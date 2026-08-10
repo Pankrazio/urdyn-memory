@@ -55,7 +55,8 @@ def _build_retrieval_sensitivity_experience(cx):
     lesson = cx.learn(
         "preflight() and guard() can miss relevant experience that exists when the "
         "task is worded differently than how it was recorded.",
-        evidence=[error_evidence, validation],
+        evidence=[error_evidence],
+        supporting_evidence=[validation],
         verified=True,
     )
     skill = cx.promote(

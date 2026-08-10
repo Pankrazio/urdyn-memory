@@ -1,4 +1,15 @@
-"""Command-line interface for the Cortex Memory Engine."""
+"""Command-line interface for the Cortex Memory Engine.
+
+Every value printed here is either STRUCTURE the CLI itself emits
+(section headers, `- ` prefixes, field labels, ids and enum values Cortex
+validates on the way in) or DATA the caller stored (memory content,
+attempt task/approach, skill names, evidence text, workspace paths and
+manifest fields). Data is always passed through `terminal_safe_text`
+before printing; structure never is. That split is the whole of A14.S --
+see `_terminal.py` for why, and note that the sanitizing happens HERE, at
+the rendering boundary, so the canonical record and the public API keep
+returning exactly what the caller wrote.
+"""
 
 from __future__ import annotations
 
@@ -9,11 +20,30 @@ from ._attempt import VALID_OUTCOMES
 from ._errors import CortexError
 from ._manifest import CANONICAL_PROFILES
 from ._memory import DEFAULT_KIND, VALID_KINDS
+from ._terminal import terminal_safe_text as _safe
 from ._workspace import DEFAULT_RECALL_LIMIT, Cortex
 
 
+class _SafeArgumentParser(argparse.ArgumentParser):
+    """`argparse.ArgumentParser` that renders its own error messages
+    through the same terminal-safety boundary as everything else.
+
+    argparse's messages quote offending values with `%r`, which already
+    escapes control characters, so this is defence in depth rather than a
+    known hole -- but the values in those messages come from the caller's
+    argv, and "the caller's own input" is exactly the category this
+    module refuses to print raw. Only `error()` is overridden: usage and
+    help text are the CLI's own multi-line structure, and passing those
+    through a renderer that escapes newlines would collapse them into one
+    unreadable line.
+    """
+
+    def error(self, message: str) -> None:  # type: ignore[override]
+        super().error(_safe(message))
+
+
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="cortex", description="Cortex Memory Engine")
+    parser = _SafeArgumentParser(prog="cortex", description="Cortex Memory Engine")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     init_parser = subparsers.add_parser("init", help="Initialize a Cortex workspace")
@@ -100,15 +130,19 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "init":
             cx = Cortex.init(".", args.profile)
-            print(f"Initialized Cortex workspace at {cx.path}")
-            print(f"Profile: {cx.profile}")
+            # The path is filesystem-derived, not Cortex-validated: a
+            # directory name can hold anything, so it is data.
+            print(f"Initialized Cortex workspace at {_safe(str(cx.path))}")
+            print(f"Profile: {_safe(cx.profile)}")
             return 0
 
         if args.command == "status":
             cx = Cortex.discover()
-            print(f"Cortex workspace: {cx.path}")
-            print(f"Profile: {cx.profile}")
-            print(f"Cortex ID: {cx.cortex_id}")
+            # `profile`/`cortex_id` are read back from the on-disk
+            # manifest, which a hand edit can change: data, not structure.
+            print(f"Cortex workspace: {_safe(str(cx.path))}")
+            print(f"Profile: {_safe(cx.profile)}")
+            print(f"Cortex ID: {_safe(cx.cortex_id)}")
             print(f"Memories: {cx._count_memories()}")
             print(f"Invariants: {len(cx.state(kind='invariant'))}")
             print(f"Pending: {len(cx.state(kind='pending'))}")
@@ -131,7 +165,7 @@ def main(argv: list[str] | None = None) -> int:
                 print("No memories found.")
                 return 0
             for memory in results:
-                print(f"[{memory.memory_id}] {memory.content}")
+                print(f"[{memory.memory_id}] {_safe(memory.content)}")
             return 0
 
         if args.command == "timeline":
@@ -143,7 +177,7 @@ def main(argv: list[str] | None = None) -> int:
             current_ids = {memory.memory_id for memory in cx.state(kind=args.kind)}
             for memory in history:
                 status = "current" if memory.memory_id in current_ids else "superseded"
-                print(f"[{memory.memory_id}] ({status}) {memory.content}")
+                print(f"[{memory.memory_id}] ({status}) {_safe(memory.content)}")
             return 0
 
         if args.command == "attempt":
@@ -161,27 +195,27 @@ def main(argv: list[str] | None = None) -> int:
             if result.known_failures:
                 print("KNOWN FAILURES")
                 for attempt in result.known_failures:
-                    print(f"- [{attempt.attempt_id}] {attempt.task} -- {attempt.approach}")
+                    print(f"- [{attempt.attempt_id}] {_safe(attempt.task)} -- {_safe(attempt.approach)}")
             if result.root_causes:
                 print("ROOT CAUSES")
                 for memory in result.root_causes:
-                    print(f"- [{memory.memory_id}] {memory.content}")
+                    print(f"- [{memory.memory_id}] {_safe(memory.content)}")
             if result.verified_lessons:
                 print("VERIFIED LESSONS")
                 for memory in result.verified_lessons:
-                    print(f"- [{memory.memory_id}] {memory.content}")
+                    print(f"- [{memory.memory_id}] {_safe(memory.content)}")
             if result.recommended_validation:
                 print("RECOMMENDED VALIDATION")
                 for evidence in result.recommended_validation:
-                    print(f"- [{evidence.evidence_id}] {evidence.content}")
+                    print(f"- [{evidence.evidence_id}] {_safe(evidence.content)}")
             if result.invariants:
                 print("INVARIANTS")
                 for memory in result.invariants:
-                    print(f"- [{memory.memory_id}] {memory.content}")
+                    print(f"- [{memory.memory_id}] {_safe(memory.content)}")
             if result.open_invalidations:
                 print("OPEN INVALIDATIONS")
                 for memory in result.open_invalidations:
-                    print(f"- [{memory.memory_id}] {memory.content}")
+                    print(f"- [{memory.memory_id}] {_safe(memory.content)}")
             return 0
 
         if args.command == "skills":
@@ -191,7 +225,7 @@ def main(argv: list[str] | None = None) -> int:
                 print("No skills recorded.")
                 return 0
             for skill in items:
-                print(f"[{skill.skill_id}] ({skill.verification_state}) {skill.name}")
+                print(f"[{skill.skill_id}] ({skill.verification_state}) {_safe(skill.name)}")
             return 0
 
         if args.command == "guard":
@@ -205,26 +239,30 @@ def main(argv: list[str] | None = None) -> int:
                 print()
                 print("Known failure:")
                 for attempt in result.known_failures:
-                    print(f"- {attempt.approach}")
+                    print(f"- {_safe(attempt.approach)}")
             if result.applicable_skills:
                 print()
                 for skill in result.applicable_skills:
                     label = "verified" if skill.verification_state == "verified" else "candidate"
                     print(f"Applicable skill ({label}):")
-                    print(f"- {skill.name}")
+                    print(f"- {_safe(skill.name)}")
             if result.recommended_validation:
                 print()
                 print("Recommended validation:")
                 for evidence in result.recommended_validation:
-                    print(f"- {evidence.content}")
+                    print(f"- {_safe(evidence.content)}")
             return 0
 
         if args.command == "semantic":
             if args.semantic_command == "setup":
                 cx = Cortex.discover()
                 result = cx.semantic_setup()
+                # `provider`/`model_id` are module constants (structure);
+                # `model_revision` is read off the local model cache
+                # directory, so it is filesystem-derived data.
                 print(f"Semantic model: {result.provider}/{result.model_id}")
-                print(f"Model revision: {result.model_revision or 'unknown (see A7.4 report)'}")
+                revision = _safe(result.model_revision) if result.model_revision else None
+                print(f"Model revision: {revision or 'unknown (see A7.4 report)'}")
                 print(f"Dimensions: {result.dimensions} ({result.normalization})")
                 print(
                     f"Indexed: {result.attempt_count} attempts, {result.memory_count} memories, "
@@ -238,7 +276,9 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(f"unknown command {args.command!r}")
         return 2
     except (CortexError, ValueError) as exc:
-        print(f"cortex: error: {exc}", file=sys.stderr)
+        # Error text is structure the codebase writes, but it interpolates
+        # ids, kinds and paths that came from outside -- rendered as data.
+        print(f"cortex: error: {_safe(str(exc))}", file=sys.stderr)
         return 1
 
 

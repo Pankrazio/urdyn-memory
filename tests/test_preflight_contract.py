@@ -9,9 +9,12 @@ lexical tokens" should be observable from outside `_preflight.py`.
 """
 
 import dataclasses
+import datetime as dt
 
 import cortex_memory
-from cortex_memory import Cortex, Preflight
+from cortex_memory import Cortex, Preflight, PreflightConflict
+from cortex_memory._conflict import Conflict
+from cortex_memory._memory import Memory
 
 
 def test_preflight_is_exported_but_matching_internals_are_not():
@@ -24,13 +27,16 @@ def test_preflight_is_exported_but_matching_internals_are_not():
 def test_preflight_dataclass_shape_has_no_matching_strategy_leakage():
     field_names = {f.name for f in dataclasses.fields(Preflight)}
 
-    # `invariants` (A9.1) and `open_invalidations` (A11.3) are deliberate,
-    # documented additions to this contract: unlike the other fields,
-    # `invariants` is populated without any matching strategy at all (see
-    # `Preflight.invariants`'s docstring), and `open_invalidations` goes
-    # through the SAME matching strategy as `root_causes`/
-    # `verified_lessons` (see `Preflight.open_invalidations`'s docstring)
-    # -- neither reintroduces the leakage this test guards against, since
+    # `invariants` (A9.1), `open_invalidations` (A11.3) and
+    # `open_conflicts` (A14.1) are deliberate, documented additions to
+    # this contract: unlike the other fields, `invariants` is populated
+    # without any matching strategy at all (see `Preflight.invariants`'s
+    # docstring), `open_invalidations` goes through the SAME matching
+    # strategy as `root_causes`/`verified_lessons` (see
+    # `Preflight.open_invalidations`'s docstring), and `open_conflicts`
+    # reuses that same strategy PLUS membership in those already-admitted
+    # fields (see `Preflight.open_conflicts`'s docstring) -- none of the
+    # three reintroduces the leakage this test guards against, since
     # nothing about "shared lexical tokens" becomes observable from the
     # field names or types themselves.
     assert field_names == {
@@ -41,7 +47,18 @@ def test_preflight_dataclass_shape_has_no_matching_strategy_leakage():
         "recommended_validation",
         "invariants",
         "open_invalidations",
+        "open_conflicts",
     }
+
+
+def test_preflight_conflict_is_a_derived_view_not_the_canonical_conflict():
+    """`PreflightConflict` is a Preflight-scoped derived pairing, not the
+    canonical `Conflict` primitive (see `_conflict.py`): it must carry the
+    canonical object PLUS the two Memories, and nothing else invented for
+    rendering convenience (no severity/status/reason/score)."""
+    field_names = {f.name for f in dataclasses.fields(PreflightConflict)}
+
+    assert field_names == {"conflict", "memories"}
 
 
 def test_preflight_invariants_field_defaults_to_empty_tuple():
@@ -59,6 +76,7 @@ def test_preflight_invariants_field_defaults_to_empty_tuple():
 
     assert preflight.invariants == ()
     assert preflight.open_invalidations == ()
+    assert preflight.open_conflicts == ()
 
 
 def test_preflight_open_invalidations_field_defaults_to_empty_tuple():
@@ -75,6 +93,54 @@ def test_preflight_open_invalidations_field_defaults_to_empty_tuple():
     )
 
     assert preflight.open_invalidations == ()
+    assert preflight.open_conflicts == ()
+
+
+def test_preflight_open_conflicts_field_defaults_to_empty_tuple():
+    """The pre-A14.1 six-argument construction of `Preflight` (task + the
+    four original fields + `invariants` + `open_invalidations`) must
+    remain valid: `open_conflicts` defaults to `()` rather than being
+    required."""
+    preflight = Preflight(
+        task="a task",
+        known_failures=(),
+        root_causes=(),
+        verified_lessons=(),
+        recommended_validation=(),
+        invariants=(),
+        open_invalidations=(),
+    )
+
+    assert preflight.open_conflicts == ()
+
+
+def test_preflight_with_only_open_conflicts_is_not_empty(tmp_path):
+    """A `Preflight` bearing only a conflict signal is not "nothing found"
+    -- see `Preflight.is_empty()`'s docstring and A14.1's false-certainty
+    property."""
+    memory_a = Memory(
+        memory_id="a" * 32,
+        content="A",
+        kind="note",
+        epistemic_state="user_asserted",
+        recorded_at=dt.datetime.now(dt.timezone.utc),
+        supersedes=None,
+        evidence_ids=(),
+        supporting_evidence_ids=(),
+    )
+    memory_b = dataclasses.replace(memory_a, memory_id="b" * 32, content="B")
+    conflict = Conflict(memory_ids=("a" * 32, "b" * 32), recorded_at=dt.datetime.now(dt.timezone.utc))
+
+    preflight = Preflight(
+        task="a task",
+        known_failures=(),
+        root_causes=(),
+        verified_lessons=(),
+        recommended_validation=(),
+        open_conflicts=(PreflightConflict(conflict=conflict, memories=(memory_a, memory_b)),),
+    )
+
+    assert preflight.is_empty() is False
 
 
 def test_cortex_preflight_signature_takes_only_a_task_string(tmp_path):

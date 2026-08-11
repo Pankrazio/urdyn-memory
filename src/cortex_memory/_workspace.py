@@ -40,7 +40,7 @@ from ._memory import (
     VALID_KINDS,
     Memory,
 )
-from ._preflight import Preflight, build_preflight
+from ._preflight import Preflight, PreflightConflict, build_preflight
 from ._relevance import attempt_search_text as _attempt_search_text
 from ._relevance import is_relevant as _is_relevant
 from ._relevance import memory_search_text as _memory_search_text
@@ -53,6 +53,19 @@ from ._store import MemoryStore, db_path_for
 
 CORTEX_DIRNAME = ".cortex"
 DEFAULT_RECALL_LIMIT = 20
+
+
+def _open_conflicts_projection(conflicts: list[Conflict], current_ids: set[str]) -> list[Conflict]:
+    """The A13 definition of "open", in exactly one place: a `Conflict`
+    is open iff BOTH memories it names are current. Shared by
+    `Cortex.open_conflicts()` and `Cortex.preflight()` so the rule is
+    never reimplemented a second time for whichever caller happens to
+    already have a store/`current_ids` open of its own."""
+    return [
+        conflict
+        for conflict in conflicts
+        if conflict.memory_ids[0] in current_ids and conflict.memory_ids[1] in current_ids
+    ]
 
 
 def _load_semantic_module():
@@ -397,17 +410,21 @@ class Cortex:
         state -- a supersession or invalidation of either participant
         removes a conflict from here automatically, the same way it
         already disappears from `state()`, with no separate resolution
-        step or status to update."""
+        step or status to update.
+
+        (A14.1) `preflight()` needs this exact same "open" projection
+        while it already holds a store connection and a `current_ids`
+        set of its own open -- opening a second connection here just to
+        recompute both would be wasteful, not more correct. The filter
+        itself is factored into `_open_conflicts_projection` below so
+        both call sites share ONE definition of "open" rather than two
+        copies that could drift apart.
+        """
         store = MemoryStore.open_if_exists(self._db_path)
         if store is None:
             return []
         with store:
-            current_ids = store.current_ids()
-            return [
-                conflict
-                for conflict in store.list_conflicts()
-                if conflict.memory_ids[0] in current_ids and conflict.memory_ids[1] in current_ids
-            ]
+            return _open_conflicts_projection(store.list_conflicts(), store.current_ids())
 
     def add_evidence(self, content: str, *, kind: str = DEFAULT_EVIDENCE_KIND) -> Evidence:
         """Persist a new piece of evidence and return it.
@@ -543,19 +560,44 @@ class Cortex:
             return empty
         with store:
             current_ids = store.current_ids()
-            root_cause_memories = [m for m in store.timeline(KIND_ROOT_CAUSE) if m.memory_id in current_ids]
-            lesson_memories = [m for m in store.timeline(KIND_LESSON) if m.memory_id in current_ids]
+            # [A14.1] ONE `timeline(None)` read instead of four separate
+            # `timeline(kind)` calls: `timeline()` already reads and
+            # materializes every Memory internally regardless of `kind`
+            # (the parameter only filters the result), so the four
+            # earlier calls were re-reading the same underlying data four
+            # times. Partitioning this single, current-filtered list by
+            # kind in Python is exactly equivalent -- filtering by
+            # `current_ids` and filtering by `kind` are independent,
+            # order-preserving passes, so partitioning after the fact
+            # yields the identical ids in the identical (event-log)
+            # order as calling `timeline(kind)` per kind would have (see
+            # `TestTimelinePartitioningEquivalence` in
+            # `test_preflight_conflicts.py`). `current_memory_by_id` is a
+            # byproduct of the same single read: it is ALSO the
+            # participant map open conflicts need below, so no second
+            # materialization and no per-kind lookup is required to
+            # build it.
+            current_memories = [m for m in store.timeline(None) if m.memory_id in current_ids]
+            current_memory_by_id = {m.memory_id: m for m in current_memories}
+
+            root_cause_memories = [m for m in current_memories if m.kind == KIND_ROOT_CAUSE]
+            lesson_memories = [m for m in current_memories if m.kind == KIND_LESSON]
             verified_lesson_memories = [m for m in lesson_memories if m.epistemic_state == EPISTEMIC_VERIFIED]
             # [A9.1] Every CURRENT project-wide invariant, unfiltered by
             # task relevance -- see `Preflight.invariants`'s docstring for
             # why this bypasses the lexical/FTS/semantic channels below.
-            invariant_memories = [m for m in store.timeline(KIND_INVARIANT) if m.memory_id in current_ids]
+            invariant_memories = [m for m in current_memories if m.kind == KIND_INVARIANT]
             # [A11.3] Every CURRENT invalidation -- UNLIKE invariants, this
             # goes through the same relevance channels as root causes/
             # lessons below (see `Preflight.open_invalidations`'s docstring
             # for why it does not inherit the invariants' "always include"
             # rule: an invalidation is not project-wide by default).
-            invalidation_memories = [m for m in store.timeline(KIND_INVALIDATION) if m.memory_id in current_ids]
+            invalidation_memories = [m for m in current_memories if m.kind == KIND_INVALIDATION]
+            # [A14.1] Every OPEN conflict (see `_open_conflicts_projection`
+            # -- the SAME definition `Cortex.open_conflicts()` uses, over
+            # the SAME `current_ids` already computed above). Relevance
+            # filtering happens inside `build_preflight`, not here.
+            open_conflict_list = _open_conflicts_projection(store.list_conflicts(), current_ids)
             attempts = store.list_attempts()
 
             def _must_get_evidence(evidence_id: str) -> Evidence:
@@ -632,6 +674,8 @@ class Cortex:
                 memory_semantic_admitted=memory_semantic_admitted | invalidation_semantic_admitted,
                 invariant_memories=invariant_memories,
                 invalidation_memories=invalidation_memories,
+                open_conflicts=open_conflict_list,
+                conflict_participants=current_memory_by_id,
             )
 
     def promote(

@@ -16,7 +16,7 @@ from ._conflict import Conflict
 from ._evidence import Evidence
 from ._guard import GuardResult
 from ._memory import Memory
-from ._preflight import Preflight
+from ._preflight import Preflight, PreflightConflict
 from ._skill import Skill
 from ._workspace import Cortex, SemanticSetupResult
 
@@ -26,6 +26,7 @@ __all__ = [
     "Evidence",
     "Attempt",
     "Preflight",
+    "PreflightConflict",
     "Skill",
     "GuardResult",
     "SemanticSetupResult",

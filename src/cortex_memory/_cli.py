@@ -216,6 +216,18 @@ def main(argv: list[str] | None = None) -> int:
                 print("OPEN INVALIDATIONS")
                 for memory in result.open_invalidations:
                     print(f"- [{memory.memory_id}] {_safe(memory.content)}")
+            if result.open_conflicts:
+                print("OPEN CONFLICTS")
+                for view in result.open_conflicts:
+                    # `PreflightConflict.memories` is already ordered like
+                    # `conflict.memory_ids` (see `_preflight.py`) and needs
+                    # no second lookup -- both Memory objects came back
+                    # inside `result` itself. Both contents are untrusted
+                    # data and go through the same `terminal_safe_text`
+                    # boundary as every other field here (A14.S).
+                    memory_a, memory_b = view.memories
+                    print(f"- [{memory_a.memory_id}] {_safe(memory_a.content)}")
+                    print(f"  <-> [{memory_b.memory_id}] {_safe(memory_b.content)}")
             return 0
 
         if args.command == "skills":

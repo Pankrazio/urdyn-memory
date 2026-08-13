@@ -269,12 +269,16 @@ def main(argv: list[str] | None = None) -> int:
             if args.semantic_command == "setup":
                 cx = Cortex.discover()
                 result = cx.semantic_setup()
-                # `provider`/`model_id` are module constants (structure);
-                # `model_revision` is read off the local model cache
-                # directory, so it is filesystem-derived data.
+                # [A16.3] `provider`/`model_id`/`model_revision` are all
+                # derived from module constants now that the model repo,
+                # its revision and the artifact are pinned (`model_id` is
+                # the full `repo@revision#artifact` identity). `_safe()`
+                # is kept on the revision anyway: this is output-rendering
+                # code, and it should not be the place that has to be
+                # right about where a value came from.
                 print(f"Semantic model: {result.provider}/{result.model_id}")
                 revision = _safe(result.model_revision) if result.model_revision else None
-                print(f"Model revision: {revision or 'unknown (see A7.4 report)'}")
+                print(f"Model revision: {revision or 'unknown'}")
                 print(f"Dimensions: {result.dimensions} ({result.normalization})")
                 print(
                     f"Indexed: {result.attempt_count} attempts, {result.memory_count} memories, "

@@ -69,11 +69,12 @@ def _open_conflicts_projection(conflicts: list[Conflict], current_ids: set[str])
 
 
 def _load_semantic_module():
-    """Lazily import the optional semantic channel (`model2vec`/`numpy`).
-    Returns None -- never raises -- if the `cortex-memory[semantic]`
-    extra is not installed, so every caller in this module degrades to
-    lexical/FTS-only exactly as if A7.4 did not exist. This is the ONLY
-    place outside `_semantic.py` itself that imports it."""
+    """Lazily import the optional semantic channel (`onnxruntime`,
+    `tokenizers`, `huggingface_hub`, `numpy`). Returns None -- never
+    raises -- if the `cortex-memory[semantic]` extra is not installed, so
+    every caller in this module degrades to lexical/FTS-only exactly as
+    if A7.4 did not exist. This is the ONLY place outside `_semantic.py`
+    itself that imports it."""
     try:
         from . import _semantic
     except ImportError:
@@ -867,10 +868,18 @@ class Cortex:
         model-mismatched index gets fixed.
 
         Raises `CortexSemanticUnavailableError` if the `[semantic]` extra
-        is not installed -- this is the one semantic entry point allowed
+        is not installed, or if the semantic model itself cannot be
+        acquired or loaded -- this is the one semantic entry point allowed
         to fail loudly and to touch the network (to download the model if
         it is not already cached); `preflight()`/`guard()` never do
         either.
+
+        A failure here leaves any previously built index exactly as it
+        was: the model is loaded BEFORE `begin_rebuild()` clears anything,
+        and a failure part-way through the rebuild itself leaves the index
+        at `status='building'`, which `_semantic_context` refuses to use.
+        Either way the outcome is a workspace that falls back to
+        lexical/FTS, never one that reads a half-built index.
         """
         semantic = _load_semantic_module()
         if semantic is None:
@@ -879,9 +888,19 @@ class Cortex:
                 "Install it with: pip install 'cortex-memory[semantic]'"
             )
 
-        model = semantic.load_model_for_setup()
-        dimensions = semantic.model_dimensions(model)
+        try:
+            model = semantic.load_model_for_setup()
+            dimensions = semantic.model_dimensions(model)
+        except Exception as exc:  # onnxruntime/tokenizers/hub failures are not ours to leak
+            raise CortexSemanticUnavailableError(
+                f"Could not load the semantic model: {exc}"
+            ) from exc
         revision = semantic.resolve_local_revision()
+        # NOT `SEMANTIC_MODEL_ID`: setup may have fallen back to a
+        # different artifact than this machine prefers, and the index
+        # must record the one it was actually built with (see
+        # `_semantic.artifact_for_index`).
+        model_id = semantic.model_identity(model)
         created_at = dt.datetime.now(dt.timezone.utc).isoformat()
 
         store = MemoryStore.open_if_exists(self._db_path)
@@ -902,7 +921,7 @@ class Cortex:
         with SemanticIndexStore.create_or_open(self._semantic_db_path) as semantic_store:
             semantic_store.begin_rebuild(
                 provider=semantic.SEMANTIC_PROVIDER,
-                model_id=semantic.SEMANTIC_MODEL_ID,
+                model_id=model_id,
                 model_revision=revision,
                 dimensions=dimensions,
                 normalization=semantic.SEMANTIC_NORMALIZATION,
@@ -920,7 +939,7 @@ class Cortex:
 
         return SemanticSetupResult(
             provider=semantic.SEMANTIC_PROVIDER,
-            model_id=semantic.SEMANTIC_MODEL_ID,
+            model_id=model_id,
             model_revision=revision,
             dimensions=dimensions,
             normalization=semantic.SEMANTIC_NORMALIZATION,
@@ -934,9 +953,17 @@ class Cortex:
         point below: returns `None` for every condition that means "the
         semantic channel cannot be used right now" (extra not installed,
         index never built, mid-rebuild, model-config mismatch) -- never
-        raises. Returns `(semantic_module, model, meta)` otherwise. Model
-        loading is cached process-wide inside `_semantic.py`, so calling
-        this more than once per `preflight()`/`guard()` call is cheap.
+        raises. Returns `(semantic_module, model, meta)` otherwise.
+
+        [A16.3] The index itself decides which model answers its queries:
+        `load_model_for_index` returns None for an index this build
+        cannot read at all (different provider, model, upstream revision
+        or normalization), and otherwise loads the exact model build that
+        index was created with. That is what makes it impossible to score
+        stored vectors against a query embedded by a different one -- a
+        hazard measured in A16.2.1, not a theoretical one. Which model
+        that is stays entirely inside `_semantic.py`; nothing here ever
+        sees it.
         """
         semantic = _load_semantic_module()
         if semantic is None:
@@ -948,13 +975,9 @@ class Cortex:
             meta = semantic_store.meta()
             if meta is None or meta.status != "ready":
                 return None
-            if not meta.matches(
-                provider=semantic.SEMANTIC_PROVIDER,
-                model_id=semantic.SEMANTIC_MODEL_ID,
-                normalization=semantic.SEMANTIC_NORMALIZATION,
-            ):
-                return None
-        model = semantic.load_model_for_retrieval()
+        model = semantic.load_model_for_index(meta)
+        if model is None:
+            return None
         return semantic, model, meta
 
     def _semantic_vectors(self, entity_type: str) -> list[tuple[str, bytes]]:

@@ -1,7 +1,7 @@
 """A7.4: the optional semantic retrieval channel.
 
 Fast, deterministic unit tests only. None of these load the real
-`model2vec` model or touch the network: wherever `Cortex` needs to load
+ONNX model or touch the network: wherever `Cortex` needs to load
 a semantic model, `cortex_memory._semantic.load_model_for_setup`/
 `load_model_for_retrieval` are monkeypatched to return `_FakeStaticModel`,
 a small controllable stand-in whose vectors are exact functions of a
@@ -33,7 +33,7 @@ _FAKE_DIM = len(_FAKE_CONCEPTS) + 1
 
 
 class _FakeStaticModel:
-    """Deterministic, controllable stand-in for `model2vec.StaticModel`:
+    """Deterministic, controllable stand-in for the real ONNX encoder:
     each text is mapped to a one-hot-per-concept vector for whichever of
     `_FAKE_CONCEPTS` it contains (case-insensitive substring match), so
     cosine similarity between any two constructed texts is exactly
@@ -76,11 +76,21 @@ def fake_semantic(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def _block_model2vec(monkeypatch):
+def _block_semantic_runtime(monkeypatch):
     """Simulate the `[semantic]` extra not being installed: block
-    `import model2vec` and evict any already-imported `_semantic` module
-    so the next `from . import _semantic` re-executes its top-level
-    `from model2vec import StaticModel`, hitting the block.
+    `import onnxruntime` and evict any already-imported `_semantic`
+    module so the next `from . import _semantic` re-executes its
+    top-level `import onnxruntime`, hitting the block.
+
+    [A16.3] This blocks `onnxruntime`, the package that actually marks
+    the extra's presence since the backend moved off model2vec. Getting
+    this wrong is not a cosmetic detail: while migrating these tests,
+    blocking the now-unimported `model2vec` made the simulation a silent
+    no-op, and `test_semantic_setup_raises_clear_error_without_the_extra`
+    fell straight through into the REAL setup path and started
+    downloading the model from the network -- the exact thing the suite
+    must never do. Whatever this blocks must stay the package
+    `_semantic.py` genuinely imports.
 
     Deleting `sys.modules["cortex_memory._semantic"]` alone is not
     enough: once a submodule has been imported anywhere in the process,
@@ -93,13 +103,13 @@ def _block_model2vec(monkeypatch):
     module instead of re-raising ImportError)."""
     import cortex_memory
 
-    monkeypatch.setitem(sys.modules, "model2vec", None)
+    monkeypatch.setitem(sys.modules, "onnxruntime", None)
     monkeypatch.delitem(sys.modules, "cortex_memory._semantic", raising=False)
     monkeypatch.delattr(cortex_memory, "_semantic", raising=False)
 
 
-def test_base_import_does_not_require_model2vec(monkeypatch):
-    _block_model2vec(monkeypatch)
+def test_base_import_does_not_require_the_semantic_runtime(monkeypatch):
+    _block_semantic_runtime(monkeypatch)
     import importlib
 
     import cortex_memory
@@ -112,7 +122,7 @@ def test_preflight_and_guard_degrade_silently_without_the_extra(tmp_path, monkey
     cx = Cortex.init(tmp_path, "dev")
     cx.record_attempt(task="Fix connection pool exhaustion", approach="Closed leaked connections", outcome="failed")
 
-    _block_model2vec(monkeypatch)
+    _block_semantic_runtime(monkeypatch)
 
     result = cx.preflight("Fix connection pool exhaustion")
     assert len(result.known_failures) == 1  # lexical channel still works
@@ -122,7 +132,7 @@ def test_preflight_and_guard_degrade_silently_without_the_extra(tmp_path, monkey
 
 def test_semantic_setup_raises_clear_error_without_the_extra(tmp_path, monkeypatch):
     cx = Cortex.init(tmp_path, "dev")
-    _block_model2vec(monkeypatch)
+    _block_semantic_runtime(monkeypatch)
 
     with pytest.raises(CortexSemanticUnavailableError, match="semantic"):
         cx.semantic_setup()
@@ -383,14 +393,16 @@ def test_semantic_setup_on_an_empty_workspace_succeeds_with_zero_vectors(tmp_pat
 
 
 def test_semantic_setup_persists_model_metadata(tmp_path, fake_semantic):
+    import cortex_memory._semantic as semantic
+
     cx = Cortex.init(tmp_path, "dev")
     cx.remember("alpha content", kind="note")
     cx.semantic_setup()
 
     with SemanticIndexStore.create_or_open(cx._semantic_db_path) as store:
         meta = store.meta()
-    assert meta.provider == "model2vec"
-    assert meta.model_id == "minishlab/potion-retrieval-32M"
+    assert meta.provider == semantic.SEMANTIC_PROVIDER
+    assert meta.model_id == semantic.SEMANTIC_MODEL_ID
     assert meta.model_revision == "fake-revision"
     assert meta.dimensions == _FAKE_DIM
     assert meta.normalization == "l2"
@@ -449,23 +461,36 @@ def test_guard_abstains_on_a_thin_margin_even_with_a_top1_candidate(tmp_path, fa
     """Direct analogue of the A7.3 payment-guard-clause finding: a #1
     ranked candidate must not be admitted just because it is #1 -- proven
     here by constructing two skills whose scores against the query are
-    close enough that SKILL's calibrated margin floor (0.38) rejects
-    both."""
+    close enough that SKILL's calibrated margin floor rejects both.
+
+    The fake backend is one-hot per concept, so the geometry is exact: a
+    query naming one concept scores 1/sqrt(k) against a skill naming k
+    concepts. Three concepts against four gives 0.5774 and 0.5000 -- a
+    top score above the absolute floor and a 0.0774 margin beneath the
+    margin floor, which is the regime this test is about. The premise is
+    ASSERTED rather than assumed, because a recalibration that moved the
+    policy out from under those numbers would otherwise leave this test
+    passing while testing nothing (a failure mode this suite has already
+    hit once, see `_block_semantic_runtime`)."""
+    import math
+
+    from cortex_memory._semantic import SEMANTIC_POLICY
+
     cx = Cortex.init(tmp_path, "dev")
     lesson1 = _verified_lesson(cx, "alpha skill lesson")
-    cx.promote(lesson1, name="alpha skill", purpose="alpha only", steps=["do alpha"])
+    cx.promote(lesson1, name="alpha beta skill", purpose="gamma work", steps=["do alpha"])
     lesson2 = _verified_lesson(cx, "alpha beta skill lesson")
-    cx.promote(lesson2, name="alpha beta skill", purpose="alpha and beta", steps=["do alpha and beta"])
+    cx.promote(lesson2, name="alpha beta skill two", purpose="gamma and delta work", steps=["do alpha"])
     cx.semantic_setup()
+
+    policy = SEMANTIC_POLICY[ENTITY_SKILL]
+    top, runner_up = 1 / math.sqrt(3), 1 / math.sqrt(4)
+    assert top >= policy.absolute_floor, "premise broken: the top candidate no longer clears the floor"
+    assert top - runner_up < policy.margin_floor, "premise broken: this margin is no longer thin"
 
     # a long, mostly-unrelated query that only happens to mention "alpha"
     # once: lexically diluted well below `is_relevant`'s majority
-    # threshold (so only the semantic channel is in play here), while the
-    # fake embedding still maps it to a pure "alpha" concept vector.
-    # cos(query, "alpha only")=1.0, cos(query, "alpha and beta")=0.707 --
-    # top1 score 1.0 clears the absolute floor (0.40) easily, but margin
-    # (1.0-0.707=0.293) is below SKILL's 0.38 margin floor, so this must
-    # abstain, not just admit rank #1
+    # threshold, so only the semantic channel is in play here.
     diluted_query = (
         "totally unrelated wording that still somehow concerns alpha topics here and nothing else"
     )
@@ -498,13 +523,16 @@ def test_semantic_index_stale_metadata_is_not_used_silently(tmp_path, fake_seman
 
 
 def test_semantic_index_mid_rebuild_is_not_used(tmp_path, fake_semantic):
+    import cortex_memory._semantic as semantic
+
     cx = Cortex.init(tmp_path, "dev")
     _verified_lesson(cx, "alpha content")
     cx.semantic_setup()
 
     with SemanticIndexStore.create_or_open(cx._semantic_db_path) as store:
         store.begin_rebuild(
-            provider="model2vec", model_id="minishlab/potion-retrieval-32M", model_revision="fake-revision",
+            provider=semantic.SEMANTIC_PROVIDER, model_id=semantic.SEMANTIC_MODEL_ID,
+            model_revision="fake-revision",
             dimensions=_FAKE_DIM, normalization="l2", created_at="2026-01-01T00:00:01+00:00",
         )
         # deliberately do not call finish_rebuild()
@@ -623,7 +651,7 @@ def test_both_fts_and_semantic_unavailable_falls_back_to_pure_lexical(tmp_path, 
     import cortex_memory._store as store_module
 
     monkeypatch.setattr(store_module, "_try_create_search_index", lambda connection: False)
-    _block_model2vec(monkeypatch)
+    _block_semantic_runtime(monkeypatch)
 
     cx = Cortex.init(tmp_path, "dev")
     cx.record_attempt(task="Fix connection pool exhaustion", approach="closed leaks", outcome="failed")
@@ -670,6 +698,7 @@ def test_unverified_lesson_is_not_promoted_via_semantic_channel(tmp_path, fake_s
 
 
 def test_cli_semantic_setup_reports_success(tmp_path, fake_semantic, monkeypatch, capsys):
+    import cortex_memory._semantic as semantic
     from cortex_memory._cli import main
 
     monkeypatch.chdir(tmp_path)
@@ -681,7 +710,7 @@ def test_cli_semantic_setup_reports_success(tmp_path, fake_semantic, monkeypatch
     out = capsys.readouterr().out
     assert exit_code == 0
     assert "Semantic index ready." in out
-    assert "minishlab/potion-retrieval-32M" in out
+    assert semantic.SEMANTIC_MODEL_ID in out
 
 
 def test_cli_semantic_setup_without_extra_fails_cleanly_no_traceback(tmp_path, monkeypatch, capsys):
@@ -691,7 +720,7 @@ def test_cli_semantic_setup_without_extra_fails_cleanly_no_traceback(tmp_path, m
     assert main(["init", "dev"]) == 0
     capsys.readouterr()
 
-    _block_model2vec(monkeypatch)
+    _block_semantic_runtime(monkeypatch)
     exit_code = main(["semantic", "setup"])
     captured = capsys.readouterr()
     assert exit_code == 1
@@ -988,6 +1017,293 @@ def test_corroboration_does_not_crash_without_the_extra(tmp_path, monkeypatch):
     cx.learn("alpha", supporting_evidence=[ev], verified=True)
     cx.record_attempt(task="alpha", approach="alpha", outcome="failed", evidence=[ev])
 
-    _block_model2vec(monkeypatch)
+    _block_semantic_runtime(monkeypatch)
     result = cx.preflight("a completely unrelated query with plenty of unrelated words in it")
     assert result.verified_lessons == ()  # no crash, no traceback
+
+
+# ---------------------------------------------------------------------------
+# [A16.3] Backend identity: artifact selection, effective identity, and the
+# artifact/revision mixing hazard measured in A16.2.1
+# ---------------------------------------------------------------------------
+
+
+def _meta(model_id, *, provider=None, normalization="l2", dimensions=384, status="ready"):
+    """A `SemanticMeta` built directly, so index-compatibility can be
+    tested without standing up a workspace for every variation."""
+    import cortex_memory._semantic as semantic
+    from cortex_memory._semantic_store import SemanticMeta
+
+    return SemanticMeta(
+        provider=semantic.SEMANTIC_PROVIDER if provider is None else provider,
+        model_id=model_id,
+        model_revision=None,
+        dimensions=dimensions,
+        normalization=normalization,
+        created_at="2026-01-01T00:00:00+00:00",
+        status=status,
+    )
+
+
+def test_preferred_artifact_is_chosen_by_architecture_never_by_os():
+    """Architecture decides, and only architecture: the same machine
+    string must give the same artifact whatever the OS is, and anything
+    unrecognized must land on the portable full-precision artifact
+    rather than on a guess."""
+    import cortex_memory._semantic as semantic
+
+    assert semantic.preferred_artifact("x86_64") == semantic.ARTIFACT_X86_64
+    assert semantic.preferred_artifact("AMD64") == semantic.ARTIFACT_X86_64  # Windows spelling
+    assert semantic.preferred_artifact("arm64") == semantic.ARTIFACT_ARM64  # macOS spelling
+    assert semantic.preferred_artifact("aarch64") == semantic.ARTIFACT_ARM64  # Linux spelling
+    assert semantic.preferred_artifact("riscv64") == semantic.ARTIFACT_PORTABLE
+    assert semantic.preferred_artifact("") == semantic.ARTIFACT_PORTABLE
+    assert semantic.preferred_artifact() in semantic.SUPPORTED_ARTIFACTS
+
+
+def test_effective_identity_names_repo_revision_and_artifact():
+    import cortex_memory._semantic as semantic
+
+    identity = semantic.model_identity_for(semantic.ARTIFACT_X86_64)
+    assert semantic.SEMANTIC_MODEL_REPO in identity
+    assert semantic.SEMANTIC_MODEL_REVISION in identity
+    assert semantic.ARTIFACT_X86_64 in identity
+    # different artifacts of the same model are different identities --
+    # this is the whole point of the A16.2.1 hardening
+    assert identity != semantic.model_identity_for(semantic.ARTIFACT_PORTABLE)
+
+
+def test_index_is_queried_with_the_artifact_it_was_built_with():
+    """The A16.2.1 mixing hazard, closed: an index built with the
+    portable artifact reports the portable artifact, even on a machine
+    whose preferred artifact is a different one. Answering with the
+    RECORDED artifact is what makes it impossible to score stored
+    vectors against a query embedded by a different artifact."""
+    import cortex_memory._semantic as semantic
+
+    for artifact in sorted(semantic.SUPPORTED_ARTIFACTS):
+        meta = _meta(semantic.model_identity_for(artifact))
+        assert semantic.artifact_for_index(meta) == artifact
+
+
+def test_index_from_a_different_revision_of_the_same_model_is_refused():
+    """An upstream re-export of the same repo and the same artifact
+    filename can still produce different vectors, so the pinned revision
+    is part of the identity and a different one is not readable here."""
+    import cortex_memory._semantic as semantic
+
+    foreign = (
+        f"{semantic.SEMANTIC_MODEL_REPO}@0000000000000000000000000000000000000000"
+        f"#{semantic.ARTIFACT_X86_64}"
+    )
+    assert semantic.artifact_for_index(_meta(foreign)) is None
+
+
+def test_index_from_a_foreign_model_provider_or_normalization_is_refused():
+    import cortex_memory._semantic as semantic
+
+    good = semantic.model_identity_for(semantic.ARTIFACT_X86_64)
+    assert semantic.artifact_for_index(_meta(good)) is not None
+    assert semantic.artifact_for_index(_meta("minishlab/potion-retrieval-32M")) is None
+    assert semantic.artifact_for_index(_meta("")) is None
+    assert semantic.artifact_for_index(_meta(good, provider="model2vec")) is None
+    assert semantic.artifact_for_index(_meta(good, normalization="none")) is None
+    # a well-formed identity naming an artifact this build cannot load
+    unknown = f"{semantic.SEMANTIC_MODEL_REPO}@{semantic.SEMANTIC_MODEL_REVISION}#onnx/model_made_up.onnx"
+    assert semantic.artifact_for_index(_meta(unknown)) is None
+
+
+def test_a_pre_a16_3_potion_index_degrades_to_lexical_and_is_rebuildable(tmp_path, fake_semantic):
+    """[A16.3, §21/§41] The honest upgrade story, end to end: canonical
+    memory survives untouched, the OLD derived semantic index is refused
+    rather than misread as if it were this backend's, retrieval degrades
+    to lexical/FTS, and a fresh `semantic_setup()` restores the semantic
+    channel. No vector migration exists, and none is promised."""
+    cx = Cortex.init(tmp_path, "dev")
+    lesson = _verified_lesson(cx, "alpha content")
+    cx.record_attempt(task="Fix connection pool exhaustion", approach="closed leaks", outcome="failed")
+    cx.semantic_setup()
+
+    # rewrite the index exactly as A7.4..A16.2 would have written it
+    with SemanticIndexStore.create_or_open(cx._semantic_db_path) as store:
+        store.begin_rebuild(
+            provider="model2vec", model_id="minishlab/potion-retrieval-32M", model_revision="rev1",
+            dimensions=_FAKE_DIM, normalization="l2", created_at="2026-01-01T00:00:00+00:00",
+        )
+        store.finish_rebuild()
+
+    # canonical memory is untouched by any of this
+    assert lesson.memory_id in {m.memory_id for m in cx.recall("alpha content")}
+    # the old index is not read as if it were ours
+    semantic_only = cx.preflight("a completely different phrasing that happens to be about alpha")
+    assert semantic_only.verified_lessons == ()
+    # ...while the lexical channel keeps working on its own terms
+    lexical = cx.preflight("Fix connection pool exhaustion")
+    assert len(lexical.known_failures) == 1
+
+    cx.semantic_setup()  # the documented remedy: rebuild, do not migrate
+    recovered = cx.preflight("a completely different phrasing that happens to be about alpha")
+    assert lesson.memory_id in {m.memory_id for m in recovered.verified_lessons}
+
+
+# ---------------------------------------------------------------------------
+# [A16.3] Failure injection
+# ---------------------------------------------------------------------------
+
+
+def test_setup_reports_a_cortex_error_when_the_model_cannot_be_loaded(tmp_path, monkeypatch):
+    """A download or ONNX-session failure during setup must surface as
+    Cortex's own error type, not as a raw onnxruntime/huggingface_hub
+    traceback (which the CLI would print verbatim)."""
+    import cortex_memory._semantic as semantic
+
+    cx = Cortex.init(tmp_path, "dev")
+
+    def _boom():
+        raise RuntimeError("simulated artifact download/session failure")
+
+    monkeypatch.setattr(semantic, "load_model_for_setup", _boom)
+    with pytest.raises(CortexSemanticUnavailableError, match="semantic model"):
+        cx.semantic_setup()
+
+
+def test_setup_failure_leaves_a_previously_built_index_intact(tmp_path, fake_semantic, monkeypatch):
+    """Fail closed: a setup that cannot load a model must not destroy the
+    index that was already there and working."""
+    import cortex_memory._semantic as semantic
+
+    cx = Cortex.init(tmp_path, "dev")
+    lesson = _verified_lesson(cx, "alpha content")
+    cx.semantic_setup()
+
+    # a flag rather than `monkeypatch.undo()`: undo would also revert the
+    # `fake_semantic` fixture's own patches and quietly turn the rest of
+    # this test into a no-model run that proves nothing.
+    failing = {"now": True}
+    working_loader = semantic.load_model_for_setup
+
+    def _maybe_boom():
+        if failing["now"]:
+            raise RuntimeError("simulated failure on a later setup run")
+        return working_loader()
+
+    monkeypatch.setattr(semantic, "load_model_for_setup", _maybe_boom)
+    with pytest.raises(CortexSemanticUnavailableError):
+        cx.semantic_setup()
+
+    failing["now"] = False
+    result = cx.preflight("a completely different phrasing that happens to be about alpha")
+    assert lesson.memory_id in {m.memory_id for m in result.verified_lessons}
+
+
+def test_retrieval_degrades_when_the_cached_artifact_is_gone(tmp_path, fake_semantic, monkeypatch):
+    """The artifact disappearing from the local cache after setup (a
+    pruned cache, a workspace copied without one) must degrade to
+    lexical/FTS -- never crash, and never reach for the network."""
+    import cortex_memory._semantic as semantic
+
+    cx = Cortex.init(tmp_path, "dev")
+    _verified_lesson(cx, "alpha content")
+    cx.record_attempt(task="Fix connection pool exhaustion", approach="closed leaks", outcome="failed")
+    cx.semantic_setup()
+
+    def _missing(artifact=None):
+        raise OSError("simulated: artifact not present in the local cache")
+
+    monkeypatch.setattr(semantic, "load_model_for_retrieval", _missing)
+
+    assert cx.preflight("a completely different phrasing that happens to be about alpha").verified_lessons == ()
+    assert len(cx.preflight("Fix connection pool exhaustion").known_failures) == 1
+    assert cx.guard("Fix connection pool exhaustion").is_empty() in (True, False)  # no crash either way
+
+
+def test_setup_falls_back_to_the_portable_artifact_and_records_it(monkeypatch):
+    """[§10] Exactly one fallback: preferred artifact -> portable
+    full-precision artifact. Whatever succeeded is what gets recorded, so
+    a fallback can never be silently mixed with another artifact's
+    vectors."""
+    import cortex_memory._semantic as semantic
+
+    attempted = []
+
+    class _Encoder:
+        def __init__(self, artifact):
+            self.identity = semantic.model_identity_for(artifact)
+
+    def _build(artifact, *, local_files_only):
+        attempted.append(artifact)
+        if artifact != semantic.ARTIFACT_PORTABLE:
+            raise RuntimeError("simulated: this artifact does not load here")
+        return _Encoder(artifact)
+
+    monkeypatch.setattr(semantic, "_build_encoder", _build)
+    monkeypatch.setattr(semantic, "preferred_artifact", lambda machine=None: semantic.ARTIFACT_X86_64)
+
+    model = semantic.load_model_for_setup()
+    assert attempted == [semantic.ARTIFACT_X86_64, semantic.ARTIFACT_PORTABLE]
+    assert semantic.model_identity(model) == semantic.model_identity_for(semantic.ARTIFACT_PORTABLE)
+
+
+def test_setup_gives_up_after_one_fallback_rather_than_looping(monkeypatch):
+    import cortex_memory._semantic as semantic
+
+    attempted = []
+
+    def _build(artifact, *, local_files_only):
+        attempted.append(artifact)
+        raise RuntimeError("simulated: nothing loads here")
+
+    monkeypatch.setattr(semantic, "_build_encoder", _build)
+    monkeypatch.setattr(semantic, "preferred_artifact", lambda machine=None: semantic.ARTIFACT_X86_64)
+
+    with pytest.raises(semantic.SemanticUnavailable):
+        semantic.load_model_for_setup()
+    assert attempted == [semantic.ARTIFACT_X86_64, semantic.ARTIFACT_PORTABLE]  # two attempts, not a chain
+
+
+def test_retrieval_never_asks_the_network_for_a_missing_artifact(monkeypatch):
+    """`load_model_for_retrieval` must always resolve files with
+    `local_files_only=True`. This is the property that keeps
+    `preflight()`/`guard()` offline by construction rather than by
+    convention."""
+    import cortex_memory._semantic as semantic
+
+    seen = {}
+
+    def _fake_download(repo, filename, revision=None, local_files_only=False):
+        seen[filename] = local_files_only
+        raise OSError("not cached")
+
+    monkeypatch.setattr(semantic.huggingface_hub, "hf_hub_download", _fake_download)
+    with pytest.raises(OSError):
+        semantic.load_model_for_retrieval(semantic.ARTIFACT_PORTABLE)
+    assert seen and all(local_only is True for local_only in seen.values())
+
+
+def test_encoding_is_chunked_so_peak_memory_does_not_scale_with_the_workspace():
+    """[A16.3, §38] `semantic_setup()` hands the encoder every memory in
+    the workspace in one call. With the previous static-embedding backend
+    that was free; with a transformer the intermediate activations scale
+    with the batch, and a 1002-memory workspace encoded as a single batch
+    was measured peaking at 6.3 GB of RSS during A16.3. The encoder must
+    therefore chunk, and no caller should have to know that."""
+    import cortex_memory._semantic as semantic
+
+    batch_sizes = []
+
+    class _RecordingEncoder(semantic._OnnxTextEncoder):
+        def __init__(self):  # no session, no tokenizer: only the chunking is under test
+            pass
+
+        def _encode_batch(self, texts):
+            batch_sizes.append(len(texts))
+            return np.zeros((len(texts), 384), dtype=np.float32)
+
+    encoder = _RecordingEncoder()
+    total = semantic.SEMANTIC_ENCODE_BATCH_SIZE * 3 + 7
+    vectors = encoder.encode([f"memory {i}" for i in range(total)])
+
+    assert vectors.shape == (total, 384)  # every input still gets exactly one vector, in order
+    assert max(batch_sizes) <= semantic.SEMANTIC_ENCODE_BATCH_SIZE
+    assert sum(batch_sizes) == total
+    assert encoder.encode([]).shape[0] == 0

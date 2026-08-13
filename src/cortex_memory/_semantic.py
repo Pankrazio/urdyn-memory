@@ -1,50 +1,91 @@
-"""Optional semantic retrieval channel: static embeddings (model2vec) plus
-brute-force cosine similarity, used to widen candidate recall in
+"""Optional semantic retrieval channel: local ONNX sentence embeddings
+plus brute-force cosine similarity, used to widen candidate recall in
 `preflight()`/`guard()` the same way `_retrieval.py`'s FTS5/BM25 channel
 already does.
 
-This module is the ONLY place in Cortex that imports `model2vec` or
-`numpy`. It is never imported from `__init__.py`, `_workspace.py` at
-module scope, or any other module reachable from a plain `import
-cortex_memory` -- callers (`_workspace.py`, `_cli.py`) import it lazily,
-inside functions, wrapped in `try/except ImportError`, so a base install
-without the `cortex-memory[semantic]` extra never even attempts to load
-`model2vec`/`numpy` and behaves exactly as it did before A7.4.
+This module is the ONLY place in Cortex that imports `onnxruntime`,
+`tokenizers`, `huggingface_hub` or `numpy`. It is never imported from
+`__init__.py`, `_workspace.py` at module scope, or any other module
+reachable from a plain `import cortex_memory` -- callers
+(`_workspace.py`, `_cli.py`) import it lazily, inside functions, wrapped
+in `try/except ImportError`, so a base install without the
+`cortex-memory[semantic]` extra never even attempts to load them and
+behaves exactly as it did before A7.4. Nothing outside this module ever
+sees an `InferenceSession`, a `Tokenizer`, an artifact filename or a
+Hugging Face cache path: the rest of Cortex only ever gets
+`embed(model, texts) -> normalized vectors`.
+
+[A16.3] BACKEND: `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`
+executed directly through ONNX Runtime, replacing the model2vec/potion
+backend used from A7.4 to A16.2. The reason is cross-language recall:
+A16 measured the previous backend at 0-30% recall for cross-language
+queries (an Italian question against an English memory and vice versa),
+against 83-84% for this model on the same frozen corpus, with zero false
+retrievals and no authority leakage. A16.2.1 additionally verified,
+numerically, that driving the OFFICIAL fp32 artifact through the recipe
+below reproduces the reference implementation exactly (per-text cosine
+1.00000, top-1 agreement 1.000, rank correlation 1.000), which is why
+Cortex owns this small encoder instead of taking a heavier third-party
+runtime dependency that would have added ~200 MB of RSS for the same
+vectors.
+
+The embedding recipe is the model's OWN published SentenceTransformer
+configuration, not an invention: mean pooling over the attention mask
+(`1_Pooling/config.json`: `pooling_mode_mean_tokens: true`,
+`pooling_mode_cls_token: false`) and truncation at 128 tokens
+(`sentence_bert_config.json`: `max_seq_length: 128`). The model's own
+`modules.json` declares no `Normalize` module, so the model does not
+L2-normalize its output; `embed()` below does it explicitly, exactly as
+it always has, which is what keeps cosine similarity a plain dot
+product.
+
+`SEMANTIC_MAX_SEQ_LENGTH` is pinned here as a constant rather than read
+from the repository at runtime ON PURPOSE: it is part of Cortex's
+embedding contract, and a value silently changed upstream must not be
+able to silently change the vector space of an already-indexed
+workspace. The same reasoning pins the model revision (see
+`SEMANTIC_MODEL_REVISION`). Values that CAN drift without a contract
+change (the padding token id, the output dimensionality) are read from
+the real artifacts at setup instead of trusted.
 
 Two loading entry points exist on purpose:
-  - `load_model_for_setup` allows a network download if the model is not
-    yet cached (used only by `cortex semantic setup`).
-  - `load_model_for_retrieval` forces `HF_HUB_OFFLINE=1` for the duration
-    of the call and passes `force_download=False`, so a normal
-    `preflight()`/`guard()` call can never trigger a network request --
-    required because model2vec's own `StaticModel.from_pretrained`
-    defaults to `force_download=True`, which unconditionally calls
-    `huggingface_hub.snapshot_download` (a network round-trip) even when
-    the model is already cached. Passing `force_download=False`
-    explicitly is what makes `_resolve_folder` return the cached path via
-    `maybe_get_cached_model_path` without touching the network at all;
-    `HF_HUB_OFFLINE=1` is a second, redundant guarantee of the same
-    property, kept in case that internal resolution behavior ever changes
-    upstream. This was found and verified empirically during A7.4
-    implementation, not assumed.
+  - `load_model_for_setup` allows a network download if the artifact is
+    not yet cached (used only by `cortex semantic setup`).
+  - `load_model_for_retrieval` passes `local_files_only=True`, so a
+    normal `preflight()`/`guard()` call can never trigger a network
+    request: a missing artifact raises, and every caller in
+    `_workspace.py` treats that as `SemanticUnavailable` and degrades to
+    lexical/FTS, rather than reaching for the network.
+
+[A16.3] EFFECTIVE MODEL IDENTITY. A16.2.1 measured a real hazard: two
+different ONNX artifacts of the SAME model produce slightly different
+vectors (per-text cosine 0.9947 between the quantized and the
+full-precision artifact), enough to change the top-ranked candidate for
+~1 query in 14. An index built with one artifact must therefore never be
+queried with another. What is persisted as the index's `model_id` is
+consequently not the bare repository name but the full effective
+identity `repo@revision#artifact`, so that the artifact and the upstream
+revision are both part of what `SemanticMeta.matches()` compares -- no
+schema change was needed, because `model_id` is free text. Retrieval
+then loads THE ARTIFACT THE INDEX RECORDS (see `artifact_for_index`),
+which removes the mixing hazard entirely instead of merely detecting it:
+an index built with the ARM64 artifact is queried with the ARM64
+artifact, or, if that artifact cannot be loaded here, not at all.
 
 Admission ("is this candidate semantically relevant enough to widen
 recall with") is calibrated per entity-type pool (attempt / memory /
-skill) from real per-query brute-force rankings over the frozen A7.3
-evaluation corpus, ranked separately per pool exactly as Cortex itself
-pools candidates -- see `SEMANTIC_POLICY` below and the A7.4 report for
-the full calibration data. Calibration found that no single
-similarity/margin threshold cleanly separates every Human Acceptance
-query from every adversarial negative in this corpus (concretely: the
-payment-guard-clause false positive from A7.3 and Human Acceptance query
-`ha-guard-2` are mathematically inseparable on this signal alone, since
-the false positive scores higher on both absolute similarity and margin).
-The shipped policy is deliberately calibrated toward precision: it
-recovers a real subset of the Human Acceptance gap without reintroducing
-the known false positive, and abstains rather than guessing on the
-genuinely ambiguous remainder. This is a documented trade-off, not a
-claim that every Human Acceptance query is recovered by the semantic
-channel alone.
+skill) -- see `SEMANTIC_POLICY` below. A16.2.1 re-validated the MEMORY
+pool's shipped floors against this backend on a frozen 14-scenario,
+4-language holdout and found them to hold unchanged (83% recall, zero
+false retrievals, and the margin floor demonstrably rejecting all three
+wrong top-1 candidates, whose margins topped out at 0.0499 against a
+0.08 floor), which is why A16.3 changed the backend without touching
+MEMORY. It left the other two pools unmeasured, and A16.3.1 then closed
+that gap on a frozen SKILL/ATTEMPT corpus: ATTEMPT held, SKILL did not
+and its absolute floor moved. The lesson worth keeping is that these
+floors are properties of the model's score geometry, so "the backend
+changed" and "the policy is still calibrated" are separate claims that
+need separate evidence, per pool.
 
 [A7.7] Eligibility fix: `semantic_admitted_ids` accepts an optional
 `eligible_ids` filter, applied to the candidate pool BEFORE ranking
@@ -60,23 +101,57 @@ the pool to eligible ids before ranking does not mean "always admit the
 best eligible candidate" -- the exact same absolute/margin policy below
 still applies to whatever wins the now-restricted pool; abstention is
 still the outcome whenever nothing eligible clears it.
-claim that every Human Acceptance query is recovered by the semantic
-channel alone.
 """
 
 from __future__ import annotations
 
 import dataclasses
-import os
+import platform
 from collections.abc import Sequence
+from typing import TYPE_CHECKING, Any
 
 import huggingface_hub
 import numpy as np
-from model2vec import StaticModel
+import onnxruntime
+from tokenizers import Tokenizer
 
-SEMANTIC_PROVIDER = "model2vec"
-SEMANTIC_MODEL_ID = "minishlab/potion-retrieval-32M"
+if TYPE_CHECKING:
+    from ._semantic_store import SemanticMeta
+
+SEMANTIC_PROVIDER = "onnxruntime"
 SEMANTIC_NORMALIZATION = "l2"
+
+# Canonical model repository, pinned to the exact upstream revision
+# validated in A16.2.1. Pinning the revision (rather than tracking
+# `main`) is what stops an upstream re-export from silently changing the
+# vector space of workspaces that are already indexed.
+SEMANTIC_MODEL_REPO = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+SEMANTIC_MODEL_REVISION = "e8f8c211226b894fcb81acc59f3b34ba3efd5f42"
+
+# Part of the embedding contract -- see module docstring for why this is
+# pinned here instead of read from the repository at runtime.
+SEMANTIC_MAX_SEQ_LENGTH = 128
+
+TOKENIZER_FILENAME = "tokenizer.json"
+
+# How many texts are pushed through the ONNX graph at once. This is a
+# MEMORY bound, not a speed knob, and it is why it exists at all: the
+# previous backend was a static embedding lookup, so encoding an entire
+# workspace in one call cost nothing beyond the vectors themselves. A
+# transformer's intermediate activations scale with the batch, and
+# `semantic_setup()` legitimately hands the encoder every memory in the
+# workspace at once -- measured during A16.3, a 1002-memory workspace
+# encoded as a single batch peaked at 6.3 GB of RSS. Chunking keeps peak
+# memory flat in the size of the workspace, which is what makes this
+# usable on a normal laptop rather than only on a small workspace.
+SEMANTIC_ENCODE_BATCH_SIZE = 32
+
+# Official artifacts published by the model repository itself. Cortex
+# picks one internally; there is deliberately no user-facing choice.
+ARTIFACT_PORTABLE = "onnx/model.onnx"
+ARTIFACT_X86_64 = "onnx/model_quint8_avx2.onnx"
+ARTIFACT_ARM64 = "onnx/model_qint8_arm64.onnx"
+SUPPORTED_ARTIFACTS = frozenset({ARTIFACT_PORTABLE, ARTIFACT_X86_64, ARTIFACT_ARM64})
 
 ENTITY_ATTEMPT = "attempt"
 ENTITY_MEMORY = "memory"
@@ -93,26 +168,73 @@ class PoolPolicy:
     margin_floor: float
 
 
-# Calibrated from the real per-pool brute-force rankings recorded in the
-# A7.4 report (frozen A7.3 corpus, `minishlab/potion-retrieval-32M`).
-# ATTEMPT: no Human Acceptance query targets this pool; the floor is set
-#   high, comfortably above every false candidate observed (highest was
-#   0.42/0.29), purely for architectural symmetry with the other pools.
-# MEMORY: recovers `ha-preflight-2` (0.2812/0.0977); deliberately does
-#   NOT recover `ha-preflight-1` (0.1925/0.0602), which is
-#   indistinguishable on this signal from a genuine hard negative
-#   (`hn-q-8`, 0.2025/0.0621) scoring higher on both axes.
-# SKILL: recovers `ha-guard-1` (0.5217/0.4198); deliberately does NOT
-#   recover `ha-guard-2` (0.2285/0.1792), which is dominated on both axes
-#   by the payment-guard-clause false positive (0.3393/0.1951) that A7.3
-#   found and this tracer must not reintroduce.
+# Originally calibrated in A7.4 on the frozen A7.3 corpus. Scores are a
+# property of the MODEL, not of Cortex, so a backend change invalidates
+# these numbers until they are re-measured pool by pool.
+# ATTEMPT: absolute floor unchanged since A7.4 and re-validated twice --
+#   it sits just above the highest false candidate seen in either corpus
+#   (0.4625), which is what makes it the gate doing the real work. The
+#   margin floor moved from 0.35 to 0.08 in A16.3.2. A16.3.1 had measured
+#   0.35 rejecting every multi-candidate positive it saw (0/5) while
+#   stopping no negative, but could not act: its holdout contained no
+#   multi-candidate scene, so no replacement was independently validated.
+#   A16.3.2 built that holdout -- 12 new multi-candidate scenes in unused
+#   domains -- ran all four frozen candidates (0.35/0.20/0.10/0.08) over
+#   it once, and got zero false admissions from all four with
+#   multi-candidate recall of 2/6/8/9 respectively. 0.08 is therefore the
+#   most permissive value that still cost nothing, not the loosest value
+#   that could be defended: it is doing real work at that level, since it
+#   is what rejected the one wrong top-1 candidate that cleared the
+#   absolute floor (a runner-up 0.0250 behind it). Below the margin the
+#   pool is ambiguous and abstention is still the answer.
+# MEMORY: A16.2.1 holdout, 63 positive queries across 4 languages: 83%
+#   recall, 0 false retrievals; every wrong top-1 candidate had a margin
+#   of at most 0.0499, i.e. below this floor, so the floor is doing real
+#   work rather than being nominally satisfied.
+# SKILL: raised from 0.40 to 0.55 in A16.3.1. Under the A16.3 backend
+#   this pool's calibration scores are bimodal -- restatements of a skill
+#   land at 0.66-0.73, genuinely-applicable-but-differently-worded ones
+#   at 0.34-0.40 -- while the worst false candidate reaches 0.4570. The
+#   old 0.40 floor therefore sat INSIDE the false-positive band without
+#   buying any recall: no calibration positive scored between 0.40 and
+#   0.66, so every value in the empty 0.457-0.6585 gap scores identically
+#   and 0.55 is simply its centre, chosen for distance from both edges
+#   rather than fitted to any one query. It removes all three calibration
+#   false positives (0.4134, 0.4555, 0.4570) at a measured cost of two
+#   holdout positives (0.4268, 0.5059) -- the trade the A16.3.1 brief
+#   asks for, since a Skill wrongly reported as applicable misleads an
+#   agent more than a missing one does. The A7.3 payment-guard-clause
+#   false positive (0.4555) was deliberately held out of calibration so
+#   the floor could not be fitted to it; it is rejected here while the
+#   same Skill's genuine query (0.5713) is still admitted.
+#   A16.3.2 then re-decided this value prospectively, on a second corpus
+#   of 14 scenes in domains the first one never used, running 0.40 / 0.50
+#   / 0.55 over it once. 0.55 was the only one with zero false
+#   admissions. The interesting part is 0.50, which A16.3.1 had flagged
+#   post-hoc as possibly better and deliberately not adopted: it admitted
+#   the same two false candidates as 0.40 (0.5031 and 0.5252, both
+#   landing in the 0.50-0.55 band), so the caution was right and the
+#   hypothesis is now measured rather than open.
+#   The margin floor moved from 0.38 to 0.10 in A16.3.3 -- the last value
+#   in any pool still carrying a Potion-era number. A16.3.2 had measured
+#   0.38 rejecting 8 of 9 multi-candidate positives, including matches
+#   scoring 0.79 with a 0.23 lead over the runner-up, which is the shape
+#   of an answer a policy should admit rather than suppress. A16.3.3 ran
+#   0.38 / 0.20 / 0.10 / 0.08 over a third corpus of 13 new
+#   multi-candidate scenes: all four gave zero false admissions,
+#   multi-candidate recall went 1 / 4 / 9 / 9, and the last two tied, so
+#   the more conservative was taken. What makes 0.10 defensible rather
+#   than merely permitted: at that value exactly ONE positive in the
+#   corpus is rejected by the margin instead of by the absolute floor,
+#   and in that one the top-ranked candidate was the WRONG Skill, 0.0519
+#   ahead of the right one -- the gate abstained exactly where abstaining
+#   was correct. Every other rejection there is now the absolute floor's
+#   doing, which is where the remaining recall question lives.
 SEMANTIC_POLICY: dict[str, PoolPolicy] = {
-    ENTITY_ATTEMPT: PoolPolicy(absolute_floor=0.50, margin_floor=0.35),
+    ENTITY_ATTEMPT: PoolPolicy(absolute_floor=0.50, margin_floor=0.08),
     ENTITY_MEMORY: PoolPolicy(absolute_floor=0.20, margin_floor=0.08),
-    ENTITY_SKILL: PoolPolicy(absolute_floor=0.40, margin_floor=0.38),
+    ENTITY_SKILL: PoolPolicy(absolute_floor=0.55, margin_floor=0.10),
 }
-
-_model_cache: dict[str, StaticModel] = {}
 
 
 class SemanticUnavailable(Exception):
@@ -123,71 +245,246 @@ class SemanticUnavailable(Exception):
     as if A7.4 did not exist."""
 
 
-def load_model_for_setup(model_id: str = SEMANTIC_MODEL_ID) -> StaticModel:
-    """Load (downloading if not already cached) the semantic model.
-    Only ever called from `cortex semantic setup` -- allowed to touch
-    the network."""
-    if model_id not in _model_cache:
-        _model_cache[model_id] = StaticModel.from_pretrained(model_id, force_download=False)
-    return _model_cache[model_id]
+# ---------------------------------------------------------------------------
+# Effective model identity
+# ---------------------------------------------------------------------------
 
 
-def load_model_for_retrieval(model_id: str = SEMANTIC_MODEL_ID) -> StaticModel:
-    """Load the semantic model for a normal retrieval call. Never
-    touches the network (see module docstring): raises whatever
-    model2vec/huggingface_hub raises if the model is not already cached,
-    which callers must treat as `SemanticUnavailable` and degrade from,
-    never as a crash."""
-    if model_id in _model_cache:
-        return _model_cache[model_id]
-    previous = os.environ.get("HF_HUB_OFFLINE")
-    os.environ["HF_HUB_OFFLINE"] = "1"
+def model_identity_for(artifact: str) -> str:
+    """The effective identity persisted with an index built from
+    `artifact`: repository, pinned revision, and the exact artifact. See
+    the module docstring for why all three belong in one string."""
+    return f"{SEMANTIC_MODEL_REPO}@{SEMANTIC_MODEL_REVISION}#{artifact}"
+
+
+def preferred_artifact(machine: str | None = None) -> str:
+    """The artifact Cortex will try FIRST on this machine.
+
+    Deliberately keyed on the machine ARCHITECTURE only -- never on the
+    operating system, and never on individual CPU feature flags. The
+    quantized artifacts are named after the instruction set their
+    quantization scheme was tuned for, not one they require: ONNX
+    Runtime executes them on any CPU of the same architecture, more
+    slowly where the tuned instructions are absent. Probing CPU flags
+    would mean either a new dependency or a Linux-only `/proc` scrape,
+    and A16.2.1's conclusion was explicit -- a false optimization is
+    worse than a slightly heavier setup. Anything unrecognized falls
+    back to the full-precision artifact, which has no architecture
+    assumptions at all, and `load_model_for_setup` falls back to it a
+    second time if the preferred artifact does not actually load here."""
+    detected = platform.machine() if machine is None else machine
+    normalized = detected.strip().lower()
+    if normalized in {"x86_64", "amd64", "x64"}:
+        return ARTIFACT_X86_64
+    if normalized in {"arm64", "aarch64"}:
+        return ARTIFACT_ARM64
+    return ARTIFACT_PORTABLE
+
+
+# The identity this build of Cortex would create a NEW index with. An
+# EXISTING index is always read through `artifact_for_index` instead,
+# which obeys whatever artifact that index actually recorded.
+SEMANTIC_MODEL_ID = model_identity_for(preferred_artifact())
+
+
+def artifact_for_index(meta: "SemanticMeta") -> str | None:
+    """The ONNX artifact an existing index must be queried with, or None
+    if the index is not compatible with this build of Cortex at all
+    (different provider, different model repository, different upstream
+    revision, different normalization, or an artifact this build does not
+    know how to load).
+
+    Returning the RECORDED artifact rather than this machine's preferred
+    one is what makes the A16.2.1 mixing hazard structurally impossible:
+    the query is always encoded with the same artifact the stored vectors
+    were, or the index is refused and Cortex degrades to lexical/FTS.
+    That also means an index whose build fell back to the portable
+    artifact stays usable here, instead of being permanently rejected for
+    disagreeing with a machine-derived preference."""
+    model_id = meta.model_id or ""
+    prefix = f"{SEMANTIC_MODEL_REPO}@{SEMANTIC_MODEL_REVISION}#"
+    if not model_id.startswith(prefix):
+        return None
+    artifact = model_id[len(prefix) :]
+    if artifact not in SUPPORTED_ARTIFACTS:
+        return None
+    if not meta.matches(
+        provider=SEMANTIC_PROVIDER,
+        model_id=model_identity_for(artifact),
+        normalization=SEMANTIC_NORMALIZATION,
+    ):
+        return None
+    return artifact
+
+
+# ---------------------------------------------------------------------------
+# The ONNX encoder
+# ---------------------------------------------------------------------------
+
+
+class _OnnxTextEncoder:
+    """The whole ONNX surface of Cortex, kept behind one `encode()`.
+
+    Reproduces the model's published SentenceTransformer recipe: its own
+    tokenizer, truncation at `SEMANTIC_MAX_SEQ_LENGTH`, padding with the
+    tokenizer's real pad token, then mean pooling over the attention
+    mask. Returns UNNORMALIZED vectors, exactly as the model itself does
+    (its `modules.json` declares no `Normalize` module) -- `embed()`
+    normalizes, so that contract is unchanged from A7.4."""
+
+    def __init__(self, session: Any, tokenizer: Any, artifact: str) -> None:
+        self._session = session
+        self._tokenizer = tokenizer
+        self._input_names = {node.name for node in session.get_inputs()}
+        self.identity = model_identity_for(artifact)
+
+    def encode(self, texts: Sequence[str]) -> np.ndarray:
+        texts = list(texts)
+        if not texts:
+            return np.zeros((0, 0), dtype=np.float32)
+        chunks = [
+            self._encode_batch(texts[start : start + SEMANTIC_ENCODE_BATCH_SIZE])
+            for start in range(0, len(texts), SEMANTIC_ENCODE_BATCH_SIZE)
+        ]
+        return np.concatenate(chunks, axis=0) if len(chunks) > 1 else chunks[0]
+
+    def _encode_batch(self, texts: list[str]) -> np.ndarray:
+        encodings = self._tokenizer.encode_batch(texts)
+        input_ids = np.array([e.ids for e in encodings], dtype=np.int64)
+        attention_mask = np.array([e.attention_mask for e in encodings], dtype=np.int64)
+        feed: dict[str, np.ndarray] = {"input_ids": input_ids}
+        # Which inputs a given artifact declares is read off the real
+        # session rather than assumed -- not every export of the same
+        # model exposes the same set.
+        if "attention_mask" in self._input_names:
+            feed["attention_mask"] = attention_mask
+        if "token_type_ids" in self._input_names:
+            feed["token_type_ids"] = np.zeros_like(input_ids)
+        last_hidden_state = self._session.run(None, feed)[0]
+        mask = attention_mask[..., None].astype(np.float32)
+        pooled = (last_hidden_state * mask).sum(axis=1) / np.clip(mask.sum(axis=1), 1e-9, None)
+        return np.asarray(pooled, dtype=np.float32)
+
+
+_model_cache: dict[str, _OnnxTextEncoder] = {}
+
+
+def _artifact_path(artifact: str, *, local_files_only: bool) -> str:
+    return huggingface_hub.hf_hub_download(
+        SEMANTIC_MODEL_REPO,
+        artifact,
+        revision=SEMANTIC_MODEL_REVISION,
+        local_files_only=local_files_only,
+    )
+
+
+def _build_encoder(artifact: str, *, local_files_only: bool) -> _OnnxTextEncoder:
+    """Build (or return the process-cached) encoder for `artifact`.
+    Loading an ONNX session is the single most expensive step in the
+    whole semantic path -- seconds, against milliseconds for a query --
+    so it is cached per artifact for the life of the process, exactly as
+    the model2vec backend was before A16.3."""
+    cached = _model_cache.get(artifact)
+    if cached is not None:
+        return cached
+    onnx_path = _artifact_path(artifact, local_files_only=local_files_only)
+    tokenizer_path = _artifact_path(TOKENIZER_FILENAME, local_files_only=local_files_only)
+    session = onnxruntime.InferenceSession(onnx_path, providers=["CPUExecutionProvider"])
+    tokenizer = Tokenizer.from_file(tokenizer_path)
+    tokenizer.enable_truncation(max_length=SEMANTIC_MAX_SEQ_LENGTH)
+    pad_id = tokenizer.token_to_id("<pad>")
+    if pad_id is None:
+        raise SemanticUnavailable(
+            f"Semantic tokenizer for {SEMANTIC_MODEL_REPO} has no '<pad>' token; "
+            "the cached tokenizer file is not the expected one"
+        )
+    tokenizer.enable_padding(pad_id=pad_id, pad_token="<pad>")
+    encoder = _OnnxTextEncoder(session, tokenizer, artifact)
+    _model_cache[artifact] = encoder
+    return encoder
+
+
+def load_model_for_setup() -> _OnnxTextEncoder:
+    """Load the semantic model, downloading the pinned artifacts if they
+    are not already cached. Only ever called from `cortex semantic setup`
+    -- the one entry point allowed to touch the network.
+
+    Falls back ONCE, from this machine's preferred artifact to the
+    full-precision portable one, if the preferred artifact cannot
+    actually be fetched or loaded here. There is deliberately no third
+    attempt: the identity of whatever artifact succeeded is what gets
+    recorded with the index, so a fallback is fully visible downstream
+    and can never be silently mixed with a different artifact's vectors."""
+    artifact = preferred_artifact()
     try:
-        model = StaticModel.from_pretrained(model_id, force_download=False)
-    finally:
-        if previous is None:
-            os.environ.pop("HF_HUB_OFFLINE", None)
-        else:
-            os.environ["HF_HUB_OFFLINE"] = previous
-    _model_cache[model_id] = model
-    return model
+        return _build_encoder(artifact, local_files_only=False)
+    except Exception as exc:
+        if artifact == ARTIFACT_PORTABLE:
+            raise SemanticUnavailable(
+                f"Failed to load semantic model artifact {artifact!r} from "
+                f"{SEMANTIC_MODEL_REPO}: {exc}"
+            ) from exc
+        try:
+            return _build_encoder(ARTIFACT_PORTABLE, local_files_only=False)
+        except Exception as fallback_exc:
+            raise SemanticUnavailable(
+                f"Failed to load semantic model artifacts {artifact!r} and "
+                f"{ARTIFACT_PORTABLE!r} from {SEMANTIC_MODEL_REPO}: {fallback_exc}"
+            ) from fallback_exc
 
 
-def model_dimensions(model: StaticModel) -> int:
+def load_model_for_index(meta: "SemanticMeta") -> _OnnxTextEncoder | None:
+    """The model that must answer queries against `meta`'s index, or None
+    if this build cannot read that index at all.
+
+    This is the whole of what `_workspace.py` needs to know: it never
+    sees an artifact filename, a cache path, a tokenizer or an ONNX
+    session. Raises (like `load_model_for_retrieval`) if the recorded
+    artifact is not in the local cache -- callers already treat that as
+    `SemanticUnavailable` and degrade to lexical/FTS."""
+    artifact = artifact_for_index(meta)
+    if artifact is None:
+        return None
+    return load_model_for_retrieval(artifact)
+
+
+def load_model_for_retrieval(artifact: str = ARTIFACT_PORTABLE) -> _OnnxTextEncoder:
+    """Load `artifact` for a normal retrieval call, from local cache
+    only. Never touches the network (see module docstring): raises if the
+    artifact is not already cached, which callers must treat as
+    `SemanticUnavailable` and degrade from, never as a crash, and never
+    as a reason to go and fetch it."""
+    return _build_encoder(artifact, local_files_only=True)
+
+
+def model_identity(model: Any) -> str:
+    """The effective identity of the artifact `model` was actually loaded
+    from -- which is not necessarily this machine's preferred artifact,
+    because `load_model_for_setup` may have fallen back."""
+    return getattr(model, "identity", SEMANTIC_MODEL_ID)
+
+
+def model_dimensions(model: Any) -> int:
+    """Read the real output dimensionality off the loaded model instead
+    of trusting a constant -- the one number an artifact swap could
+    change without anything else noticing."""
     return int(model.encode(["_cortex_semantic_dimension_probe_"]).shape[1])
 
 
-def resolve_local_revision(model_id: str = SEMANTIC_MODEL_ID) -> str | None:
-    """Best-effort local commit hash for the currently cached snapshot of
-    `model_id`, via `huggingface_hub.scan_cache_dir()` -- a supported
-    public API, not a scrape of the cache's internal file layout. Returns
-    None (an explicit, documented "unresolvable" state, not an error) if
-    the repo is not cached, or if more than one revision is cached
-    without a clear `main` ref to disambiguate: forcing a guess in that
-    case would be worse than admitting the revision is not known."""
-    try:
-        cache_info = huggingface_hub.scan_cache_dir()
-    except Exception:
-        return None
-    for repo in cache_info.repos:
-        if repo.repo_id != model_id or repo.repo_type != "model":
-            continue
-        revisions = list(repo.revisions)
-        if len(revisions) == 1:
-            return revisions[0].commit_hash
-        for revision in revisions:
-            if "main" in revision.refs:
-                return revision.commit_hash
-        return None
-    return None
+def resolve_local_revision() -> str:
+    """The upstream revision the index was built from. Pinned (see
+    `SEMANTIC_MODEL_REVISION`), so there is nothing to discover at
+    runtime: every artifact is fetched at exactly this revision, which is
+    what makes this value true rather than merely reported."""
+    return SEMANTIC_MODEL_REVISION
 
 
-def embed(model: StaticModel, texts: Sequence[str]) -> np.ndarray:
+def embed(model: Any, texts: Sequence[str]) -> np.ndarray:
     """Embed `texts` and L2-normalize each row so cosine similarity
-    reduces to a plain dot product. model2vec's own vectors are already
-    close to unit norm (verified empirically -- see `is_normalized`),
-    but normalization is applied explicitly here rather than assumed,
-    so this module's correctness never depends on that being true of
+    reduces to a plain dot product. The backend model does not normalize
+    its own output (its `modules.json` declares no `Normalize` module),
+    and normalization is applied explicitly here rather than assumed, so
+    this module's correctness never depends on that being true of
     whichever model is configured."""
     vectors = np.asarray(model.encode(list(texts)), dtype=np.float32)
     norms = np.linalg.norm(vectors, axis=1, keepdims=True)
@@ -234,7 +531,7 @@ def rank_candidates(
 def semantic_rank_eligible(
     query_text: str,
     *,
-    model: StaticModel,
+    model: Any,
     stored_vectors: list[tuple[str, bytes]],
     dimensions: int,
     eligible_ids: frozenset[str] | None = None,
@@ -263,7 +560,7 @@ def semantic_admitted_ids(
     query_text: str,
     entity_type: str,
     *,
-    model: StaticModel,
+    model: Any,
     stored_vectors: list[tuple[str, bytes]],
     dimensions: int,
     eligible_ids: frozenset[str] | None = None,

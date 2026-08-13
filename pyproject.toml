@@ -10,7 +10,16 @@ requires-python = ">=3.12"
 dependencies = []
 
 [project.optional-dependencies]
-semantic = ["model2vec>=0.8.0,<0.9.0", "numpy>=1.26"]
+# Every package here is imported DIRECTLY by `_semantic.py`; none is
+# relied on transitively. `model2vec` was removed in A16.3 together with
+# the potion backend it provided -- no production path or test needs it
+# any more, and rollback is a `git revert`, not a pinned leftover.
+semantic = [
+    "onnxruntime>=1.17.0",
+    "tokenizers>=0.15,<1.0",
+    "huggingface-hub>=0.20,<2.0",
+    "numpy>=1.26",
+]
 
 [project.scripts]
 cortex = "cortex_memory._cli:main"
@@ -24,5 +33,5 @@ dev = ["pytest>=8.0.0"]
 
 [tool.pytest.ini_options]
 markers = [
-    "real_model: exercises the real model2vec/potion-retrieval-32M model; skipped unless it is already cached locally (see tests/test_semantic_real_model.py)",
+    "real_model: exercises the real ONNX sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2 model; skipped unless it is already cached locally (see tests/test_semantic_real_model.py)",
 ]

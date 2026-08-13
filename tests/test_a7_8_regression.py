@@ -181,29 +181,40 @@ def test_preflight_cluster_still_loses_to_a_stronger_unrelated_competitor(tmp_pa
 # test_semantic_real_model.py).
 # ---------------------------------------------------------------------------
 
-_MODEL_ID = "minishlab/potion-retrieval-32M"
-
-
 def _real_model_available() -> bool:
+    """[A16.3] Whether the pinned ONNX artifacts are ALREADY in the local
+    Hugging Face cache. Checked with `local_files_only=True`, so this
+    never downloads anything -- asking the question must not be what
+    populates the answer."""
     try:
         import huggingface_hub
-        import model2vec  # noqa: F401
         import numpy  # noqa: F401
+        import onnxruntime  # noqa: F401
+
+        from cortex_memory import _semantic
     except ImportError:
         return False
-    try:
-        cache_info = huggingface_hub.scan_cache_dir()
-    except Exception:
-        return False
-    return any(repo.repo_id == _MODEL_ID and repo.repo_type == "model" for repo in cache_info.repos)
+    for artifact in (_semantic.preferred_artifact(), _semantic.ARTIFACT_PORTABLE):
+        try:
+            for filename in (artifact, _semantic.TOKENIZER_FILENAME):
+                huggingface_hub.hf_hub_download(
+                    _semantic.SEMANTIC_MODEL_REPO,
+                    filename,
+                    revision=_semantic.SEMANTIC_MODEL_REVISION,
+                    local_files_only=True,
+                )
+            return True
+        except Exception:
+            continue
+    return False
 
 
 pytestmark = pytest.mark.real_model
 _SKIP_REASON = (
-    f"real model2vec model {_MODEL_ID!r} is not cached locally (and/or the "
-    "'semantic' extra is not installed) -- run 'cortex semantic setup' in a "
-    "scratch workspace once to populate the Hugging Face cache, then re-run "
-    "this file; never downloaded automatically by the test suite itself"
+    "the real ONNX semantic model is not cached locally (and/or the 'semantic' "
+    "extra is not installed) -- run 'cortex semantic setup' in a scratch "
+    "workspace once to populate the Hugging Face cache, then re-run this file; "
+    "never downloaded automatically by the test suite itself"
 )
 skip_without_model = pytest.mark.skipif(not _real_model_available(), reason=_SKIP_REASON)
 

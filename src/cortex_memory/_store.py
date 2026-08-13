@@ -348,9 +348,13 @@ class MemoryStore:
         Raises `ValueError` if `memory.supersedes` names an unknown memory,
         if any `memory.evidence_ids` entry names unknown evidence, if
         `memory.supporting_evidence_ids` is not a subset of
-        `memory.evidence_ids`, or (A12.1.1) if `memory.epistemic_state`
+        `memory.evidence_ids`, (A12.1.1) if `memory.epistemic_state`
         is `verified` without at least one supporting Evidence of a
-        qualifying kind. Raises `CortexStorageError` on genuine storage
+        qualifying kind, or (A18.1) if this call is about to insert a NEW
+        Memory row (i.e. `_find_current_equivalent` found no current
+        duplicate) and `events` contains no `EVENT_KIND_MEMORY_RECORDED`
+        event whose `subject_id` equals `memory.memory_id` -- see the
+        MEDIUM-1 note further down. Raises `CortexStorageError` on genuine storage
         corruption or I/O failure.
 
         WRITE-BOUNDARY NOTE (A12.1.1): `Cortex.remember()` is still the
@@ -430,6 +434,27 @@ class MemoryStore:
                 existing = self._find_current_equivalent(memory)
                 if existing is not None:
                     return existing
+
+                # (A18.1 / MEDIUM-1) Reaching here means a NEW canonical
+                # Memory row is about to be inserted -- an exact duplicate
+                # retry already returned above without writing anything,
+                # so this check cannot turn a retry into a false
+                # transition. `timeline()`/`state()` derive "this memory
+                # exists"/"is current" entirely from the Event log (via
+                # `EVENT_KIND_MEMORY_RECORDED`), while `recall()`/
+                # `count()`/`current_ids()` derive it from this raw table.
+                # A row inserted without its own `memory_recorded` event
+                # would make those two sources disagree about the same
+                # memory: visible to one, invisible to the other.
+                if not any(
+                    event.kind == EVENT_KIND_MEMORY_RECORDED and event.subject_id == memory.memory_id
+                    for event in events
+                ):
+                    raise ValueError(
+                        "A newly recorded memory must be accompanied by its own "
+                        f"{EVENT_KIND_MEMORY_RECORDED!r} event whose subject_id equals "
+                        "memory.memory_id"
+                    )
 
                 if memory.supersedes is not None:
                     if self._has_superseder(memory.supersedes):
@@ -1348,16 +1373,31 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
     (version,) = connection.execute("PRAGMA user_version").fetchone()
 
     if version == 0:
-        if any(_table_exists(connection, name) for name in _V6_TABLES):
-            raise CortexStorageError(
-                "Cortex memory store has no recognized schema version but already "
-                "contains data tables; refusing to open a possibly corrupted store"
-            )
-        connection.execute("BEGIN")
+        # (A18.1 / PD-1) `BEGIN IMMEDIATE` takes SQLite's write lock
+        # up front, before re-checking anything, so two processes
+        # opening a not-yet-created `memory.db` at the same time cannot
+        # both observe version 0 outside a lock and then both attempt
+        # `_create_v6_schema` -- the same check-then-create race
+        # `MemoryStore.add()` already closes for the canonical write
+        # path (see its docstring), applied here to the very first
+        # schema creation. The loser of the lock blocks until the
+        # winner commits, then re-reads `PRAGMA user_version` UNDER the
+        # lock: if the winner already created and stamped the schema,
+        # the loser sees the real version and simply falls through to
+        # the (now no-op) migration steps below instead of re-running
+        # `_create_v6_schema` against tables that already exist.
+        connection.execute("BEGIN IMMEDIATE")
         with connection:
-            _create_v6_schema(connection)
-            connection.execute(f"PRAGMA user_version = {STORE_SCHEMA_VERSION}")
-        version = STORE_SCHEMA_VERSION
+            (version,) = connection.execute("PRAGMA user_version").fetchone()
+            if version == 0:
+                if any(_table_exists(connection, name) for name in _V6_TABLES):
+                    raise CortexStorageError(
+                        "Cortex memory store has no recognized schema version but already "
+                        "contains data tables; refusing to open a possibly corrupted store"
+                    )
+                _create_v6_schema(connection)
+                connection.execute(f"PRAGMA user_version = {STORE_SCHEMA_VERSION}")
+                version = STORE_SCHEMA_VERSION
 
     if version == _SCHEMA_VERSION_V1:
         _migrate_v1_to_v2(connection)

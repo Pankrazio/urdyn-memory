@@ -317,8 +317,33 @@ class MemoryStore:
 
     # -- memories ---------------------------------------------------------
 
-    def add(self, memory: Memory, events: Sequence[Event]) -> None:
-        """Persist a new memory, its evidence links, and its events atomically.
+    def add(self, memory: Memory, events: Sequence[Event]) -> Memory:
+        """Persist a new memory, its evidence links, and its events
+        atomically, and return the memory that is canonically on record
+        afterwards.
+
+        (A17) That return value is NOT always `memory`: if this store
+        already holds a CURRENT memory exactly equivalent to it (see
+        `_find_current_equivalent` for the exact definition), nothing is
+        written at all -- no row, no evidence link, no event, no search
+        index entry -- and the pre-existing memory is returned instead,
+        with its own original `memory_id` and `recorded_at`. A repeated
+        `remember()` of the same canonical memory is a retry of one
+        operation, not a second fact, so it must not produce a second
+        current record (which is what collapsed semantic retrieval into
+        false ambiguity in A16's Human Acceptance) and must not
+        fabricate a history entry claiming something happened. This is
+        exactly the idempotency `add_conflict` already applies to a
+        repeated conflict declaration, applied to the canonical memory
+        write path; callers tell the two cases apart by comparing the
+        returned `memory_id` with the one they submitted.
+
+        The duplicate lookup runs inside the SAME transaction as the
+        insert, opened with `BEGIN IMMEDIATE` so the check and the write
+        cannot be interleaved with another connection's identical write
+        (Python's sqlite3 would otherwise not take the write lock until
+        the first INSERT, leaving a check-then-insert race between two
+        concurrent processes remembering the same thing).
 
         Raises `ValueError` if `memory.supersedes` names an unknown memory,
         if any `memory.evidence_ids` entry names unknown evidence, if
@@ -344,17 +369,39 @@ class MemoryStore:
         did not exist when it was recorded) and must keep loading
         exactly as recorded. Applying this rule on read would silently
         contradict that grandfathering guarantee.
+
+        (A17.1) These write-boundary checks -- everything above except
+        `has_superseder` below -- run BEFORE the duplicate lookup, not
+        after: a request that would have been rejected on the baseline
+        (e.g. `verified` with no supporting Evidence) must stay rejected
+        even if the store happens to already hold a CURRENT memory that
+        is grandfathered into that exact same non-compliant shape (a
+        `verified` memory persisted before A12.1 introduced this rule).
+        Historical validity of an old row is not the same thing as
+        current write admissibility of a new request that merely
+        resembles it -- the duplicate lookup may only ever suppress a
+        WRITE, never a VALIDATION. `_evidence_exists`/subset/verified are
+        all pure checks over `memory`'s own fields (plus, for the
+        qualifying-kind check, the kind of evidence IT names) -- none of
+        them depend on whether a duplicate exists, so moving them earlier
+        changes nothing about what they accept. `has_superseder` is the
+        one exception and stays below the lookup: unlike the others, its
+        answer can be TRUE only because of the very memory this request
+        is about to be recognized as a duplicate of (at most one memory
+        may ever supersede a given target, enforced by this same check
+        every time a superseding memory was inserted -- so if a CURRENT
+        equivalent M with `supersedes=X` exists, M is necessarily the
+        only memory that could have set `has_superseder(X)`). Checking it
+        before the lookup would misreport an identical, idempotent retry
+        of a legitimate supersession as "X already superseded" -- see
+        `test_supersession_history_is_not_rewritten_by_a_later_duplicate`.
+        `_memory_exists(supersedes)`, by contrast, cannot be affected by
+        the duplicate this way (it is a fact about `supersedes` itself,
+        not about who points at it), so it moves up with the rest.
         """
         try:
+            self._connection.execute("BEGIN IMMEDIATE")
             with self._connection:
-                if memory.supersedes is not None:
-                    if not self._memory_exists(memory.supersedes):
-                        raise ValueError(f"Cannot supersede unknown memory {memory.supersedes!r}")
-                    if self._has_superseder(memory.supersedes):
-                        raise ValueError(
-                            f"Memory {memory.supersedes!r} has already been superseded; "
-                            "a memory can only be superseded once"
-                        )
                 for evidence_id in memory.evidence_ids:
                     if not self._evidence_exists(evidence_id):
                         raise ValueError(f"Unknown evidence reference {evidence_id!r}")
@@ -375,6 +422,20 @@ class MemoryStore:
                         raise ValueError(
                             "A memory can only be persisted as verified with supporting evidence "
                             f"of a qualifying kind (one of {sorted(VERIFICATION_EVIDENCE_KINDS)})"
+                        )
+                if memory.supersedes is not None:
+                    if not self._memory_exists(memory.supersedes):
+                        raise ValueError(f"Cannot supersede unknown memory {memory.supersedes!r}")
+
+                existing = self._find_current_equivalent(memory)
+                if existing is not None:
+                    return existing
+
+                if memory.supersedes is not None:
+                    if self._has_superseder(memory.supersedes):
+                        raise ValueError(
+                            f"Memory {memory.supersedes!r} has already been superseded; "
+                            "a memory can only be superseded once"
                         )
 
                 self._connection.execute(
@@ -407,6 +468,65 @@ class MemoryStore:
                     )
         except sqlite3.DatabaseError as exc:
             raise CortexStorageError(f"Failed to persist memory {memory.memory_id!r}: {exc}") from exc
+        return memory
+
+    def _find_current_equivalent(self, memory: Memory) -> Memory | None:
+        """(A17) Return the CURRENT memory this store already holds that is
+        exactly equivalent to `memory`, or None.
+
+        "Exactly equivalent" means every canonical field that carries the
+        memory's MEANING is identical: `content` (byte-for-byte, under
+        SQLite's default BINARY collation -- no case folding, no
+        trimming, no Unicode normalization, none of which Cortex applies
+        anywhere else either), `kind`, `epistemic_state`, `supersedes`,
+        and both provenance tuples (`evidence_ids` and
+        `supporting_evidence_ids`, order included). `memory_id` and
+        `recorded_at` are deliberately excluded: they describe the
+        RECORDING OPERATION, not the memory's meaning -- a freshly
+        generated uuid4 and a fresh timestamp differ on every call by
+        construction, so including either would make "duplicate" an
+        impossible state and this method dead code.
+
+        Only CURRENT memories qualify. Re-asserting something that was
+        superseded is a new fact about now -- the earlier record stopped
+        being what Cortex believes, so restating it is a real transition
+        and gets its own memory, exactly as it would have before A17. It
+        is only the coexistence of two CURRENT equivalents that this
+        prevents. Note that "current" is evaluated per candidate rather
+        than against a whole-store `current_ids()` set: the equivalence
+        query already narrows the field to a handful of rows, and asking
+        `_has_superseder` about those is far cheaper than materializing
+        every id in the store on every single write.
+
+        Candidates are ordered oldest-first (tie-broken by `memory_id`,
+        the same determinism discipline `search`/`list_conflicts` apply)
+        so that a store which somehow already contains several current
+        equivalents -- legacy duplicates recorded before A17, which are
+        preserved untouched, never merged or deleted -- always collapses
+        onto the SAME, oldest one rather than an incidental row order.
+        """
+        rows = self._connection.execute(
+            "SELECT memory_id, content, kind, epistemic_state, recorded_at, supersedes "
+            "FROM memories "
+            "WHERE content = ? AND kind = ? AND epistemic_state = ? AND supersedes IS ? "
+            "ORDER BY recorded_at ASC, memory_id ASC",
+            (memory.content, memory.kind, memory.epistemic_state, memory.supersedes),
+        ).fetchall()
+        for row in rows:
+            candidate_id = row[0]
+            if self._has_superseder(candidate_id):
+                continue
+            candidate = _row_to_memory(
+                row,
+                self._memory_evidence_ids(candidate_id),
+                self._memory_supporting_evidence_ids(candidate_id),
+            )
+            if (
+                candidate.evidence_ids == memory.evidence_ids
+                and candidate.supporting_evidence_ids == memory.supporting_evidence_ids
+            ):
+                return candidate
+        return None
 
     def count(self) -> int:
         try:

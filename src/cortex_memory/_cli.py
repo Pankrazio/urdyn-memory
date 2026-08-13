@@ -152,8 +152,15 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.command == "remember":
             cx = Cortex.discover()
-            memory = cx.remember(args.text, kind=args.kind, supersedes=args.supersedes)
-            print(f"Remembered [{memory.memory_id}] ({memory.kind})")
+            # `_remember` rather than `remember` for the same reason
+            # `status` uses `_count_memories`: the CLI needs one internal
+            # detail the public return type does not carry -- whether this
+            # call actually recorded the memory or found it already
+            # current (A17). Reporting an unchanged store as "Remembered"
+            # would tell the user something happened when nothing did.
+            memory, created = cx._remember(args.text, kind=args.kind, supersedes=args.supersedes)
+            label = "Remembered" if created else "Already remembered"
+            print(f"{label} [{memory.memory_id}] ({memory.kind})")
             if memory.supersedes:
                 print(f"Supersedes [{memory.supersedes}]")
             return 0

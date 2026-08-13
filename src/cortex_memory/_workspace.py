@@ -189,6 +189,21 @@ class Cortex:
         `content` is recorded verbatim; Cortex does not interpret,
         summarize, or verify it. Rejects empty or whitespace-only input.
 
+        (A17) Recording the same canonical memory twice is idempotent: if
+        Cortex already holds a CURRENT memory exactly equivalent to this
+        one -- same `content` (byte-for-byte), `kind`, `epistemic_state`,
+        `supersedes`, and same provenance (`evidence`/
+        `supporting_evidence`) -- that existing memory is returned
+        unchanged, with its original `memory_id` and `recorded_at`, and
+        nothing new is written. A repeated call is a retry of one
+        operation, not a second thing to believe, and two current records
+        of the same claim are not a richer history: they are a canonical
+        integrity defect that also makes retrieval treat one claim as two
+        competing candidates. This is exact equivalence only: differently
+        worded memories that mean the same thing are NOT deduplicated,
+        and re-asserting something that has since been superseded is a
+        real new fact and gets its own memory.
+
         If `supersedes` is given, it must be the memory_id of an existing
         memory; that memory is preserved as history, not deleted or
         modified, and stops being "current". `evidence` records why this
@@ -229,6 +244,41 @@ class Cortex:
         kind alone. Memories recorded before A12.1 may be `verified`
         with an empty `supporting_evidence_ids`; that is "verified under
         the pre-A12.1 contract" and is never retroactively rewritten.
+        """
+        memory, _created = self._remember(
+            content,
+            kind=kind,
+            epistemic_state=epistemic_state,
+            supersedes=supersedes,
+            evidence=evidence,
+            supporting_evidence=supporting_evidence,
+        )
+        return memory
+
+    def _remember(
+        self,
+        content: str,
+        *,
+        kind: str = DEFAULT_KIND,
+        epistemic_state: str = EPISTEMIC_USER_ASSERTED,
+        supersedes: str | None = None,
+        evidence: Sequence[Evidence] = (),
+        supporting_evidence: Sequence[Evidence] = (),
+    ) -> tuple[Memory, bool]:
+        """(A17) The whole implementation of `remember()`, plus the one
+        piece of information its public return type deliberately does not
+        carry: whether this call actually recorded a NEW memory (True) or
+        collapsed onto an already-current exact equivalent (False).
+
+        Internal to the `cortex remember` CLI command, exactly like
+        `_count_memories` is internal to `cortex status`. "Was this call
+        the one that recorded it?" is a property of the CALL, not of the
+        canonical Memory -- a Memory reloaded tomorrow by `state()` or
+        `timeline()` could not answer it, and would have to answer it
+        identically for both calls if it tried. Putting it on the public
+        model would therefore make the canonical record depend on how it
+        was obtained; keeping it here lets the CLI say "Already
+        remembered" without inventing a public concept for it.
         """
         if not isinstance(content, str) or not content.strip():
             raise ValueError("Memory content must not be empty or whitespace-only")
@@ -309,9 +359,15 @@ class Cortex:
             )
 
         with MemoryStore.create_or_open(self._db_path) as store:
-            store.add(memory, events)
+            persisted = store.add(memory, events)
 
-        return memory
+        # `store.add` returns the pre-existing memory instead of writing
+        # anything when this call duplicates a current one (see its
+        # docstring). The freshly generated `memory_id` above is what
+        # distinguishes the two outcomes: it exists nowhere else by
+        # construction, so getting it back means this call is the one
+        # that recorded it.
+        return persisted, persisted.memory_id == memory.memory_id
 
     def recall(
         self, query: str, *, limit: int = DEFAULT_RECALL_LIMIT, include_superseded: bool = False

@@ -72,6 +72,28 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="MEMORY_ID",
         help="Memory ID that this memory supersedes",
     )
+    # (A20) Provenance only, repeatable. This is the CLI half of a
+    # capability the library already had in full: `remember()` has taken
+    # `evidence=` since long before A19.1 made `cortex seed` produce
+    # citable `document_observation` Evidence, and without this flag the
+    # only way to derive a belief from a seeded document was the Python
+    # API. Deliberately NOT accompanied by `--supporting-evidence` or
+    # `--epistemic-state`: the CLI records `user_asserted` memories and
+    # nothing here changes that, so no CLI invocation can designate
+    # support or reach `verified` at all -- the A12.1 gate is not merely
+    # enforced against this path, it is unreachable from it. `--source
+    # PATH` is likewise absent by decision: the caller cites an exact,
+    # immutable evidence_id (read from `cortex sources <path>`), so the
+    # provenance is never re-resolved against a file that has since
+    # changed. See the A20 report for the full reasoning.
+    remember_parser.add_argument(
+        "--evidence",
+        action="append",
+        default=None,
+        metavar="EVIDENCE_ID",
+        help="Evidence ID this memory was derived from (repeatable). Provenance only: "
+        "it never makes a memory verified.",
+    )
 
     recall_parser = subparsers.add_parser("recall", help="Search recorded memories")
     recall_parser.add_argument("query", help="Search text")
@@ -170,17 +192,36 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.command == "remember":
             cx = Cortex.discover()
+            # (A20) Every cited Evidence is resolved through the Core's own
+            # lookup BEFORE anything is written, so an unknown id fails the
+            # whole command with zero memories recorded rather than after a
+            # partial write. The CLI never fabricates an `Evidence`: it
+            # passes back the canonical objects the store returned, which is
+            # what lets `remember()` apply its own rules (kind, existence,
+            # ordering) to exactly the same values it would see from a
+            # Python caller.
+            evidence = [cx.get_evidence(evidence_id) for evidence_id in (args.evidence or ())]
             # `_remember` rather than `remember` for the same reason
             # `status` uses `_count_memories`: the CLI needs one internal
             # detail the public return type does not carry -- whether this
             # call actually recorded the memory or found it already
             # current (A17). Reporting an unchanged store as "Remembered"
             # would tell the user something happened when nothing did.
-            memory, created = cx._remember(args.text, kind=args.kind, supersedes=args.supersedes)
+            memory, created = cx._remember(
+                args.text, kind=args.kind, supersedes=args.supersedes, evidence=evidence
+            )
             label = "Remembered" if created else "Already remembered"
             print(f"{label} [{memory.memory_id}] ({memory.kind})")
             if memory.supersedes:
                 print(f"Supersedes [{memory.supersedes}]")
+            # Printed from the PERSISTED memory, not from `args.evidence`:
+            # what matters is the provenance Cortex actually holds, which
+            # for an "Already remembered" collapse is the existing memory's
+            # own trail, and which the Core may have deduplicated. Ids are
+            # canonical Cortex identities (structure), like `memory_id`
+            # above.
+            for evidence_id in memory.evidence_ids:
+                print(f"Evidence [{evidence_id}]")
             return 0
 
         if args.command == "recall":

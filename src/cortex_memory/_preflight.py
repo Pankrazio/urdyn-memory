@@ -124,6 +124,27 @@ class Preflight:
     defaulted to `()` for the same backward-compatibility reason as
     `invariants`.
 
+    `pending` (A22.1) is every CURRENT `Memory` of kind `pending`
+    relevant to `task`, using the same relevance-matching machinery as
+    `root_causes`/`verified_lessons`/`open_invalidations`. Like
+    `open_invalidations` and UNLIKE `invariants`, unfinished operational
+    work is not project-wide by default: a pending item is surfaced only
+    when it is relevant to THIS task, never as an unconditional dump of
+    everything still open. It answers yet another question none of the
+    other fields can: not "what do we currently know" and not "what did
+    we stop trusting", but "what work is still open that bears on what
+    you are about to do". A pending is NOT elevated in authority by its
+    kind -- it keeps whatever `epistemic_state` it was recorded with
+    (`user_asserted` by default), and being shown here is a statement
+    about relevance, never about truth. Closure needs no new mechanism:
+    a completed or cancelled pending is superseded by whatever Memory
+    records the resolution (see `_memory.py`'s KIND_PENDING note), which
+    makes it non-current, which removes it from this field for exactly
+    the same reason it removes it from every other one. Deliberately
+    placed last and defaulted to `()` for the same
+    backward-compatibility reason as `invariants`/`open_invalidations`/
+    `open_conflicts`.
+
     `open_conflicts` (A14.1) is every OPEN canonical `Conflict` (see
     `Cortex.open_conflicts()` -- both participants current) relevant to
     `task`, paired with the two Memories it names as a `PreflightConflict`
@@ -154,6 +175,7 @@ class Preflight:
     invariants: tuple[Memory, ...] = ()
     open_invalidations: tuple[Memory, ...] = ()
     open_conflicts: tuple[PreflightConflict, ...] = ()
+    pending: tuple[Memory, ...] = ()
 
     def is_empty(self) -> bool:
         return not (
@@ -164,6 +186,7 @@ class Preflight:
             or self.invariants
             or self.open_invalidations
             or self.open_conflicts
+            or self.pending
         )
 
 
@@ -180,6 +203,7 @@ def build_preflight(
     memory_semantic_admitted: frozenset[str] = frozenset(),
     invariant_memories: list[Memory] = (),
     invalidation_memories: list[Memory] = (),
+    pending_memories: list[Memory] = (),
     open_conflicts: list[Conflict] = (),
     conflict_participants: Mapping[str, Memory] = {},  # noqa: B006 -- never mutated, see below
 ) -> Preflight:
@@ -221,6 +245,19 @@ def build_preflight(
     independently-computed admission sets before calling this function;
     this function itself does not know or care where that set's members
     came from, so it cannot introduce cross-pool competition on its own.
+
+    `pending_memories` (A22.1) is expected to already be filtered to
+    current, kind `pending` memories, exactly like
+    `invalidation_memories`, and goes through the SAME `_memory_matches`
+    relevance gate -- no new threshold, no pending-specific score, no
+    boost, and specifically no "return everything still open" shortcut.
+    A22 measured that the existing gate already both admits the relevant
+    pending and rejects the unrelated one for the same task, so the only
+    thing missing was this parameter. The caller is expected to have
+    computed whatever semantic admission it wants for pending in its OWN
+    disjoint pool (see `Cortex.preflight`); this function only checks id
+    membership in `memory_semantic_admitted` and therefore cannot itself
+    create competition between pending and any other category.
 
     `open_conflicts` (A14.1) is expected to already be filtered to OPEN
     conflicts (see `Cortex.open_conflicts()`) -- this function has no
@@ -267,6 +304,7 @@ def build_preflight(
     root_causes = tuple(memory for memory in root_cause_memories if _memory_matches(memory))
     verified_lessons = tuple(memory for memory in verified_lesson_memories if _memory_matches(memory))
     open_invalidations = tuple(memory for memory in invalidation_memories if _memory_matches(memory))
+    pending = tuple(memory for memory in pending_memories if _memory_matches(memory))
 
     candidate_evidence_ids: list[str] = []
     for source in (*verified_lessons, *relevant_successes):
@@ -347,4 +385,5 @@ def build_preflight(
         invariants=tuple(invariant_memories),
         open_invalidations=open_invalidations,
         open_conflicts=preflight_conflicts,
+        pending=pending,
     )

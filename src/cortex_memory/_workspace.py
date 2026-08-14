@@ -35,6 +35,7 @@ from ._memory import (
     KIND_INVALIDATION,
     KIND_INVARIANT,
     KIND_LESSON,
+    KIND_PENDING,
     KIND_ROOT_CAUSE,
     VALID_EPISTEMIC_STATES,
     VALID_KINDS,
@@ -705,11 +706,11 @@ class Cortex:
 
         Answers "what should an agent know before attempting this?" by
         surfacing known failures (matching failed attempts), root causes,
-        verified lessons, and any test/command evidence recommended as
-        validation — each only if Cortex has something relevant on
-        record. This is lexical and deterministic, not a search engine:
-        it will not return everything, and it will not return nothing
-        just because the wording differs slightly.
+        verified lessons, still-open pending work, and any test/command
+        evidence recommended as validation — each only if Cortex has
+        something relevant on record. This is lexical and deterministic,
+        not a search engine: it will not return everything, and it will
+        not return nothing just because the wording differs slightly.
         """
         if not isinstance(task, str) or not task.strip():
             raise ValueError("Preflight task must not be empty or whitespace-only")
@@ -760,6 +761,14 @@ class Cortex:
             # for why it does not inherit the invariants' "always include"
             # rule: an invalidation is not project-wide by default).
             invalidation_memories = [m for m in current_memories if m.kind == KIND_INVALIDATION]
+            # [A22.1] Every CURRENT pending -- like invalidations, and
+            # UNLIKE invariants, this goes through the same relevance
+            # channels as root causes/lessons (see `Preflight.pending`).
+            # Deliberately a pool of its own rather than a `kind` filter
+            # applied to the shared memory pool: everything below that
+            # ranks or restricts candidates must keep treating pending as
+            # a separate population (see the semantic pool further down).
+            pending_memories = [m for m in current_memories if m.kind == KIND_PENDING]
             # [A14.1] Every OPEN conflict (see `_open_conflicts_projection`
             # -- the SAME definition `Cortex.open_conflicts()` uses, over
             # the SAME `current_ids` already computed above). Relevance
@@ -829,6 +838,27 @@ class Cortex:
                 task, ENTITY_MEMORY, eligible_ids=invalidation_eligible_ids
             )
 
+            # [A22.1] A third DISJOINT, independently-ranked semantic pool,
+            # restricted to pending ids only -- the A11.3 pattern above,
+            # applied for exactly the same reason and no other. Folding
+            # pending into `memory_eligible_ids` instead would put it into
+            # the winner-take-all race that already decides root causes/
+            # lessons, where an unrelated-but-strongly-scoring pending
+            # could take that pool's single admission slot or collapse its
+            # margin -- the regression A11.3 documents and measures. Run
+            # as its own call over its own restriction, that is impossible
+            # by construction, in both directions: pending cannot steal
+            # admission from root causes/lessons/invalidations, and none
+            # of them can steal it from pending. The three independently
+            # computed results are combined by plain set union below;
+            # since no race's outcome depended on any other, and the three
+            # restrictions are disjoint by `kind`, unioning cannot
+            # reintroduce the competition this separation avoids.
+            pending_eligible_ids = frozenset(m.memory_id for m in pending_memories)
+            pending_semantic_admitted = self._semantic_widen(
+                task, ENTITY_MEMORY, eligible_ids=pending_eligible_ids
+            )
+
             return build_preflight(
                 task,
                 attempts=attempts,
@@ -838,9 +868,12 @@ class Cortex:
                 attempt_fts_candidates=attempt_fts_candidates,
                 memory_fts_candidates=memory_fts_candidates,
                 attempt_semantic_admitted=attempt_semantic_admitted,
-                memory_semantic_admitted=memory_semantic_admitted | invalidation_semantic_admitted,
+                memory_semantic_admitted=(
+                    memory_semantic_admitted | invalidation_semantic_admitted | pending_semantic_admitted
+                ),
                 invariant_memories=invariant_memories,
                 invalidation_memories=invalidation_memories,
+                pending_memories=pending_memories,
                 open_conflicts=open_conflict_list,
                 conflict_participants=current_memory_by_id,
             )

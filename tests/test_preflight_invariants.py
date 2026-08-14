@@ -66,18 +66,27 @@ def test_preflight_reports_multiple_current_invariants(tmp_path):
     }
 
 
-def test_preflight_pending_never_appears_even_when_lexically_identical(tmp_path):
+def test_preflight_pending_does_not_leak_into_the_a9_1_fields(tmp_path):
+    """[A22.1] A pending IS now surfaced -- in its own `pending` field,
+    and only when relevant to the task (see
+    `tests/test_a22_pending_preflight.py`). What A9.1 asserted here and
+    what A22.1 keeps asserting is the part that never changed: a pending
+    is not a root cause, not a lesson, not a known failure, and it does
+    not inherit the invariants' unconditional inclusion."""
     cx = Cortex.init(tmp_path, "dev")
     task = "Optimize database connection pooling for the storage layer."
-    cx.remember(task, kind="pending")
+    pending = cx.remember(task, kind="pending")
 
     result = cx.preflight(task)
 
-    assert not hasattr(result, "pending")
-    # nothing pending leaks into any existing field either
+    assert [m.memory_id for m in result.pending] == [pending.memory_id]
+    # nothing pending leaks into any existing field
     assert result.known_failures == ()
     assert result.root_causes == ()
     assert result.verified_lessons == ()
+    assert result.invariants == ()
+    # ...and it is task-relevant, not project-wide like an invariant
+    assert cx.preflight("Rename the changelog heading").pending == ()
 
 
 def test_preflight_question_never_appears_even_when_lexically_identical(tmp_path):
@@ -106,19 +115,21 @@ def test_preflight_environment_never_appears_even_when_lexically_identical(tmp_p
     assert result.verified_lessons == ()
 
 
-def test_preflight_result_has_no_pending_question_environment_fields_at_all():
-    """Shape guarantee: `Preflight` gained exactly one field in A9.1
-    (`invariants`), not four."""
+def test_preflight_result_has_no_question_environment_fields_at_all():
+    """Shape guarantee: A9.1 gained exactly one field (`invariants`), not
+    four, and A22.1 gained exactly one more (`pending`) -- deliberately
+    not `questions`/`environment`, which have no admission channel and
+    are still reached only through `state()`/`timeline()`."""
     import dataclasses
 
     from cortex_memory import Preflight
 
     field_names = {f.name for f in dataclasses.fields(Preflight)}
 
-    assert "pending" not in field_names
     assert "questions" not in field_names
     assert "environment" not in field_names
     assert "invariants" in field_names
+    assert "pending" in field_names
 
 
 def test_invariants_work_without_the_semantic_extra(tmp_path, monkeypatch):

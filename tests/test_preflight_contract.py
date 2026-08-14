@@ -27,18 +27,21 @@ def test_preflight_is_exported_but_matching_internals_are_not():
 def test_preflight_dataclass_shape_has_no_matching_strategy_leakage():
     field_names = {f.name for f in dataclasses.fields(Preflight)}
 
-    # `invariants` (A9.1), `open_invalidations` (A11.3) and
-    # `open_conflicts` (A14.1) are deliberate, documented additions to
-    # this contract: unlike the other fields, `invariants` is populated
+    # `invariants` (A9.1), `open_invalidations` (A11.3), `open_conflicts`
+    # (A14.1) and `pending` (A22.1) are deliberate, documented additions
+    # to this contract: unlike the other fields, `invariants` is populated
     # without any matching strategy at all (see `Preflight.invariants`'s
-    # docstring), `open_invalidations` goes through the SAME matching
-    # strategy as `root_causes`/`verified_lessons` (see
-    # `Preflight.open_invalidations`'s docstring), and `open_conflicts`
+    # docstring), `open_invalidations` and `pending` go through the SAME
+    # matching strategy as `root_causes`/`verified_lessons` (see their
+    # docstrings), and `open_conflicts`
     # reuses that same strategy PLUS membership in those already-admitted
     # fields (see `Preflight.open_conflicts`'s docstring) -- none of the
-    # three reintroduces the leakage this test guards against, since
+    # four reintroduces the leakage this test guards against, since
     # nothing about "shared lexical tokens" becomes observable from the
-    # field names or types themselves.
+    # field names or types themselves. In particular `pending` names a
+    # canonical `Memory` kind, not a retrieval channel: that a pending is
+    # selected by relevance rather than dumped is a property of the
+    # values, invisible in the shape.
     assert field_names == {
         "task",
         "known_failures",
@@ -48,6 +51,7 @@ def test_preflight_dataclass_shape_has_no_matching_strategy_leakage():
         "invariants",
         "open_invalidations",
         "open_conflicts",
+        "pending",
     }
 
 

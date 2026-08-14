@@ -95,11 +95,14 @@ def test_cli_preflight_omits_invariants_section_when_none_recorded(tmp_path, mon
     assert "INVARIANTS" not in captured.out
 
 
-def test_cli_preflight_never_shows_pending_question_environment(tmp_path, monkeypatch, capsys):
+def test_cli_preflight_never_shows_question_environment(tmp_path, monkeypatch, capsys):
+    """[A22.1] `pending` gained a renderer of its own (asserted in
+    `tests/test_a22_pending_preflight.py`); `question` and `environment`
+    deliberately did not, and are still reached only through
+    `timeline`/`state`."""
     monkeypatch.chdir(tmp_path)
     main(["init", "dev"])
     task = "Optimize database connection pooling for the storage layer."
-    main(["remember", task, "--kind", "pending"])
     main(["remember", task, "--kind", "question"])
     main(["remember", task, "--kind", "environment"])
 
@@ -107,9 +110,22 @@ def test_cli_preflight_never_shows_pending_question_environment(tmp_path, monkey
     captured = capsys.readouterr()
 
     assert exit_code == 0
-    assert "PENDING" not in captured.out
     assert "QUESTION" not in captured.out
     assert "ENVIRONMENT" not in captured.out
+
+
+def test_cli_preflight_omits_pending_section_when_nothing_relevant(tmp_path, monkeypatch, capsys):
+    """A pending that says nothing about the task must not put a PENDING
+    section on screen -- the CLI half of the no-unconditional-dump gate."""
+    monkeypatch.chdir(tmp_path)
+    main(["init", "dev"])
+    main(["remember", "Update the README screenshots.", "--kind", "pending"])
+
+    exit_code = main(["preflight", "Optimize database connection pooling for the storage layer."])
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "PENDING" not in captured.out
 
 
 def test_cli_remember_kind_choices_include_new_operational_kinds(tmp_path, monkeypatch, capsys):

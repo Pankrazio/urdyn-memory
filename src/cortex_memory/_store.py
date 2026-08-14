@@ -1744,6 +1744,33 @@ def _ensure_search_index(connection: sqlite3.Connection) -> None:
     index up automatically the next time this runs, fully backfilled --
     the same recovery `rebuild_search_index()` offers on demand.
 
+    (A20.R) That idempotency has to hold ACROSS PROCESSES, not just
+    across successive opens, so the existence check that decides whether
+    to create the index runs a second time INSIDE the transaction, under
+    SQLite's write lock. This is the same protocol `_ensure_schema`
+    applies to canonical first creation (see its `version == 0` branch),
+    applied to the derived index -- and for the same reason: the check
+    below at function entry is unlocked, so two processes opening a store
+    whose index does not exist yet can both pass it, and a plain `BEGIN`
+    would not serialize them (Python's sqlite3 opens a DEFERRED
+    transaction, which takes no lock until its first write). Both would
+    then reach `CREATE VIRTUAL TABLE` and the loser would fail with
+    "table search_index already exists" -- reported as a corrupt store,
+    failing an open that has nothing wrong with it. `BEGIN IMMEDIATE`
+    takes the write lock up front, so exactly one process can observe
+    the index as absent and act on it; every other one blocks, re-reads
+    the real state under the lock, sees the winner's index, and returns
+    without a second CREATE and without a redundant initial rebuild.
+    The unlocked check at entry is kept purely as a fast path for the
+    overwhelmingly common case (index already present): it is now an
+    optimization, not what makes this correct.
+
+    The two critical sections stay deliberately separate: the canonical
+    version chain and this derived projection are different boundaries
+    with different failure semantics (see module docstring), and merging
+    them would put a rebuildable search aid inside the transaction that
+    defines what Cortex canonically holds.
+
     A missing FTS5 module in this SQLite build is an expected, handled
     condition: `_try_create_search_index` reports it and this function
     simply leaves the store without an index rather than failing to
@@ -1754,8 +1781,15 @@ def _ensure_search_index(connection: sqlite3.Connection) -> None:
     """
     if _table_exists(connection, SEARCH_INDEX_TABLE):
         return
-    connection.execute("BEGIN")
+    connection.execute("BEGIN IMMEDIATE")
     with connection:
+        if _table_exists(connection, SEARCH_INDEX_TABLE):
+            # Another process created it between the unlocked check
+            # above and this lock. `with connection` commits this
+            # (read-only) transaction on the way out, releasing the
+            # write lock rather than leaving it open for the rest of
+            # this connection's life.
+            return
         if _try_create_search_index(connection):
             _rebuild_search_index(connection)
 

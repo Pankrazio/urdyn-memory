@@ -71,7 +71,7 @@ from __future__ import annotations
 import datetime as dt
 import sqlite3
 import uuid
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from ._attempt import ATTEMPT_ID_PATTERN, VALID_OUTCOMES, Attempt
@@ -1514,41 +1514,47 @@ def _create_v7_schema(connection: sqlite3.Connection) -> None:
     connection.execute(_CREATE_SOURCE_OBSERVATIONS_SQL)
 
 
+# (A20.R.2) Every `_migrate_vN_to_vN+1` below runs INSIDE the caller's
+# transaction and owns neither its boundary nor the version stamp -- see
+# `_ensure_schema`'s migration loop, which is the single entity that
+# decides eligibility, opens `BEGIN IMMEDIATE`, stamps `PRAGMA
+# user_version`, and commits. A helper that opened its own transaction
+# could not observe the version under the caller's lock, which is
+# precisely what makes the decision to run it safe.
+
+
 def _migrate_v1_to_v2(connection: sqlite3.Connection) -> None:
-    """Upgrade a v1 store to v2 in a single all-or-nothing transaction.
+    """Upgrade a v1 store to v2.
 
     Also backfills a `memory_recorded` event for every memory that already
     existed under v1, ordered by its own `recorded_at`, so that pre-A3
     memories remain visible to `timeline()`/`state()` (which are event-log
     projections, not raw table scans).
 
-    Python's `sqlite3` module does not open an implicit transaction before
-    DDL statements, so `BEGIN` is issued explicitly here: without it, a
-    failure partway through (e.g. a colliding table name) would leave
-    earlier DDL statements permanently committed instead of rolled back.
+    Runs inside the caller's transaction (see the note above): the
+    all-or-nothing property this step has always had is provided by that
+    transaction, so a failure partway through -- e.g. a colliding table
+    name on a genuinely malformed store -- still rolls back every earlier
+    statement here rather than leaving them committed.
     """
     if not _table_exists(connection, "memories"):
         raise CortexStorageError(
             "Cortex memory store is stamped with schema version 1 but is missing the "
             "'memories' table; refusing to migrate a possibly corrupted store"
         )
-    connection.execute("BEGIN")
-    with connection:
-        connection.execute("ALTER TABLE memories ADD COLUMN supersedes TEXT")
-        connection.execute(_CREATE_EVIDENCE_SQL)
-        connection.execute(_CREATE_MEMORY_EVIDENCE_SQL)
-        connection.execute(_CREATE_EVENTS_SQL)
+    connection.execute("ALTER TABLE memories ADD COLUMN supersedes TEXT")
+    connection.execute(_CREATE_EVIDENCE_SQL)
+    connection.execute(_CREATE_MEMORY_EVIDENCE_SQL)
+    connection.execute(_CREATE_EVENTS_SQL)
 
-        preexisting = connection.execute(
-            "SELECT memory_id, recorded_at FROM memories ORDER BY recorded_at, memory_id"
-        ).fetchall()
-        for memory_id, recorded_at in preexisting:
-            connection.execute(
-                "INSERT INTO events (event_id, kind, subject_id, occurred_at) VALUES (?, ?, ?, ?)",
-                (uuid.uuid4().hex, EVENT_KIND_MEMORY_RECORDED, memory_id, recorded_at),
-            )
-
-        connection.execute(f"PRAGMA user_version = {_SCHEMA_VERSION_V2}")
+    preexisting = connection.execute(
+        "SELECT memory_id, recorded_at FROM memories ORDER BY recorded_at, memory_id"
+    ).fetchall()
+    for memory_id, recorded_at in preexisting:
+        connection.execute(
+            "INSERT INTO events (event_id, kind, subject_id, occurred_at) VALUES (?, ?, ?, ?)",
+            (uuid.uuid4().hex, EVENT_KIND_MEMORY_RECORDED, memory_id, recorded_at),
+        )
 
 
 def _migrate_v2_to_v3(connection: sqlite3.Connection) -> None:
@@ -1562,11 +1568,8 @@ def _migrate_v2_to_v3(connection: sqlite3.Connection) -> None:
             f"Cortex memory store is stamped with schema version 2 but is missing "
             f"table(s) {missing!r}; refusing to migrate a possibly corrupted store"
         )
-    connection.execute("BEGIN")
-    with connection:
-        connection.execute(_CREATE_ATTEMPTS_SQL)
-        connection.execute(_CREATE_ATTEMPT_EVIDENCE_SQL)
-        connection.execute(f"PRAGMA user_version = {_SCHEMA_VERSION_V3}")
+    connection.execute(_CREATE_ATTEMPTS_SQL)
+    connection.execute(_CREATE_ATTEMPT_EVIDENCE_SQL)
 
 
 def _migrate_v3_to_v4(connection: sqlite3.Connection) -> None:
@@ -1581,13 +1584,10 @@ def _migrate_v3_to_v4(connection: sqlite3.Connection) -> None:
             f"Cortex memory store is stamped with schema version 3 but is missing "
             f"table(s) {missing!r}; refusing to migrate a possibly corrupted store"
         )
-    connection.execute("BEGIN")
-    with connection:
-        connection.execute(_CREATE_SKILLS_SQL)
-        connection.execute(_CREATE_SKILL_STEPS_SQL)
-        connection.execute(_CREATE_SKILL_CONDITIONS_SQL)
-        connection.execute(_CREATE_SKILL_EVIDENCE_SQL)
-        connection.execute(f"PRAGMA user_version = {_SCHEMA_VERSION_V4}")
+    connection.execute(_CREATE_SKILLS_SQL)
+    connection.execute(_CREATE_SKILL_STEPS_SQL)
+    connection.execute(_CREATE_SKILL_CONDITIONS_SQL)
+    connection.execute(_CREATE_SKILL_EVIDENCE_SQL)
 
 
 def _migrate_v4_to_v5(connection: sqlite3.Connection) -> None:
@@ -1608,12 +1608,9 @@ def _migrate_v4_to_v5(connection: sqlite3.Connection) -> None:
             f"Cortex memory store is stamped with schema version 4 but is missing "
             f"table(s) {missing!r}; refusing to migrate a possibly corrupted store"
         )
-    connection.execute("BEGIN")
-    with connection:
-        connection.execute(
-            f"ALTER TABLE memory_evidence ADD COLUMN role TEXT NOT NULL DEFAULT '{_ROLE_RELATED}'"
-        )
-        connection.execute(f"PRAGMA user_version = {_SCHEMA_VERSION_V5}")
+    connection.execute(
+        f"ALTER TABLE memory_evidence ADD COLUMN role TEXT NOT NULL DEFAULT '{_ROLE_RELATED}'"
+    )
 
 
 def _migrate_v5_to_v6(connection: sqlite3.Connection) -> None:
@@ -1629,10 +1626,7 @@ def _migrate_v5_to_v6(connection: sqlite3.Connection) -> None:
             f"Cortex memory store is stamped with schema version 5 but is missing "
             f"table(s) {missing!r}; refusing to migrate a possibly corrupted store"
         )
-    connection.execute("BEGIN")
-    with connection:
-        connection.execute(_CREATE_MEMORY_CONFLICTS_SQL)
-        connection.execute(f"PRAGMA user_version = {_SCHEMA_VERSION_V6}")
+    connection.execute(_CREATE_MEMORY_CONFLICTS_SQL)
 
 
 def _migrate_v6_to_v7(connection: sqlite3.Connection) -> None:
@@ -1655,11 +1649,30 @@ def _migrate_v6_to_v7(connection: sqlite3.Connection) -> None:
             f"Cortex memory store is stamped with schema version 6 but is missing "
             f"table(s) {missing!r}; refusing to migrate a possibly corrupted store"
         )
-    connection.execute("BEGIN")
-    with connection:
-        connection.execute(_CREATE_SOURCES_SQL)
-        connection.execute(_CREATE_SOURCE_OBSERVATIONS_SQL)
-        connection.execute(f"PRAGMA user_version = {_SCHEMA_VERSION_V7}")
+    connection.execute(_CREATE_SOURCES_SQL)
+    connection.execute(_CREATE_SOURCE_OBSERVATIONS_SQL)
+
+
+# (A20.R.2) The canonical migration chain, as data: the version a step
+# applies to, mapped to the function that performs it and the version the
+# store is stamped with once it succeeds. `_ensure_schema`'s loop is the
+# only reader; nothing else decides which step is eligible.
+#
+# FUTURE MIGRATIONS: a new v7->v8 step is added by writing a helper that
+# contains ONLY its corruption guard and its DDL/data transformation --
+# no `BEGIN`, no commit, no `PRAGMA user_version` -- registering it here,
+# and raising `STORE_SCHEMA_VERSION`. A helper must never decide for
+# itself whether it is eligible to run: that decision belongs to the
+# serialized boundary below, and taking it from an unlocked (therefore
+# possibly stale) version is exactly the defect A20.R.2 repaired.
+_MIGRATIONS: dict[int, tuple[Callable[[sqlite3.Connection], None], int]] = {
+    _SCHEMA_VERSION_V1: (_migrate_v1_to_v2, _SCHEMA_VERSION_V2),
+    _SCHEMA_VERSION_V2: (_migrate_v2_to_v3, _SCHEMA_VERSION_V3),
+    _SCHEMA_VERSION_V3: (_migrate_v3_to_v4, _SCHEMA_VERSION_V4),
+    _SCHEMA_VERSION_V4: (_migrate_v4_to_v5, _SCHEMA_VERSION_V5),
+    _SCHEMA_VERSION_V5: (_migrate_v5_to_v6, _SCHEMA_VERSION_V6),
+    _SCHEMA_VERSION_V6: (_migrate_v6_to_v7, _SCHEMA_VERSION_V7),
+}
 
 
 def _ensure_schema(connection: sqlite3.Connection) -> None:
@@ -1677,8 +1690,12 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
         # winner commits, then re-reads `PRAGMA user_version` UNDER the
         # lock: if the winner already created and stamped the schema,
         # the loser sees the real version and simply falls through to
-        # the (now no-op) migration steps below instead of re-running
-        # `_create_v6_schema` against tables that already exist.
+        # the migration loop below -- which finds the store already at
+        # `STORE_SCHEMA_VERSION` and does nothing -- instead of
+        # re-running `_create_v7_schema` against tables that already
+        # exist. (A20.R.2) That loop applies the same lock-then-re-read
+        # invariant to the migration chain; this branch and that loop
+        # are the same protocol at two points of the same open path.
         connection.execute("BEGIN IMMEDIATE")
         with connection:
             (version,) = connection.execute("PRAGMA user_version").fetchone()
@@ -1692,29 +1709,77 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
                 connection.execute(f"PRAGMA user_version = {STORE_SCHEMA_VERSION}")
                 version = STORE_SCHEMA_VERSION
 
-    if version == _SCHEMA_VERSION_V1:
-        _migrate_v1_to_v2(connection)
-        version = _SCHEMA_VERSION_V2
-
-    if version == _SCHEMA_VERSION_V2:
-        _migrate_v2_to_v3(connection)
-        version = _SCHEMA_VERSION_V3
-
-    if version == _SCHEMA_VERSION_V3:
-        _migrate_v3_to_v4(connection)
-        version = _SCHEMA_VERSION_V4
-
-    if version == _SCHEMA_VERSION_V4:
-        _migrate_v4_to_v5(connection)
-        version = _SCHEMA_VERSION_V5
-
-    if version == _SCHEMA_VERSION_V5:
-        _migrate_v5_to_v6(connection)
-        version = _SCHEMA_VERSION_V6
-
-    if version == _SCHEMA_VERSION_V6:
-        _migrate_v6_to_v7(connection)
-        version = _SCHEMA_VERSION_V7
+    # (A20.R.2) The canonical migration chain, one serialized step at a
+    # time. THE INVARIANT: a process may decide which canonical migration
+    # to execute only after taking SQLite's write lock and re-reading
+    # `PRAGMA user_version` UNDER that lock.
+    #
+    # Before this loop existed, the version read above -- taken with no
+    # lock held -- decided the whole chain, and each step then ran under
+    # a plain `BEGIN` (DEFERRED, so it takes no lock until its first
+    # write). Two processes opening the same v4 store both observed 4
+    # outside any lock and both went on to run `_migrate_v4_to_v5`; the
+    # loser took the lock only when it reached its `ALTER TABLE`, by
+    # which point the winner had already committed, and it failed with
+    # "duplicate column name: role" -- surfaced to the caller as a
+    # corrupt store, failing an open that had nothing wrong with it.
+    # Every step of the chain had this shape, and every one of them was
+    # reproducibly hit. The lock was never what was missing: what was
+    # missing is re-deciding once it is held.
+    #
+    # Each iteration therefore takes the lock FIRST, re-reads the real
+    # version, and only then picks the step matching THAT version --
+    # executing it and stamping the new version inside the SAME
+    # transaction, so a step and the version that records it can never
+    # disagree, not even across a crash (see below). A process whose
+    # step was already performed by someone else simply sees the higher
+    # version and moves on to the next one; when the store has reached
+    # `STORE_SCHEMA_VERSION` there is nothing left to pick and the loop
+    # ends.
+    #
+    # Note what this deliberately does NOT do: it never suppresses a
+    # colliding DDL (no `IF NOT EXISTS`, no catching "duplicate
+    # column"/"already exists"). Concurrency safety comes entirely from
+    # the lock plus the re-read. That distinction is what keeps a store
+    # stamped v4 that ALREADY has an incompatible `role` column failing
+    # closed as it always has: under the lock its version is still 4, so
+    # the step is genuinely eligible, runs, and collides -- a real
+    # corrupt store, correctly rejected. Suppressing the error would
+    # have closed the race by opening that store silently.
+    #
+    # One transaction per step, not one for the whole chain: it keeps
+    # the write lock short (v1's event backfill scales with the store),
+    # preserves the property that a completed step stays completed, and
+    # leaves the canonical boundary fully committed before
+    # `_ensure_search_index` opens its own `BEGIN IMMEDIATE` below --
+    # these are sibling critical sections, never nested ones.
+    #
+    # The unlocked read above is kept purely as a fast path: a healthy
+    # store already at `STORE_SCHEMA_VERSION` (the overwhelmingly common
+    # case) skips the loop entirely and never takes the write lock. It
+    # is an optimization, not what makes this correct -- `user_version`
+    # only ever moves forward, so an unlocked read can be behind the
+    # truth but never ahead of it, and being behind only means entering
+    # a loop that re-decides everything under the lock anyway.
+    while version != STORE_SCHEMA_VERSION and version in _MIGRATIONS:
+        connection.execute("BEGIN IMMEDIATE")
+        with connection:
+            (version,) = connection.execute("PRAGMA user_version").fetchone()
+            step = _MIGRATIONS.get(version)
+            if step is None:
+                # Either another process finished the whole chain while
+                # this one waited for the lock (version is now
+                # `STORE_SCHEMA_VERSION`), or the store is stamped with
+                # a version this build knows no step for -- which the
+                # validation below reports. Leaving the `with` block
+                # commits this read-only transaction, releasing the
+                # write lock rather than holding it for the rest of this
+                # connection's life.
+                break
+            migrate, next_version = step
+            migrate(connection)
+            connection.execute(f"PRAGMA user_version = {next_version}")
+            version = next_version
 
     if version != STORE_SCHEMA_VERSION:
         raise CortexStorageError(

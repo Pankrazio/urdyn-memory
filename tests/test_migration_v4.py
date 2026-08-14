@@ -143,7 +143,7 @@ def test_v3_migration_reaches_v4_and_creates_skill_tables(tmp_path):
     finally:
         connection.close()
 
-    assert version == 6
+    assert version == 7
     assert {"skills", "skill_steps", "skill_conditions", "skill_evidence"} <= tables
 
 

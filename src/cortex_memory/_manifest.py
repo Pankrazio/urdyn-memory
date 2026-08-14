@@ -15,7 +15,12 @@ from ._errors import CortexManifestError
 
 SCHEMA_VERSION = 1
 MANIFEST_FILENAME = "manifest.json"
-CANONICAL_PROFILES = frozenset({"general", "dev", "lab"})
+# Named because A19.1 gives `dev` its first real behaviour: automatic
+# project-context discovery (`cortex seed` with no arguments) is offered
+# only in this profile. The Source primitive underneath is profile-neutral
+# -- what `dev` selects is the allowlist, not a different kind of data.
+PROFILE_DEV = "dev"
+CANONICAL_PROFILES = frozenset({"general", PROFILE_DEV, "lab"})
 _CORTEX_ID_RE = re.compile(r"[0-9a-f]{32}")
 
 

@@ -1413,10 +1413,10 @@ def test_cli_existing_preflight_output_is_unchanged_when_no_conflicts_exist(tmp_
 # ---------------------------------------------------------------------------
 
 
-def test_store_schema_version_is_unchanged_at_6(tmp_path):
+def test_store_schema_version_is_unchanged_at_7(tmp_path):
     from cortex_memory._store import STORE_SCHEMA_VERSION
 
-    assert STORE_SCHEMA_VERSION == 6
+    assert STORE_SCHEMA_VERSION == 7
 
 
 def test_no_event_is_emitted_by_conflict_declaration_or_preflight(tmp_path):

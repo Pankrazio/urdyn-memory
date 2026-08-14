@@ -195,9 +195,9 @@ def test_v4_migration_reaches_v5_and_adds_role_column(tmp_path):
     cx = Cortex.init(tmp_path, "dev")
     _build_v4_database(cx._db_path)
 
-    # migration v4 -> v5 -> v6 happens transparently on first open (the
-    # v5->v6 step, added by A13.1, has nothing to do with `role` and
-    # leaves this test's own assertions unaffected)
+    # migration v4 -> v5 -> v6 -> v7 happens transparently on first open
+    # (the v5->v6 and v6->v7 steps, added by A13.1 and A19.1, have nothing
+    # to do with `role` and leave this test's own assertions unaffected)
     cx.recall("legacy verified lesson")
 
     connection = sqlite3.connect(cx._db_path)
@@ -207,7 +207,7 @@ def test_v4_migration_reaches_v5_and_adds_role_column(tmp_path):
     finally:
         connection.close()
 
-    assert version == 6
+    assert version == 7
     assert "role" in columns
 
 
@@ -405,10 +405,10 @@ def test_user_version_5_with_missing_role_column_raises_cleanly(tmp_path):
         (version,) = connection.execute("PRAGMA user_version").fetchone()
     finally:
         connection.close()
-    # A13.1 bumped STORE_SCHEMA_VERSION to 6, so `Cortex.init` above
-    # already created this store directly at v6; the assertion tracks
+    # A19.1 bumped STORE_SCHEMA_VERSION to 7, so `Cortex.init` above
+    # already created this store directly at v7; the assertion tracks
     # that literal, not the v5 this test predates.
-    assert version == 6  # sabotage did not touch the version stamp
+    assert version == 7  # sabotage did not touch the version stamp
 
     reopened = Cortex.open(tmp_path)
     with pytest.raises(CortexStorageError):

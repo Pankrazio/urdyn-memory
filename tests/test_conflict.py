@@ -434,11 +434,11 @@ def test_v5_database_migrates_to_v6_and_memory_survives(tmp_path):
     assert results[0].memory_id == memory_id
 
 
-def test_v5_migration_reaches_v6_and_adds_memory_conflicts_table(tmp_path):
+def test_v5_migration_reaches_current_schema_and_adds_memory_conflicts_table(tmp_path):
     cx = Cortex.init(tmp_path, "dev")
     _build_v5_database(cx._db_path)
 
-    cx.recall("legacy")  # triggers the v5->v6 migration
+    cx.recall("legacy")  # triggers the v5->v6->v7 migration chain
 
     connection = sqlite3.connect(cx._db_path)
     try:
@@ -447,7 +447,7 @@ def test_v5_migration_reaches_v6_and_adds_memory_conflicts_table(tmp_path):
     finally:
         connection.close()
 
-    assert version == 6
+    assert version == 7
     assert table_present
 
 
@@ -510,7 +510,7 @@ def test_v5_migration_does_not_destroy_data_on_failure(tmp_path):
     assert row == (memory_id, "must survive a failed migration")
 
 
-def test_v1_to_v6_full_migration_chain_still_works(tmp_path):
+def test_v1_to_current_full_migration_chain_still_works(tmp_path):
     """The pre-existing v1->v5 chain must keep working unmodified with the
     new v5->v6 step appended after it."""
     cx = Cortex.init(tmp_path, "dev")
@@ -542,7 +542,7 @@ def test_v1_to_v6_full_migration_chain_still_works(tmp_path):
         connection.close()
 
     assert len(results) == 1
-    assert version == 6
+    assert version == 7
     assert conflicts_present
 
 
@@ -593,10 +593,10 @@ def test_memory_objects_are_unchanged_by_conflict_declaration(tmp_path):
 # -- storage/schema surface -------------------------------------------------------
 
 
-def test_store_schema_version_is_6(tmp_path):
+def test_store_schema_version_is_7(tmp_path):
     from cortex_memory._store import STORE_SCHEMA_VERSION
 
-    assert STORE_SCHEMA_VERSION == 6
+    assert STORE_SCHEMA_VERSION == 7
 
 
 # -- malformed v6 schema (A12.1.1-style integrity discipline) --------------------

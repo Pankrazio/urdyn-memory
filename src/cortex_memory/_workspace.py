@@ -27,7 +27,7 @@ from ._event import (
 from ._evidence import DEFAULT_EVIDENCE_KIND, VALID_EVIDENCE_KINDS, VERIFICATION_EVIDENCE_KINDS, Evidence
 from ._gitignore import ensure_gitignore_entry
 from ._guard import GuardResult, build_guard_result
-from ._manifest import CANONICAL_PROFILES, SCHEMA_VERSION, read_manifest, write_manifest
+from ._manifest import CANONICAL_PROFILES, PROFILE_DEV, SCHEMA_VERSION, read_manifest, write_manifest
 from ._memory import (
     DEFAULT_KIND,
     EPISTEMIC_USER_ASSERTED,
@@ -49,6 +49,13 @@ from ._relevance import tokens as _tokens
 from ._retrieval import ENTITY_ATTEMPT, ENTITY_MEMORY, ENTITY_SKILL
 from ._semantic_store import SemanticIndexStore, semantic_db_path_for
 from ._skill import Skill
+from ._source import (
+    SeedResult,
+    Source,
+    discover_candidate_paths,
+    read_seed_candidate,
+    resolve_seed_path,
+)
 from ._store import MemoryStore, db_path_for
 
 CORTEX_DIRNAME = ".cortex"
@@ -517,6 +524,109 @@ class Cortex:
         if evidence is None:
             raise ValueError(f"Unknown evidence {evidence_id!r}")
         return evidence
+
+    def seed(self, paths: Sequence[str | Path]) -> list[SeedResult]:
+        """Record one observation of each given project file and return
+        what happened to each, in the order given.
+
+        Seeding records PROVENANCE, not knowledge: each observation
+        creates one `document_observation` Evidence and links it to the
+        file's stable Source identity. No Memory is created, nothing
+        becomes `verified` (a `document_observation` is not a qualifying
+        kind -- reading a document does not check that its claims are
+        true, see `_evidence.py`), and Cortex never interprets what the
+        file says. Turning a document into a belief stays an explicit
+        act: `remember(..., evidence=[result.evidence])`.
+
+        The Evidence holds the document's TEXT VERBATIM, so a later
+        reader can still see what Cortex observed after the file has
+        changed or is gone; the SHA-256 digest, the size on disk and the
+        moment of observation are structured columns alongside it (see
+        `_source.py`). `.cortex/` therefore keeps a local copy of every
+        document it was asked to observe.
+
+        Per file, `SeedResult.status` is `added` (a Source Cortex did not
+        track yet), `unchanged` (the digest still matches the last
+        observation -- nothing is written at all), or `changed` (a new
+        observation is appended, and the previous ones are kept). Each
+        file's observation is its own atomic transaction.
+
+        Every path is validated and read BEFORE anything is persisted, so
+        one unacceptable path in the list cannot leave the others
+        half-recorded. Raises `CortexSourceError` for a path that escapes
+        the workspace, is not a regular UTF-8 text file, exceeds the size
+        limit, or matches the credential denylist -- see
+        `resolve_seed_path` for the full policy, which applies to
+        explicitly named files exactly as it does to discovered ones.
+        """
+        if isinstance(paths, (str, Path)):
+            raise TypeError(
+                "seed() takes a sequence of paths, not a single path; pass [path] to seed one file"
+            )
+
+        # Validate and hash everything first: a typo in the third path
+        # must not leave the first two recorded.
+        candidates = [
+            read_seed_candidate(self._path, resolve_seed_path(self._path, CORTEX_DIRNAME, raw))
+            for raw in paths
+        ]
+        if not candidates:
+            return []
+
+        results = []
+        with MemoryStore.create_or_open(self._db_path) as store:
+            for candidate in candidates:
+                status, source, evidence = store.observe_source(
+                    path=candidate.path,
+                    digest=candidate.digest,
+                    size_bytes=candidate.size_bytes,
+                    observed_at=dt.datetime.now(dt.timezone.utc),
+                    candidate_source_id=uuid.uuid4().hex,
+                    candidate_evidence_id=uuid.uuid4().hex,
+                    evidence_content=candidate.text,
+                )
+                results.append(SeedResult(status=status, source=source, evidence=evidence))
+        return results
+
+    def sources(self) -> list[Source]:
+        """Every project file Cortex tracks, ordered by path, each with its
+        full observation history (oldest first).
+
+        Reads the recorded observations only: it does not re-hash the
+        files on disk, so it reports what Cortex saw, not what is there
+        now. Deciding whether a tracked file has since changed or
+        disappeared is deliberately left to a caller (or a future
+        watcher) that re-seeds -- `seed()` answering `unchanged` or
+        `changed` IS that check, performed explicitly rather than as a
+        side effect of listing.
+        """
+        store = MemoryStore.open_if_exists(self._db_path)
+        if store is None:
+            return []
+        with store:
+            return store.list_sources()
+
+    def seed_candidates(self) -> list[str]:
+        """Project files a `dev` workspace could seed, as workspace-relative
+        POSIX paths, sorted.
+
+        Pure suggestion: reads no file content, writes nothing, and
+        creates no store. The allowlist is deliberately narrow and
+        non-recursive (see `_source.py`) -- Cortex proposes the handful of
+        files that conventionally describe a project, and the caller
+        decides which of them, if any, to actually seed.
+
+        Raises `ValueError` outside the `dev` profile: automatic project
+        discovery is this profile's behaviour, and silently returning
+        nothing elsewhere would look like "this project has no
+        documentation" rather than "Cortex did not look".
+        """
+        if self._profile != PROFILE_DEV:
+            raise ValueError(
+                f"Project context discovery is only available in the {PROFILE_DEV!r} profile; "
+                f"this workspace is {self._profile!r}. Seed explicit paths instead."
+            )
+        return discover_candidate_paths(self._path, CORTEX_DIRNAME)
 
     def learn(
         self,

@@ -20,6 +20,7 @@ from ._attempt import VALID_OUTCOMES
 from ._errors import CortexError
 from ._manifest import CANONICAL_PROFILES
 from ._memory import DEFAULT_KIND, VALID_KINDS
+from ._source import SEED_UNCHANGED
 from ._terminal import terminal_safe_text as _safe
 from ._workspace import DEFAULT_RECALL_LIMIT, Cortex
 
@@ -110,6 +111,23 @@ def _build_parser() -> argparse.ArgumentParser:
         "guard", help="Check whether prior experience directly bears on an action about to be taken"
     )
     guard_parser.add_argument("action", help="Action about to be taken")
+
+    seed_parser = subparsers.add_parser(
+        "seed", help="Record project files as Cortex sources (with no paths: show candidates)"
+    )
+    seed_parser.add_argument(
+        "paths",
+        nargs="*",
+        help="Project files to record. With none, list dev discovery candidates without recording.",
+    )
+
+    sources_parser = subparsers.add_parser("sources", help="List the project files Cortex tracks")
+    sources_parser.add_argument(
+        "path",
+        nargs="?",
+        default=None,
+        help="Workspace-relative path of one source to inspect, with its full observation history",
+    )
 
     semantic_parser = subparsers.add_parser(
         "semantic", help="Manage the optional semantic retrieval channel"
@@ -270,6 +288,92 @@ def main(argv: list[str] | None = None) -> int:
                 print("Recommended validation:")
                 for evidence in result.recommended_validation:
                     print(f"- {_safe(evidence.content)}")
+            return 0
+
+        if args.command == "seed":
+            cx = Cortex.discover()
+            if not args.paths:
+                # Discovery only: this branch must never write. It opens
+                # no store, creates no `memory.db`, and records nothing --
+                # it reports what COULD be seeded and stops.
+                candidates = cx.seed_candidates()
+                if not candidates:
+                    print("No project context candidates found.")
+                    return 0
+                print("Project context candidates:")
+                for candidate in candidates:
+                    print(f"- {_safe(candidate)}")
+                print("Nothing was recorded. Run 'cortex seed <path>...' to record them.")
+                return 0
+            results = cx.seed(args.paths)
+            for result in results:
+                # Paths are filesystem-derived and are rendered as data;
+                # the status word is Cortex's own vocabulary (structure).
+                print(f"{result.status} {_safe(result.source.path)}")
+            # Only claim something was recorded when something was: an
+            # all-`unchanged` run writes nothing, and saying otherwise
+            # would be the same lie `remember` avoids with "Already
+            # remembered" (A17).
+            if any(result.status != SEED_UNCHANGED for result in results):
+                # Says plainly that a copy of the text now lives in
+                # `.cortex/`: the user chose which files to observe, and
+                # what Cortex keeps of them should not have to be inferred
+                # from documentation.
+                print("Recorded as project evidence, not verified knowledge.")
+                print("Document content is stored locally in .cortex/.")
+            return 0
+
+        if args.command == "sources":
+            cx = Cortex.discover()
+            items = cx.sources()
+            if args.path is None:
+                if not items:
+                    print("No project sources recorded.")
+                    return 0
+                # Compact listing: latest observation only, never the
+                # stored documents. Dumping every snapshot here would make
+                # the overview unusable on any real workspace.
+                for source in items:
+                    observation = source.latest_observation
+                    print(f"[{source.source_id}] {_safe(source.path)}")
+                    print(
+                        f"  observed {observation.observed_at.isoformat()} | "
+                        f"{observation.size_bytes} bytes | digest {observation.digest[:12]} | "
+                        f"{len(source.observations)} observation(s)"
+                    )
+                return 0
+
+            # Inspection of one Source. `sources()` is the only lookup the
+            # public API offers at this scale (A19.1 adds no `get_source`),
+            # so the match happens here, against the canonical
+            # workspace-relative path the user can read in the listing.
+            matches = [source for source in items if source.path == args.path]
+            if not matches:
+                print(f"No source recorded for {_safe(args.path)}.")
+                return 1
+            (source,) = matches
+            print("SOURCE")
+            print(f"  path: {_safe(source.path)}")
+            print(f"  source_id: {source.source_id}")
+            print(f"  first observed: {source.first_observed_at.isoformat()}")
+            print(f"OBSERVATIONS ({len(source.observations)}, oldest first)")
+            for position, observation in enumerate(source.observations, start=1):
+                print(f"  {position}. observed {observation.observed_at.isoformat()}")
+                print(f"     digest: {observation.digest}")
+                print(f"     size: {observation.size_bytes} bytes")
+                print(f"     evidence: {observation.evidence_id}")
+                print("     DOCUMENT CONTENT")
+                evidence = cx.get_evidence(observation.evidence_id)
+                # The document is untrusted data and may hold newlines,
+                # ESC sequences or bidi controls. It is split on its OWN
+                # newlines and each resulting line is both prefixed by
+                # structure the CLI emits and rendered through the terminal
+                # boundary, so no line of output can be mistaken for
+                # Cortex's own -- while the canonical Evidence keeps every
+                # byte verbatim (see `_terminal.py`: sanitize on output,
+                # never on storage).
+                for line in evidence.content.split("\n"):
+                    print(f"     | {_safe(line)}")
             return 0
 
         if args.command == "semantic":

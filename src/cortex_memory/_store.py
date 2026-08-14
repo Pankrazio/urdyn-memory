@@ -34,9 +34,19 @@ Schema history:
        whether a conflict is "open" is derived at read time from
        `current_ids()`, never stored (see `_conflict.py`'s module
        docstring for the full reasoning).
+  v7 - adds `sources` and `source_observations` (A19.1): the stable
+       identity of an observed project file, and the append-only history
+       of what Cortex saw when it looked at it. No existing table changes
+       shape, and NOTHING is backfilled: A19.1 is the first producer of
+       Sources, so there is no pre-v7 data to reinterpret. In particular
+       existing `file_reference` Evidence rows are left exactly as they
+       are -- a pre-v7 Evidence was never an observation of a tracked
+       Source, and inventing one for it would mean parsing its free text
+       to guess a path, which is precisely what the structured columns
+       here exist to make unnecessary.
 
-A v1, v2, v3, v4, or v5 database opened by this module is migrated
-forward to v6 in place, one step at a time, without touching existing
+A v1, v2, v3, v4, v5, or v6 database opened by this module is migrated
+forward to v7 in place, one step at a time, without touching existing
 rows.
 
 Search index (derived, not versioned):
@@ -68,7 +78,12 @@ from ._attempt import ATTEMPT_ID_PATTERN, VALID_OUTCOMES, Attempt
 from ._conflict import Conflict, canonical_pair
 from ._errors import CortexStorageError
 from ._event import EVENT_KIND_ATTEMPT_RECORDED, EVENT_KIND_MEMORY_RECORDED, EVENT_KIND_SKILL_PROMOTED, Event
-from ._evidence import EVIDENCE_ID_PATTERN, VERIFICATION_EVIDENCE_KINDS, Evidence
+from ._evidence import (
+    EVIDENCE_ID_PATTERN,
+    EVIDENCE_KIND_DOCUMENT_OBSERVATION,
+    VERIFICATION_EVIDENCE_KINDS,
+    Evidence,
+)
 from ._memory import (
     EPISTEMIC_VERIFIED,
     KIND_LESSON,
@@ -80,6 +95,15 @@ from ._memory import (
 from ._relevance import attempt_search_text, memory_search_text, skill_search_text
 from ._retrieval import ENTITY_ATTEMPT, ENTITY_MEMORY, ENTITY_SKILL
 from ._skill import SKILL_CANDIDATE, SKILL_ID_PATTERN, SKILL_VERIFIED, VALID_SKILL_VERIFICATION_STATES, Skill
+from ._source import (
+    DIGEST_PATTERN,
+    SEED_ADDED,
+    SEED_CHANGED,
+    SEED_UNCHANGED,
+    SOURCE_ID_PATTERN,
+    Source,
+    SourceObservation,
+)
 
 _SCHEMA_VERSION_V1 = 1
 _SCHEMA_VERSION_V2 = 2
@@ -87,7 +111,8 @@ _SCHEMA_VERSION_V3 = 3
 _SCHEMA_VERSION_V4 = 4
 _SCHEMA_VERSION_V5 = 5
 _SCHEMA_VERSION_V6 = 6
-STORE_SCHEMA_VERSION = _SCHEMA_VERSION_V6
+_SCHEMA_VERSION_V7 = 7
+STORE_SCHEMA_VERSION = _SCHEMA_VERSION_V7
 DB_FILENAME = "memory.db"
 
 _V2_TABLES = ("memories", "evidence", "memory_evidence", "events")
@@ -97,6 +122,7 @@ _V4_TABLES = _V3_TABLES + ("skills", "skill_steps", "skill_conditions", "skill_e
 # table (see module docstring) -- the set of required tables is unchanged.
 _V5_TABLES = _V4_TABLES
 _V6_TABLES = _V5_TABLES + ("memory_conflicts",)
+_V7_TABLES = _V6_TABLES + ("sources", "source_observations")
 
 # Canonical values for `memory_evidence.role` (A12.1). Internal storage
 # vocabulary only -- never exposed as SQL or as these literal strings in
@@ -253,6 +279,55 @@ _CREATE_MEMORY_CONFLICTS_SQL = """
         recorded_at TEXT NOT NULL,
         PRIMARY KEY (memory_id_a, memory_id_b),
         CHECK (memory_id_a < memory_id_b)
+    )
+"""
+
+
+# v7 (A19.1). `path` is UNIQUE because it IS how a Source is addressed:
+# one workspace-relative path is one tracked file, which is what makes a
+# repeated seed resolve to the same identity instead of accumulating
+# duplicate Sources for the same document.
+#
+# The `CHECK` is defence in depth, exactly like `memory_conflicts`'s:
+# `resolve_seed_path` already guarantees a workspace-relative POSIX path
+# in Python, before any SQL runs. Repeating the invariant next to the
+# canonical data means an absolute path cannot exist in the store at all
+# -- not via a future internal call path that forgets to normalize, and
+# not via a hand-edited database. A stored absolute path would break the
+# portability guarantee (a copied workspace still resolving its own
+# Sources) silently, which is the kind of failure worth making
+# impossible rather than merely unlikely.
+_CREATE_SOURCES_SQL = """
+    CREATE TABLE sources (
+        source_id TEXT PRIMARY KEY,
+        path TEXT NOT NULL UNIQUE,
+        first_observed_at TEXT NOT NULL,
+        CHECK (path NOT LIKE '/%')
+    )
+"""
+
+# `sequence` is an ordering column, not a second identity: it answers
+# "which observation came last" without depending on timestamp ties, the
+# same role `events.sequence` plays alongside `events.event_id`. The
+# observation's IDENTITY is `evidence_id` (UNIQUE here, one Evidence per
+# observation) -- see `_source.py` on why no separate observation id is
+# minted. Neither `sequence` nor any other storage detail is exposed in
+# the public model.
+#
+# Deliberately no `ON DELETE` clause and no foreign key: nothing in
+# Cortex ever deletes a Source or an observation (A19.1 has no delete, no
+# GC, no rename), and referential integrity is verified fail-closed on
+# read instead (see `_load_source`/`list_sources`), consistent with how
+# `memory_evidence` and `attempt_evidence` already work.
+_CREATE_SOURCE_OBSERVATIONS_SQL = """
+    CREATE TABLE source_observations (
+        sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+        source_id TEXT NOT NULL,
+        evidence_id TEXT NOT NULL UNIQUE,
+        digest TEXT NOT NULL,
+        size_bytes INTEGER NOT NULL,
+        observed_at TEXT NOT NULL,
+        CHECK (size_bytes >= 0)
     )
 """
 
@@ -653,6 +728,195 @@ class MemoryStore:
         if row is None:
             return None
         return _row_to_evidence(row)
+
+    # -- sources ------------------------------------------------------------
+
+    def observe_source(
+        self,
+        *,
+        path: str,
+        digest: str,
+        size_bytes: int,
+        observed_at: dt.datetime,
+        candidate_source_id: str,
+        candidate_evidence_id: str,
+        evidence_content: str,
+    ) -> tuple[str, Source, Evidence]:
+        """Record one observation of a project file, and return
+        `(status, source, evidence)` where `status` is `added`,
+        `unchanged`, or `changed`.
+
+        This is ONE transaction, opened with `BEGIN IMMEDIATE`, covering
+        the whole decision: resolving the Source by path, reading its
+        latest observation, comparing digests, and (when they differ)
+        inserting the Source, the Evidence and the observation together.
+        Splitting it into `add_evidence()` followed by a separate
+        observation write would leave two windows open: a concurrent
+        identical seed could interleave between the digest check and the
+        insert and produce two observations of the same unchanged file,
+        and a failure between the two writes would strand an Evidence row
+        belonging to no observation. `BEGIN IMMEDIATE` takes the write
+        lock before the lookup, exactly as `add()` does for the canonical
+        memory write path (see its docstring), so the check and the write
+        cannot be interleaved by another process.
+
+        IDEMPOTENCY is judged against the LATEST observation only, never
+        against the whole history: if the file's current digest equals the
+        one Cortex last saw, this is a re-seed of an unchanged file and
+        nothing at all is written (`unchanged`). If it differs, a new
+        observation is appended even if that exact digest appeared earlier
+        in the file's history -- a file edited to A, then B, then back to
+        A has genuinely been through three states, and collapsing the
+        third onto the first would claim the second never happened.
+        `candidate_source_id`/`candidate_evidence_id`/`evidence_content`
+        are proposals: they are used only if this call actually writes,
+        and silently discarded on `unchanged`, the same way
+        `add_conflict` discards the `recorded_at` of a repeat
+        declaration.
+
+        Raises `ValueError` if any argument is malformed at the write
+        boundary (non-canonical ids, a digest that is not the expected
+        hex, a negative size, an absolute or empty path) -- repeating
+        next to the canonical data the guarantees `_source.py` already
+        enforces in Python, so no future internal call path can persist a
+        Source that violates them. Raises `CortexStorageError` on genuine
+        corruption (a Source with no observations, an observation whose
+        Evidence no longer exists) or I/O failure.
+        """
+        if not SOURCE_ID_PATTERN.fullmatch(candidate_source_id):
+            raise ValueError(f"Malformed source_id {candidate_source_id!r}")
+        if not EVIDENCE_ID_PATTERN.fullmatch(candidate_evidence_id):
+            raise ValueError(f"Malformed evidence_id {candidate_evidence_id!r}")
+        if not DIGEST_PATTERN.fullmatch(digest):
+            raise ValueError(f"Malformed source digest {digest!r}")
+        if not isinstance(size_bytes, int) or isinstance(size_bytes, bool) or size_bytes < 0:
+            raise ValueError(f"Source size_bytes must be a non-negative integer, got {size_bytes!r}")
+        if not path or path.startswith("/"):
+            raise ValueError(f"Source path must be a non-empty workspace-relative path, got {path!r}")
+
+        try:
+            self._connection.execute("BEGIN IMMEDIATE")
+            with self._connection:
+                row = self._connection.execute(
+                    "SELECT source_id FROM sources WHERE path = ?", (path,)
+                ).fetchone()
+
+                if row is None:
+                    status = SEED_ADDED
+                    source_id = candidate_source_id
+                    self._connection.execute(
+                        "INSERT INTO sources (source_id, path, first_observed_at) VALUES (?, ?, ?)",
+                        (source_id, path, observed_at.isoformat()),
+                    )
+                else:
+                    source_id = row[0]
+                    latest = self._connection.execute(
+                        "SELECT digest, evidence_id FROM source_observations "
+                        "WHERE source_id = ? ORDER BY sequence DESC LIMIT 1",
+                        (source_id,),
+                    ).fetchone()
+                    if latest is None:
+                        # A Source is only ever created together with its
+                        # first observation, so this shape cannot be
+                        # produced by any write path here. Reaching it
+                        # means the store was edited outside Cortex;
+                        # appending an observation would paper over that.
+                        raise CortexStorageError(
+                            f"Corrupted source {source_id!r}: it has no observations"
+                        )
+                    if latest[0] == digest:
+                        evidence = self._require_observation_evidence(latest[1])
+                        return (SEED_UNCHANGED, self._load_source(source_id), evidence)
+                    status = SEED_CHANGED
+
+                self._connection.execute(
+                    "INSERT INTO evidence (evidence_id, content, kind, recorded_at) VALUES (?, ?, ?, ?)",
+                    (
+                        candidate_evidence_id,
+                        evidence_content,
+                        EVIDENCE_KIND_DOCUMENT_OBSERVATION,
+                        observed_at.isoformat(),
+                    ),
+                )
+                self._connection.execute(
+                    "INSERT INTO source_observations "
+                    "(source_id, evidence_id, digest, size_bytes, observed_at) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (source_id, candidate_evidence_id, digest, size_bytes, observed_at.isoformat()),
+                )
+                evidence = self._require_observation_evidence(candidate_evidence_id)
+                return (status, self._load_source(source_id), evidence)
+        except sqlite3.DatabaseError as exc:
+            raise CortexStorageError(f"Failed to observe source {path!r}: {exc}") from exc
+
+    def list_sources(self) -> list[Source]:
+        """Every tracked Source with its full observation history, ordered
+        by path.
+
+        Fails closed rather than reporting a partial picture: an
+        observation whose `source_id` names no Source is reported as
+        corruption instead of being silently dropped, because a dropped
+        observation is invisible history -- the one thing this table
+        exists to preserve.
+        """
+        try:
+            (orphans,) = self._connection.execute(
+                "SELECT COUNT(*) FROM source_observations o "
+                "LEFT JOIN sources s ON s.source_id = o.source_id "
+                "WHERE s.source_id IS NULL"
+            ).fetchone()
+            if orphans:
+                raise CortexStorageError(
+                    f"Cortex source store holds {orphans} observation(s) referring to an "
+                    "unknown source; refusing to report a partial source history"
+                )
+            rows = self._connection.execute("SELECT source_id FROM sources ORDER BY path").fetchall()
+            return [self._load_source(row[0]) for row in rows]
+        except sqlite3.DatabaseError as exc:
+            raise CortexStorageError(f"Failed to read Cortex source store: {exc}") from exc
+
+    def _load_source(self, source_id: str) -> Source:
+        row = self._connection.execute(
+            "SELECT source_id, path, first_observed_at FROM sources WHERE source_id = ?",
+            (source_id,),
+        ).fetchone()
+        if row is None:
+            raise CortexStorageError(f"Unknown source {source_id!r} in Cortex source store")
+
+        # LEFT JOIN rather than an inner join on purpose: an observation
+        # whose Evidence has vanished must surface as corruption, not
+        # quietly disappear from the history.
+        observation_rows = self._connection.execute(
+            "SELECT o.source_id, o.evidence_id, o.digest, o.size_bytes, o.observed_at, e.evidence_id "
+            "FROM source_observations o "
+            "LEFT JOIN evidence e ON e.evidence_id = o.evidence_id "
+            "WHERE o.source_id = ? ORDER BY o.sequence",
+            (source_id,),
+        ).fetchall()
+        observations = []
+        for observation_row in observation_rows:
+            if observation_row[5] is None:
+                raise CortexStorageError(
+                    f"Corrupted source {source_id!r}: observation references unknown "
+                    f"evidence {observation_row[1]!r}"
+                )
+            observations.append(_row_to_source_observation(observation_row[:5]))
+        if not observations:
+            raise CortexStorageError(f"Corrupted source {source_id!r}: it has no observations")
+        return _row_to_source(row, tuple(observations))
+
+    def _require_observation_evidence(self, evidence_id: str) -> Evidence:
+        evidence = self.get_evidence(evidence_id)
+        if evidence is None:
+            raise CortexStorageError(
+                f"Corrupted source observation: evidence {evidence_id!r} does not exist"
+            )
+        if evidence.kind != EVIDENCE_KIND_DOCUMENT_OBSERVATION:
+            raise CortexStorageError(
+                f"Corrupted source observation: evidence {evidence_id!r} has kind "
+                f"{evidence.kind!r}, expected {EVIDENCE_KIND_DOCUMENT_OBSERVATION!r}"
+            )
+        return evidence
 
     # -- attempts -----------------------------------------------------------
 
@@ -1231,9 +1495,9 @@ def _table_exists(connection: sqlite3.Connection, name: str) -> bool:
     )
 
 
-def _create_v6_schema(connection: sqlite3.Connection) -> None:
-    """Create every table at its CURRENT (v6) shape, for a brand-new
-    store only. Not part of the v1->v6 migration chain below, which
+def _create_v7_schema(connection: sqlite3.Connection) -> None:
+    """Create every table at its CURRENT (v7) shape, for a brand-new
+    store only. Not part of the v1->v7 migration chain below, which
     upgrades each table incrementally instead."""
     connection.execute(_CREATE_MEMORIES_V2_SQL)
     connection.execute(_CREATE_EVIDENCE_SQL)
@@ -1246,6 +1510,8 @@ def _create_v6_schema(connection: sqlite3.Connection) -> None:
     connection.execute(_CREATE_SKILL_CONDITIONS_SQL)
     connection.execute(_CREATE_SKILL_EVIDENCE_SQL)
     connection.execute(_CREATE_MEMORY_CONFLICTS_SQL)
+    connection.execute(_CREATE_SOURCES_SQL)
+    connection.execute(_CREATE_SOURCE_OBSERVATIONS_SQL)
 
 
 def _migrate_v1_to_v2(connection: sqlite3.Connection) -> None:
@@ -1369,6 +1635,33 @@ def _migrate_v5_to_v6(connection: sqlite3.Connection) -> None:
         connection.execute(f"PRAGMA user_version = {_SCHEMA_VERSION_V6}")
 
 
+def _migrate_v6_to_v7(connection: sqlite3.Connection) -> None:
+    """Upgrade a v6 store to v7 (A19.1) by adding the `sources` and
+    `source_observations` tables.
+
+    Nothing is backfilled, and no existing row is read or rewritten.
+    Source is a wholly new concept in A19.1: no pre-v7 row ever recorded
+    an observation of a tracked file. In particular this migration does
+    NOT scan existing `file_reference` Evidence to invent Sources for it
+    -- that Evidence carries its path (if any) only inside free text
+    written by whoever recorded it, and guessing structure out of it
+    would fabricate canonical identities from prose. A pre-v7 workspace
+    therefore arrives at v7 with zero Sources, exactly like a brand-new
+    one.
+    """
+    missing = [name for name in _V6_TABLES if not _table_exists(connection, name)]
+    if missing:
+        raise CortexStorageError(
+            f"Cortex memory store is stamped with schema version 6 but is missing "
+            f"table(s) {missing!r}; refusing to migrate a possibly corrupted store"
+        )
+    connection.execute("BEGIN")
+    with connection:
+        connection.execute(_CREATE_SOURCES_SQL)
+        connection.execute(_CREATE_SOURCE_OBSERVATIONS_SQL)
+        connection.execute(f"PRAGMA user_version = {_SCHEMA_VERSION_V7}")
+
+
 def _ensure_schema(connection: sqlite3.Connection) -> None:
     (version,) = connection.execute("PRAGMA user_version").fetchone()
 
@@ -1390,12 +1683,12 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
         with connection:
             (version,) = connection.execute("PRAGMA user_version").fetchone()
             if version == 0:
-                if any(_table_exists(connection, name) for name in _V6_TABLES):
+                if any(_table_exists(connection, name) for name in _V7_TABLES):
                     raise CortexStorageError(
                         "Cortex memory store has no recognized schema version but already "
                         "contains data tables; refusing to open a possibly corrupted store"
                     )
-                _create_v6_schema(connection)
+                _create_v7_schema(connection)
                 connection.execute(f"PRAGMA user_version = {STORE_SCHEMA_VERSION}")
                 version = STORE_SCHEMA_VERSION
 
@@ -1419,13 +1712,17 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
         _migrate_v5_to_v6(connection)
         version = _SCHEMA_VERSION_V6
 
+    if version == _SCHEMA_VERSION_V6:
+        _migrate_v6_to_v7(connection)
+        version = _SCHEMA_VERSION_V7
+
     if version != STORE_SCHEMA_VERSION:
         raise CortexStorageError(
             f"Cortex memory store schema version {version} is not supported by this "
             f"version of Cortex (expected {STORE_SCHEMA_VERSION})"
         )
 
-    missing = [name for name in _V6_TABLES if not _table_exists(connection, name)]
+    missing = [name for name in _V7_TABLES if not _table_exists(connection, name)]
     if missing:
         raise CortexStorageError(
             f"Cortex memory store is stamped with schema version {version} but is "
@@ -1570,6 +1867,63 @@ def _row_to_evidence(row: tuple[str, str, str, str]) -> Evidence:
             f"Corrupted recorded_at value {recorded_at_raw!r} for evidence {evidence_id!r}"
         ) from exc
     return Evidence(evidence_id=evidence_id, content=content, kind=kind, recorded_at=recorded_at)
+
+
+def _row_to_source(row: tuple[str, str, str], observations: tuple[SourceObservation, ...]) -> Source:
+    source_id, path, first_observed_at_raw = row
+
+    if not isinstance(source_id, str) or not SOURCE_ID_PATTERN.fullmatch(source_id):
+        raise CortexStorageError(f"Corrupted source_id {source_id!r} in Cortex source store")
+    if not isinstance(path, str) or not path or path.startswith("/"):
+        # A persisted absolute path would silently break the portability
+        # guarantee (see `_CREATE_SOURCES_SQL`): refuse to hand it back as
+        # if it were a valid workspace-relative Source.
+        raise CortexStorageError(f"Corrupted path {path!r} for source {source_id!r}")
+    try:
+        first_observed_at = dt.datetime.fromisoformat(first_observed_at_raw)
+    except (TypeError, ValueError) as exc:
+        raise CortexStorageError(
+            f"Corrupted first_observed_at value {first_observed_at_raw!r} for source {source_id!r}"
+        ) from exc
+    return Source(
+        source_id=source_id,
+        path=path,
+        first_observed_at=first_observed_at,
+        observations=observations,
+    )
+
+
+def _row_to_source_observation(row: tuple[str, str, str, int, str]) -> SourceObservation:
+    source_id, evidence_id, digest, size_bytes, observed_at_raw = row
+
+    if not isinstance(source_id, str) or not SOURCE_ID_PATTERN.fullmatch(source_id):
+        raise CortexStorageError(f"Corrupted source_id {source_id!r} in Cortex source store")
+    if not isinstance(evidence_id, str) or not EVIDENCE_ID_PATTERN.fullmatch(evidence_id):
+        raise CortexStorageError(
+            f"Corrupted evidence_id {evidence_id!r} for an observation of source {source_id!r}"
+        )
+    if not isinstance(digest, str) or not DIGEST_PATTERN.fullmatch(digest):
+        raise CortexStorageError(
+            f"Corrupted digest {digest!r} for an observation of source {source_id!r}"
+        )
+    if not isinstance(size_bytes, int) or isinstance(size_bytes, bool) or size_bytes < 0:
+        raise CortexStorageError(
+            f"Corrupted size_bytes {size_bytes!r} for an observation of source {source_id!r}"
+        )
+    try:
+        observed_at = dt.datetime.fromisoformat(observed_at_raw)
+    except (TypeError, ValueError) as exc:
+        raise CortexStorageError(
+            f"Corrupted observed_at value {observed_at_raw!r} for an observation of "
+            f"source {source_id!r}"
+        ) from exc
+    return SourceObservation(
+        source_id=source_id,
+        evidence_id=evidence_id,
+        digest=digest,
+        size_bytes=size_bytes,
+        observed_at=observed_at,
+    )
 
 
 def _row_to_attempt(row: tuple[str, str, str, str, str], evidence_ids: tuple[str, ...]) -> Attempt:

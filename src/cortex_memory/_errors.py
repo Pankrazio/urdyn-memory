@@ -22,6 +22,20 @@ class CortexStorageError(CortexError):
     unsupported schema version."""
 
 
+class CortexSourceError(CortexError):
+    """Raised when a path cannot be seeded as a project Source: it escapes
+    the workspace, is not an ordinary text file, is too large, or matches
+    the credential denylist.
+
+    Deliberately its own class rather than the `ValueError` the rest of
+    the write API raises for bad input. Seeding is the one operation that
+    routinely runs over MANY caller-supplied paths at once (and a future
+    automatic writer would run over more), where one rejected file is an
+    expected per-item outcome rather than a caller bug. Catching
+    `ValueError` to skip it would also swallow genuine programming errors;
+    this class lets a batch caller skip exactly what Cortex refused."""
+
+
 class CortexSemanticUnavailableError(CortexError):
     """Raised only by explicit semantic setup/maintenance calls (e.g. the
     `cortex semantic setup` CLI command) when the `cortex-memory[semantic]`

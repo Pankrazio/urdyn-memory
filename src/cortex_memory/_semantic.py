@@ -509,6 +509,32 @@ def load_model_for_index(meta: "SemanticMeta") -> _OnnxTextEncoder | None:
     return load_model_for_retrieval(artifact)
 
 
+def artifacts_available(meta: "SemanticMeta") -> bool:
+    """[A27] Whether the artifacts an existing index needs are already in
+    the local cache -- WITHOUT loading them.
+
+    This resolves cache paths (`local_files_only=True`, so it can never
+    reach the network) and stops there: no `InferenceSession`, no
+    tokenizer, none of the seconds `_build_encoder` costs. That is what
+    lets `cortex status` distinguish "this index is fine" from "this
+    index cannot be queried on this machine" while staying an
+    observation, and lets `preflight()` report the same condition without
+    paying for a model it is not going to use.
+
+    Returns False for an index this build cannot read at all
+    (`artifact_for_index` says so), which keeps model COMPATIBILITY
+    ahead of model AVAILABILITY in exactly one place."""
+    artifact = artifact_for_index(meta)
+    if artifact is None:
+        return False
+    try:
+        _artifact_path(artifact, local_files_only=True)
+        _artifact_path(TOKENIZER_FILENAME, local_files_only=True)
+    except Exception:
+        return False
+    return True
+
+
 def load_model_for_retrieval(artifact: str = ARTIFACT_PORTABLE) -> _OnnxTextEncoder:
     """Load `artifact` for a normal retrieval call, from local cache
     only. Never touches the network (see module docstring): raises if the

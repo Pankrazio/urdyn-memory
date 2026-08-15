@@ -68,6 +68,16 @@ def fake_semantic(monkeypatch):
     monkeypatch.setattr(semantic, "load_model_for_setup", lambda model_id=None: fake_model)
     monkeypatch.setattr(semantic, "load_model_for_retrieval", lambda model_id=None: fake_model)
     monkeypatch.setattr(semantic, "resolve_local_revision", lambda model_id=None: "fake-revision")
+    # [A27] `artifacts_available` is the cheap "can this index be queried
+    # here at all" probe the lifecycle uses instead of loading a model
+    # (see `Cortex.semantic_state`). Its real implementation resolves
+    # paths in the Hugging Face cache, which the fake backend by
+    # definition has nothing in, so it is faked at the same boundary as
+    # the loaders above -- keeping its ONE real behaviour, that an index
+    # this build cannot read is never reported as available.
+    monkeypatch.setattr(
+        semantic, "artifacts_available", lambda meta: semantic.artifact_for_index(meta) is not None
+    )
     return fake_model
 
 

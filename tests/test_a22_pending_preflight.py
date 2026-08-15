@@ -142,7 +142,14 @@ def test_pending_field_defaults_to_empty_tuple(tmp_path):
 
     assert preflight.pending == ()
     assert preflight.is_empty()
-    assert dataclasses.fields(Preflight)[-1].name == "pending"
+    # [A27] `pending` is no longer the LAST field -- `retrieval` was
+    # appended after it, additively and defaulted, under the same rule.
+    # What this test protects is that rule, not the position: every
+    # pre-A22.1 construction above still works, `pending` still defaults,
+    # and the field appended since it is still optional.
+    field_names = [f.name for f in dataclasses.fields(Preflight)]
+    assert field_names.index("pending") < field_names.index("retrieval")
+    assert preflight.retrieval is None
 
 
 def test_is_empty_is_false_when_only_pending_matched(tmp_path):

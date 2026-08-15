@@ -510,14 +510,29 @@ def test_store_schema_version_still_unchanged(tmp_path):
 
 def test_guard_result_has_no_invalidation_field(tmp_path):
     """A11.2's explicit decision: Guard awareness is deferred, not part
-    of A11.3. `GuardResult`'s shape must be unchanged."""
+    of A11.3. `GuardResult` must still carry no invalidation field.
+
+    [A27] `retrieval` was added since, for a reason unrelated to
+    invalidations: `guard()` consumes the semantic channel directly, so
+    it degrades in the same silent way `preflight()` did (A26) and
+    reports its retrieval substrate the same way. The invalidation
+    decision this test guards is untouched -- asserted directly below
+    rather than by pinning the whole field set, so a future additive
+    field does not read as an invalidation regression."""
     import dataclasses
 
     from cortex_memory import GuardResult
 
     field_names = {f.name for f in dataclasses.fields(GuardResult)}
 
-    assert field_names == {"action", "known_failures", "applicable_skills", "recommended_validation"}
+    assert not any("invalidation" in name for name in field_names)
+    assert field_names == {
+        "action",
+        "known_failures",
+        "applicable_skills",
+        "recommended_validation",
+        "retrieval",
+    }
 
 
 # ---------------------------------------------------------------------------

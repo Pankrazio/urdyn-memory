@@ -1402,7 +1402,11 @@ def test_cli_existing_preflight_output_is_unchanged_when_no_conflicts_exist(tmp_
 
     captured = capsys.readouterr()
     assert exit_code == 0
+    # [A27] `Retrieval:` prefixes every preflight now (see
+    # `_cli._print_retrieval`). The conflict section is still absent,
+    # which is what this regression is about.
     assert captured.out.splitlines() == [
+        "Retrieval: lexical only -- semantic retrieval is not set up (run: cortex semantic setup)",
         "VERIFIED LESSONS",
         f"- [{memory.memory_id}] Migrations run before the new deployment starts (verified on staging).",
     ]

@@ -18,6 +18,7 @@ from ._evidence import Evidence
 from ._guard import GuardResult
 from ._memory import Memory
 from ._preflight import Preflight, PreflightConflict
+from ._semantic_store import SemanticState
 from ._skill import Skill
 from ._source import SeedResult, Source, SourceObservation
 from ._workspace import Cortex, SemanticSetupResult
@@ -32,6 +33,7 @@ __all__ = [
     "Skill",
     "GuardResult",
     "SemanticSetupResult",
+    "SemanticState",
     "Conflict",
     "Source",
     "SourceObservation",

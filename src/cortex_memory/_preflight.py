@@ -63,6 +63,7 @@ from ._relevance import is_relevant as _is_relevant
 from ._relevance import memory_search_text as _memory_search_text
 from ._relevance import tokens as _tokens
 from ._retrieval import fts_admitted_ids as _fts_admitted_ids
+from ._semantic_store import SemanticState
 
 _VALIDATION_EVIDENCE_KINDS = RECOMMENDED_VALIDATION_EVIDENCE_KINDS
 
@@ -170,6 +171,21 @@ class Preflight:
     strictly additive signal alongside them. Deliberately placed last and
     defaulted to `()` for the same backward-compatibility reason as
     `invariants`/`open_invalidations`.
+
+    `retrieval` (A27) is not experience at all: it reports which
+    retrieval substrate produced this result -- semantic plus lexical,
+    or lexical alone because the semantic index was never enabled, is
+    unusable on this machine, or could not be brought up to date. A26
+    measured why a consumer needs it: with the semantic index absent,
+    every semantic pool returned "nothing admitted", which is exactly
+    what a pool that RAN and abstained returns, so an incomplete answer
+    was indistinguishable from a complete one. `None` only when a caller
+    built this object directly instead of going through
+    `Cortex.preflight()`. Excluded from `is_empty()` on purpose: it
+    describes HOW the answer was produced, never WHAT was found -- an
+    empty result with a healthy substrate and an empty result with no
+    substrate are both empty, and that is the point of reporting it
+    separately.
     """
 
     task: str
@@ -181,6 +197,7 @@ class Preflight:
     open_invalidations: tuple[Memory, ...] = ()
     open_conflicts: tuple[PreflightConflict, ...] = ()
     pending: tuple[Memory, ...] = ()
+    retrieval: SemanticState | None = None
 
     def is_empty(self) -> bool:
         return not (
@@ -211,6 +228,7 @@ def build_preflight(
     pending_memories: list[Memory] = (),
     open_conflicts: list[Conflict] = (),
     conflict_participants: Mapping[str, Memory] = {},  # noqa: B006 -- never mutated, see below
+    retrieval: SemanticState | None = None,
 ) -> Preflight:
     """Pure selection logic, operating on data already fetched from
     storage. Takes no dependency on SQLite so it can be tested and
@@ -391,4 +409,5 @@ def build_preflight(
         open_invalidations=open_invalidations,
         open_conflicts=preflight_conflicts,
         pending=pending,
+        retrieval=retrieval,
     )

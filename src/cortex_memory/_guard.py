@@ -49,6 +49,7 @@ from ._attempt import OUTCOME_FAILED, Attempt
 from ._evidence import RECOMMENDED_VALIDATION_EVIDENCE_KINDS, Evidence
 from ._relevance import attempt_search_text, is_relevant, skill_search_text, tokens
 from ._retrieval import fts_admitted_ids
+from ._semantic_store import SemanticState
 from ._skill import Skill
 
 
@@ -61,12 +62,22 @@ class GuardResult:
     `verification_state`, so a consumer can tell a verified procedure from
     an unverified one instead of Cortex quietly implying certainty it
     doesn't have.
+
+    `retrieval` (A27) reports which retrieval substrate actually answered
+    — semantic plus lexical, or lexical alone because the semantic index
+    was never enabled, is unusable here, or could not be brought up to
+    date. It is `None` only when a caller built this object directly
+    without going through `Cortex.guard()`. Deliberately placed last and
+    defaulted so the existing field shape stays an unbroken prefix, and
+    deliberately excluded from `is_empty()`: it describes HOW the answer
+    was produced, never WHAT was found.
     """
 
     action: str
     known_failures: tuple[Attempt, ...]
     applicable_skills: tuple[Skill, ...]
     recommended_validation: tuple[Evidence, ...]
+    retrieval: SemanticState | None = None
 
     def is_empty(self) -> bool:
         return not (self.known_failures or self.applicable_skills or self.recommended_validation)
@@ -82,6 +93,7 @@ def build_guard_result(
     attempt_fts_candidates: list[tuple[str, str]] = (),
     skill_semantic_admitted: frozenset[str] = frozenset(),
     attempt_semantic_admitted: frozenset[str] = frozenset(),
+    retrieval: SemanticState | None = None,
 ) -> GuardResult:
     """Pure selection logic, operating on data already fetched from
     storage. Takes no dependency on SQLite so it can be tested and
@@ -148,4 +160,5 @@ def build_guard_result(
         known_failures=known_failures,
         applicable_skills=applicable_skills,
         recommended_validation=tuple(recommended_validation),
+        retrieval=retrieval,
     )

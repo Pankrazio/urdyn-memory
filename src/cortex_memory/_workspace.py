@@ -48,7 +48,23 @@ from ._relevance import memory_search_text as _memory_search_text
 from ._relevance import skill_search_text as _skill_search_text
 from ._relevance import tokens as _tokens
 from ._retrieval import ENTITY_ATTEMPT, ENTITY_MEMORY, ENTITY_SKILL
-from ._semantic_store import SemanticIndexStore, semantic_db_path_for
+from ._semantic_store import (
+    DETAIL_BUILD_INCOMPLETE,
+    DETAIL_EXTRA_MISSING,
+    DETAIL_INDEX_UNREADABLE,
+    DETAIL_MODEL_MISMATCH,
+    DETAIL_MODEL_UNCACHED,
+    DETAIL_NOT_SET_UP,
+    DETAIL_REFRESH_FAILED,
+    SEMANTIC_DISABLED,
+    SEMANTIC_READY,
+    SEMANTIC_STALE,
+    SEMANTIC_UNAVAILABLE,
+    STATUS_READY,
+    SemanticIndexStore,
+    SemanticState,
+    semantic_db_path_for,
+)
 from ._skill import Skill
 from ._source import (
     SeedResult,
@@ -74,6 +90,51 @@ def _open_conflicts_projection(conflicts: list[Conflict], current_ids: set[str])
         for conflict in conflicts
         if conflict.memory_ids[0] in current_ids and conflict.memory_ids[1] in current_ids
     ]
+
+
+def _semantic_pool_entries(
+    store: MemoryStore,
+    *,
+    memories: list[Memory] | None = None,
+    attempts: list[Attempt] | None = None,
+    skills: list[Skill] | None = None,
+) -> tuple[tuple[str, list[tuple[str, str]]], ...]:
+    """[A27] THE definition of what the semantic index is derived from:
+    which canonical records feed it, and with which text.
+
+    One definition, three consumers -- `semantic_setup()` (which builds
+    the index), `Cortex.semantic_state()` (which decides whether it is
+    still current) and the incremental refresh (which repairs it). Before
+    A27 this lived inline inside `semantic_setup()` and had exactly one
+    reader, which was fine while nothing else needed to know what
+    "semantically relevant" meant. It is extracted rather than copied
+    because the freshness answer is only as true as its agreement with
+    the build: a `status` command that judged coverage against a
+    different set of records than `semantic_setup()` indexes would report
+    a workspace permanently stale, or permanently current, and either way
+    it would be a lie that no test could catch by inspecting one side
+    alone.
+
+    The three pools and their texts are UNCHANGED from A7.4 -- the same
+    representations `_relevance.py` already derives for FTS, no new
+    canonical field, no new pool. Notably absent, and deliberately so:
+    Evidence, Conflicts and Sources are canonical data that no semantic
+    pool indexes, so writing them cannot make this index stale and must
+    not be allowed to say otherwise.
+
+    Callers that have already read some of these lists pass them in; the
+    parameters exist to avoid re-reading the canonical store inside a
+    call that just materialized the very same rows, not to let a caller
+    substitute a different population.
+    """
+    memories = store.timeline(None) if memories is None else memories
+    attempts = store.list_attempts() if attempts is None else attempts
+    skills = store.list_skills() if skills is None else skills
+    return (
+        (ENTITY_ATTEMPT, [(a.attempt_id, _attempt_search_text(a.task, a.approach)) for a in attempts]),
+        (ENTITY_MEMORY, [(m.memory_id, _memory_search_text(m.content)) for m in memories]),
+        (ENTITY_SKILL, [(s.skill_id, _skill_search_text(s.name, s.purpose, s.conditions)) for s in skills]),
+    )
 
 
 def _load_semantic_module():
@@ -715,17 +776,20 @@ class Cortex:
         if not isinstance(task, str) or not task.strip():
             raise ValueError("Preflight task must not be empty or whitespace-only")
 
-        empty = Preflight(
-            task=task,
-            known_failures=(),
-            root_causes=(),
-            verified_lessons=(),
-            recommended_validation=(),
-            invariants=(),
-        )
         store = MemoryStore.open_if_exists(self._db_path)
         if store is None:
-            return empty
+            # (A27) Even a workspace with nothing recorded reports HOW it
+            # looked: "nothing found" and "nothing could be found" are
+            # different answers and must not print identically.
+            return Preflight(
+                task=task,
+                known_failures=(),
+                root_causes=(),
+                verified_lessons=(),
+                recommended_validation=(),
+                invariants=(),
+                retrieval=self.semantic_state(),
+            )
         with store:
             current_ids = store.current_ids()
             # [A14.1] ONE `timeline(None)` read instead of four separate
@@ -745,7 +809,8 @@ class Cortex:
             # participant map open conflicts need below, so no second
             # materialization and no per-kind lookup is required to
             # build it.
-            current_memories = [m for m in store.timeline(None) if m.memory_id in current_ids]
+            all_memories = store.timeline(None)
+            current_memories = [m for m in all_memories if m.memory_id in current_ids]
             current_memory_by_id = {m.memory_id: m for m in current_memories}
 
             root_cause_memories = [m for m in current_memories if m.kind == KIND_ROOT_CAUSE]
@@ -802,7 +867,37 @@ class Cortex:
             # legitimately contributes recommended_validation evidence), so
             # that pool is intentionally left unrestricted.
             memory_eligible_ids = frozenset(m.memory_id for m in (*root_cause_memories, *verified_lesson_memories))
-            attempt_semantic_admitted = self._semantic_widen(task, ENTITY_ATTEMPT)
+
+            # [A27] Bring the derived index up to date with what the
+            # canonical store now holds, BEFORE any pool is ranked --
+            # once per call, not once per pool. This is the step whose
+            # absence produced A26: experience recorded after the last
+            # index build was invisible to every semantic pool below, and
+            # nothing said so. `retrieval` carries the outcome (current,
+            # just-refreshed, degraded, or never enabled) all the way out
+            # to the caller.
+            retrieval = self._semantic_prepare(
+                _semantic_pool_entries(store, memories=all_memories, attempts=attempts)
+            )
+
+            # [A27] `eligible_ids` here is NOT a new admission policy: it
+            # is the set of attempts that canonically EXIST, and it is a
+            # no-op whenever the index holds nothing else (the normal
+            # case, since canonical storage is append-only). It matters
+            # when the index holds vectors for ids the canonical store no
+            # longer has -- reachable by restoring/replacing `memory.db`
+            # under a retained `semantic_index.db`. This pool is
+            # winner-take-all, so such a vector could take its single
+            # admission slot, or collapse the runner-up margin, and
+            # starve a real attempt of consideration: the A7.7 starvation
+            # bug, arriving from the derived side instead of the
+            # eligibility side. Filtering the pool to canonical ids costs
+            # nothing and removes it, which is why A27 does NOT need the
+            # index to be garbage-collected down to exact equality with
+            # canonical state.
+            attempt_semantic_admitted = self._semantic_widen(
+                task, ENTITY_ATTEMPT, eligible_ids=frozenset(a.attempt_id for a in attempts)
+            )
             memory_semantic_admitted = self._preflight_memory_semantic_widen(
                 task,
                 root_cause_memories=root_cause_memories,
@@ -921,6 +1016,7 @@ class Cortex:
                 pending_memories=pending_memories,
                 open_conflicts=open_conflict_list,
                 conflict_participants=current_memory_by_id,
+                retrieval=retrieval,
             )
 
     def promote(
@@ -1034,10 +1130,15 @@ class Cortex:
         if not isinstance(action, str) or not action.strip():
             raise ValueError("Guard action must not be empty or whitespace-only")
 
-        empty = GuardResult(action=action, known_failures=(), applicable_skills=(), recommended_validation=())
         store = MemoryStore.open_if_exists(self._db_path)
         if store is None:
-            return empty
+            return GuardResult(
+                action=action,
+                known_failures=(),
+                applicable_skills=(),
+                recommended_validation=(),
+                retrieval=self.semantic_state(),
+            )
         with store:
             skills = store.list_skills()
             attempts = store.list_attempts()
@@ -1065,7 +1166,26 @@ class Cortex:
             # concept in guard() (verification_state is reported, never
             # gated on), so that pool is intentionally left unrestricted.
             failed_attempt_ids = frozenset(a.attempt_id for a in attempts if a.outcome == OUTCOME_FAILED)
-            skill_semantic_admitted = self._semantic_widen(action, ENTITY_SKILL)
+
+            # [A27] `guard()` consumes the semantic channel directly (both
+            # pools below), so it gets the same lifecycle as `preflight()`
+            # through the same helper -- not for symmetry, but because an
+            # index that predates the Skill an action is about to violate
+            # fails here in the identical silent way. Same refresh, same
+            # retrieval reporting, one implementation.
+            retrieval = self._semantic_prepare(
+                _semantic_pool_entries(store, attempts=attempts, skills=skills)
+            )
+
+            # [A27] Canonical-existence filter, exactly as in
+            # `preflight()`'s attempt pool and for the same reason (see
+            # the comment there): a no-op unless the index holds vectors
+            # for skills the canonical store no longer has, in which case
+            # it stops a phantom from taking this winner-take-all pool's
+            # single slot.
+            skill_semantic_admitted = self._semantic_widen(
+                action, ENTITY_SKILL, eligible_ids=frozenset(s.skill_id for s in skills)
+            )
             attempt_semantic_admitted = self._semantic_widen(action, ENTITY_ATTEMPT, eligible_ids=failed_attempt_ids)
 
             return build_guard_result(
@@ -1077,6 +1197,7 @@ class Cortex:
                 attempt_fts_candidates=attempt_fts_candidates,
                 skill_semantic_admitted=skill_semantic_admitted,
                 attempt_semantic_admitted=attempt_semantic_admitted,
+                retrieval=retrieval,
             )
 
     def _count_memories(self) -> int:
@@ -1149,18 +1270,15 @@ class Cortex:
 
         store = MemoryStore.open_if_exists(self._db_path)
         if store is None:
-            memories, attempts, skills = [], [], []
+            pools: tuple[tuple[str, list[tuple[str, str]]], ...] = (
+                (ENTITY_ATTEMPT, []),
+                (ENTITY_MEMORY, []),
+                (ENTITY_SKILL, []),
+            )
         else:
             with store:
-                memories = store.timeline(None)
-                attempts = store.list_attempts()
-                skills = store.list_skills()
-
-        pools = (
-            (ENTITY_ATTEMPT, [(a.attempt_id, _attempt_search_text(a.task, a.approach)) for a in attempts]),
-            (ENTITY_MEMORY, [(m.memory_id, _memory_search_text(m.content)) for m in memories]),
-            (ENTITY_SKILL, [(s.skill_id, _skill_search_text(s.name, s.purpose, s.conditions)) for s in skills]),
-        )
+                pools = _semantic_pool_entries(store)
+        counts = {entity_type: len(entries) for entity_type, entries in pools}
 
         with SemanticIndexStore.create_or_open(self._semantic_db_path) as semantic_store:
             semantic_store.begin_rebuild(
@@ -1187,10 +1305,204 @@ class Cortex:
             model_revision=revision,
             dimensions=dimensions,
             normalization=semantic.SEMANTIC_NORMALIZATION,
-            attempt_count=len(attempts),
-            memory_count=len(memories),
-            skill_count=len(skills),
+            attempt_count=counts[ENTITY_ATTEMPT],
+            memory_count=counts[ENTITY_MEMORY],
+            skill_count=counts[ENTITY_SKILL],
         )
+
+    # -- semantic lifecycle (A27) ------------------------------------------
+
+    def semantic_state(self) -> SemanticState:
+        """[A27] Whether the derived semantic index is currently a usable,
+        up-to-date view of canonical state -- the question `preflight()`
+        could not answer before A27, and silently answered "yes" to.
+
+        OBSERVATIONAL AND CHEAP, by contract: it never loads the
+        embedding model, never embeds anything, never touches the
+        network, and never writes -- not to canonical storage and not to
+        the derived index. `cortex status` calls exactly this, so those
+        properties are what let a state line exist at all. The most
+        expensive thing it does is resolve two cached file paths (see
+        `_semantic.artifacts_available`), and only in a workspace that
+        has an index to ask about; a workspace that never enabled
+        semantic retrieval answers from a single `Path.exists()` without
+        importing the semantic runtime at all.
+
+        The answer is COMPUTED from state, never remembered (see
+        `_semantic_store.py`'s module docstring for why a stored dirty
+        flag cannot be trusted across two databases with no atomic
+        cross-store commit).
+        """
+        if not self._semantic_db_path.exists():
+            return SemanticState(status=SEMANTIC_DISABLED, detail=DETAIL_NOT_SET_UP)
+        store = MemoryStore.open_if_exists(self._db_path)
+        if store is None:
+            return self._semantic_state_for(())
+        with store:
+            return self._semantic_state_for(_semantic_pool_entries(store))
+
+    def _semantic_state_for(self, pools: tuple[tuple[str, list[tuple[str, str]]], ...]) -> SemanticState:
+        """Classify the index against `pools`, the canonical records it is
+        supposed to cover (see `_semantic_pool_entries`).
+
+        ORDER IS THE CONTRACT HERE, and it is not arbitrary:
+        COMPATIBILITY IS DECIDED BEFORE FRESHNESS. An index built by a
+        different model is not "missing some vectors" -- topping it up
+        would write vectors from this build's model beside vectors from
+        another one, which is precisely the mixing hazard A16.2.1
+        measured (per-text cosine 0.9947 between two artifacts of the
+        SAME model, enough to change the top-ranked candidate for ~1
+        query in 14). So an incompatible or unloadable index reports
+        UNAVAILABLE and is rebuilt explicitly, never refreshed
+        incrementally. A16's `artifact_for_index` stays the sole
+        authority on that question; A27 only asks it earlier.
+
+        `pools` empty (no canonical store yet) is a legitimate READY: an
+        index that covers nothing, when there is nothing to cover, is
+        current.
+        """
+        try:
+            index = SemanticIndexStore.open_if_exists(self._semantic_db_path)
+        except CortexStorageError:
+            return SemanticState(status=SEMANTIC_UNAVAILABLE, detail=DETAIL_INDEX_UNREADABLE)
+        if index is None:
+            return SemanticState(status=SEMANTIC_DISABLED, detail=DETAIL_NOT_SET_UP)
+        try:
+            with index:
+                meta = index.meta()
+                indexed = {
+                    entity_type: index.indexed_ids(entity_type)
+                    for entity_type in (ENTITY_ATTEMPT, ENTITY_MEMORY, ENTITY_SKILL)
+                }
+        except CortexStorageError:
+            return SemanticState(status=SEMANTIC_UNAVAILABLE, detail=DETAIL_INDEX_UNREADABLE)
+
+        indexed_count = sum(len(ids) for ids in indexed.values())
+        if meta is None or meta.status != STATUS_READY:
+            # A7.4's own publication rule, reported rather than reasoned
+            # about again: an interrupted rebuild is incomplete, not stale.
+            return SemanticState(
+                status=SEMANTIC_UNAVAILABLE, detail=DETAIL_BUILD_INCOMPLETE, indexed=indexed_count
+            )
+
+        semantic = _load_semantic_module()
+        if semantic is None:
+            return SemanticState(
+                status=SEMANTIC_UNAVAILABLE, detail=DETAIL_EXTRA_MISSING, indexed=indexed_count
+            )
+        if semantic.artifact_for_index(meta) is None:
+            return SemanticState(
+                status=SEMANTIC_UNAVAILABLE, detail=DETAIL_MODEL_MISMATCH, indexed=indexed_count
+            )
+        if not semantic.artifacts_available(meta):
+            return SemanticState(
+                status=SEMANTIC_UNAVAILABLE, detail=DETAIL_MODEL_UNCACHED, indexed=indexed_count
+            )
+
+        missing = sum(
+            1 for entity_type, entries in pools for entity_id, _ in entries if entity_id not in indexed[entity_type]
+        )
+        if missing:
+            return SemanticState(status=SEMANTIC_STALE, missing=missing, indexed=indexed_count)
+        return SemanticState(status=SEMANTIC_READY, indexed=indexed_count)
+
+    def _semantic_prepare(self, pools: tuple[tuple[str, list[tuple[str, str]]], ...]) -> SemanticState:
+        """[A27] The lifecycle step `preflight()`/`guard()` run before
+        consulting the semantic channel: classify, and repair if the only
+        thing wrong is that canonical work has happened since the last
+        build.
+
+        This is the whole of the A26 fix. Everything else A27 adds is
+        about being honest when this cannot succeed.
+        """
+        state = self._semantic_state_for(pools)
+        if state.status != SEMANTIC_STALE:
+            return state
+        refreshed = self._semantic_refresh(pools)
+        if refreshed is None:
+            return dataclasses.replace(state, detail=DETAIL_REFRESH_FAILED)
+        # RECOMPUTED, not assumed: the refresh's own success is not
+        # evidence that the index is now current (a canonical write may
+        # have landed while it ran, and a partially-applied refresh must
+        # still read as stale). Freshness is re-derived from storage
+        # before anything is allowed to call itself ready -- the same
+        # function, so there is exactly one freshness authority.
+        return dataclasses.replace(self._semantic_state_for(pools), refreshed=refreshed)
+
+    def _semantic_refresh(self, pools: tuple[tuple[str, list[tuple[str, str]]], ...]) -> int | None:
+        """Embed and persist ONLY the records the index does not cover,
+        returning how many were added, or None if the refresh could not
+        run to completion.
+
+        Four properties this must have, all load-bearing:
+
+        OFFLINE. The model is obtained through `load_model_for_index`,
+        which is local-cache-only by construction (A7.4's
+        `local_files_only=True` path). A `preflight()` can therefore
+        never trigger a download -- that stays the exclusive privilege of
+        `cortex semantic setup`. This is structural, not a convention the
+        tests happen to respect.
+
+        THE INDEX'S OWN MODEL, not this machine's preferred one. The
+        artifact is whatever `meta` recorded, so a top-up cannot mix
+        vector spaces (see `_semantic_state_for` for the measurement
+        behind that).
+
+        INCREMENTAL. The work list is the missing ids, re-read here from
+        the index rather than inherited from the classification, so two
+        consumers racing to refresh the same workspace narrow each
+        other's work instead of duplicating it wholesale. A pool with
+        nothing missing costs nothing, and a fully-covered index never
+        reaches this method at all -- which is what keeps the model out
+        of the common path.
+
+        NON-DESTRUCTIVE. It never calls `begin_rebuild()`/
+        `finish_rebuild()`: existing vectors are preserved and the A7.4
+        `building`->`ready` publication rule keeps its single owner. A
+        refresh interrupted half way leaves MORE covered records than it
+        found and is still classified stale afterwards -- correct at
+        every intermediate point, because coverage is recomputed rather
+        than announced. There is no partial state that could be published
+        as current, because publication is not an act here.
+        """
+        semantic = _load_semantic_module()
+        if semantic is None:
+            return None
+        try:
+            index = SemanticIndexStore.open_if_exists(self._semantic_db_path)
+            if index is None:
+                return None
+            with index:
+                meta = index.meta()
+                if meta is None or meta.status != STATUS_READY:
+                    return None
+                model = semantic.load_model_for_index(meta)
+                if model is None:
+                    return None
+                refreshed = 0
+                for entity_type, entries in pools:
+                    known = index.indexed_ids(entity_type)
+                    pending = [(entity_id, text) for entity_id, text in entries if entity_id not in known]
+                    if not pending:
+                        continue
+                    vectors = semantic.embed(model, [text for _, text in pending])
+                    index.add_vectors(
+                        entity_type,
+                        [
+                            (entity_id, semantic.vector_to_blob(vector))
+                            for (entity_id, _), vector in zip(pending, vectors)
+                        ],
+                    )
+                    refreshed += len(pending)
+                return refreshed
+        except Exception:
+            # Every failure mode of a DERIVED, OPTIONAL channel -- model
+            # files gone, index locked by a concurrent writer, storage
+            # error, a backend raising something of its own -- degrades
+            # to "could not refresh". Canonical memory is untouched and
+            # the caller still gets its full lexical answer, plus a
+            # retrieval line saying the semantic view is incomplete.
+            return None
 
     def _semantic_context(self):
         """Shared degraded-condition handling for every semantic entry

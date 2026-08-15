@@ -419,7 +419,15 @@ def test_benign_content_renders_exactly_as_before(tmp_path, monkeypatch, capsys)
     main(["preflight", TASK])
 
     captured = capsys.readouterr()
+    # [A27] The `Retrieval:` line is new and unconditional: this
+    # workspace never ran `cortex semantic setup`, and saying so is the
+    # A26 fix (an answer produced without the semantic channel must not
+    # print identically to one produced with it). It is CLI structure,
+    # not caller data, so it is not passed through the safety boundary --
+    # which is exactly what the rest of this file checks about the line
+    # below it.
     assert captured.out.splitlines() == [
+        "Retrieval: lexical only -- semantic retrieval is not set up (run: cortex semantic setup)",
         "VERIFIED LESSONS",
         f"- [{memories[0].memory_id}] {content}",
     ]

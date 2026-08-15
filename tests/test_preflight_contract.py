@@ -42,6 +42,20 @@ def test_preflight_dataclass_shape_has_no_matching_strategy_leakage():
     # canonical `Memory` kind, not a retrieval channel: that a pending is
     # selected by relevance rather than dumped is a property of the
     # values, invisible in the shape.
+    #
+    # `retrieval` (A27) is the one field that reports something about
+    # retrieval itself, and it is admitted here deliberately after A26
+    # measured what its absence costs: with the semantic index missing,
+    # every semantic pool returned "nothing admitted" -- exactly what a
+    # pool that ran and abstained returns -- so an incomplete result was
+    # indistinguishable from a complete one, by construction, for every
+    # consumer. What this test actually guards is unaffected: `retrieval`
+    # says whether the derived semantic substrate was current, degraded
+    # or absent, which is a LIFECYCLE fact about stored state. It leaks
+    # no matching STRATEGY -- no tokens, no scores, no thresholds, no
+    # channel weights, nothing about "shared lexical tokens" -- and
+    # `test_retrieval_state_exposes_lifecycle_not_matching_internals`
+    # below pins that distinction rather than leaving it to this comment.
     assert field_names == {
         "task",
         "known_failures",
@@ -52,7 +66,23 @@ def test_preflight_dataclass_shape_has_no_matching_strategy_leakage():
         "open_invalidations",
         "open_conflicts",
         "pending",
+        "retrieval",
     }
+
+
+def test_retrieval_state_exposes_lifecycle_not_matching_internals():
+    """[A27] The boundary the field above is allowed to cross, and the
+    one it is not: a consumer may learn WHETHER the semantic substrate
+    was current, never HOW candidates were matched."""
+    from cortex_memory import SemanticState
+
+    field_names = {f.name for f in dataclasses.fields(SemanticState)}
+
+    assert field_names == {"status", "detail", "missing", "indexed", "refreshed"}
+    # No score, no floor, no margin, no token/candidate set, no model or
+    # artifact identity: nothing a caller could tune, reimplement, or
+    # come to depend on as a matching contract.
+    assert not any("score" in name or "floor" in name or "token" in name for name in field_names)
 
 
 def test_preflight_conflict_is_a_derived_view_not_the_canonical_conflict():

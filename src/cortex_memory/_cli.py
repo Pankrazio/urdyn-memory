@@ -26,6 +26,35 @@ from ._terminal import terminal_safe_text as _safe
 from ._workspace import DEFAULT_RECALL_LIMIT, Cortex
 
 
+# (A27) Both of these are CLI STRUCTURE, not caller data: every
+# component is a Cortex constant or an integer Cortex counted, so they
+# are printed without `_safe` exactly like section headers are. They are
+# also plain ASCII on purpose -- Cortex treats Windows consoles as a
+# first-class target, and a lifecycle warning must never be the line that
+# fails to encode.
+_SEMANTIC_SETUP_HINT = (
+    "Semantic retrieval is not enabled. Run `cortex semantic setup` to enable it "
+    "(one-time model download; everything else stays offline)."
+)
+
+
+def _print_retrieval(state) -> None:
+    """Print which retrieval substrate answered, in EVERY state and
+    BEFORE the result itself -- including a healthy one, and including an
+    empty result.
+
+    A26's failure was not that Cortex printed something wrong; it was
+    that `No relevant experience found.` is equally consistent with "the
+    semantic channel ran and had nothing" and with "the semantic channel
+    was never there". Printing this only when degraded would leave the
+    healthy case communicated by omission, which is the same bug with a
+    smaller blast radius. `None` (a result built without going through
+    the workspace) prints nothing at all rather than guessing."""
+    if state is None:
+        return
+    print(f"Retrieval: {state.retrieval_mode()}")
+
+
 class _SafeArgumentParser(argparse.ArgumentParser):
     """`argparse.ArgumentParser` that renders its own error messages
     through the same terminal-safety boundary as everything else.
@@ -230,6 +259,13 @@ def main(argv: list[str] | None = None) -> int:
             # directory name can hold anything, so it is data.
             print(f"Initialized Cortex workspace at {_safe(str(cx.path))}")
             print(f"Profile: {_safe(cx.profile)}")
+            # (A27) `init` deliberately does NOT enable semantic
+            # retrieval: doing so would download an embedding model, and
+            # a first command in a new project must not reach the network.
+            # It says so instead, because the alternative -- staying
+            # silent -- is how a workspace ends up permanently
+            # lexical-only without anyone deciding that (A26).
+            print(_SEMANTIC_SETUP_HINT)
             return 0
 
         if args.command == "status":
@@ -244,6 +280,10 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Pending: {len(cx.state(kind='pending'))}")
             print(f"Open questions: {len(cx.state(kind='question'))}")
             print(f"Environment facts: {len(cx.state(kind='environment'))}")
+            # (A27) Real, cheaply-computed derived state: no model is
+            # loaded, nothing is embedded, no network is touched and
+            # nothing is refreshed -- `status` observes, it never repairs.
+            print(f"Semantic: {cx.semantic_state().describe()}")
             return 0
 
         if args.command == "remember":
@@ -349,6 +389,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "preflight":
             cx = Cortex.discover()
             result = cx.preflight(args.task)
+            _print_retrieval(result.retrieval)
             if result.is_empty():
                 print("No relevant experience found.")
                 return 0
@@ -407,6 +448,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "guard":
             cx = Cortex.discover()
             result = cx.guard(args.action)
+            _print_retrieval(result.retrieval)
             if result.is_empty():
                 print("No known Cortex warnings for this action.")
                 return 0

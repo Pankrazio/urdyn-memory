@@ -18,6 +18,7 @@ import sys
 
 from ._attempt import VALID_OUTCOMES
 from ._errors import CortexError
+from ._evidence import DEFAULT_EVIDENCE_KIND, VALID_EVIDENCE_KINDS
 from ._manifest import CANONICAL_PROFILES
 from ._memory import DEFAULT_KIND, VALID_KINDS
 from ._source import SEED_UNCHANGED
@@ -93,6 +94,61 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="EVIDENCE_ID",
         help="Evidence ID this memory was derived from (repeatable). Provenance only: "
         "it never makes a memory verified.",
+    )
+
+    # (A25.1) Closes the CLI gap A24 measured: `remember --evidence` (A20)
+    # could cite an Evidence id but the CLI had no way to PRODUCE one --
+    # only `Cortex.add_evidence()` could. `evidence add` is a thin,
+    # one-record-per-call adapter over exactly that method: no dedup, no
+    # Event, no Source, no promotion to Memory (see `add_evidence()`'s own
+    # docstring). Nested under `evidence` rather than a bare
+    # `cortex evidence "<content>"` so a future `evidence show <id>` has a
+    # positional slot to use without a breaking rename -- the same reason
+    # `semantic setup` is nested instead of a bare `cortex semantic`.
+    evidence_parser = subparsers.add_parser("evidence", help="Manage canonical Evidence")
+    evidence_subparsers = evidence_parser.add_subparsers(dest="evidence_command", required=True)
+    evidence_add_parser = evidence_subparsers.add_parser(
+        "add", help="Record a new piece of Evidence and print its id"
+    )
+    evidence_add_parser.add_argument("content", help="Evidence content")
+    evidence_add_parser.add_argument(
+        "--kind",
+        default=DEFAULT_EVIDENCE_KIND,
+        choices=sorted(VALID_EVIDENCE_KINDS),
+        help=f"Evidence kind (default: {DEFAULT_EVIDENCE_KIND})",
+    )
+
+    # (A25.1) The CLI half of `Cortex.learn()`. Deliberately its own
+    # top-level command, not `remember --verified`: `remember` stays the
+    # A20 `user_asserted`-only path, and `--epistemic-state` is not
+    # exposed anywhere -- `verified` is reachable ONLY by requesting this
+    # specific workflow, which the A12.1 gate inside `learn()`/`remember()`
+    # still has the sole authority to grant or refuse. `--evidence` (generic
+    # provenance) and `--supporting-evidence` (explicitly designated
+    # support) are kept as two separate repeatable flags, exactly like the
+    # public API, so the CLI cannot silently collapse the distinction A20
+    # already established for `remember`.
+    learn_parser = subparsers.add_parser("learn", help="Record a Lesson (candidate or verified)")
+    learn_parser.add_argument("text", help="Lesson content")
+    learn_parser.add_argument(
+        "--evidence",
+        action="append",
+        default=None,
+        metavar="EVIDENCE_ID",
+        help="Evidence ID this lesson is derived from (repeatable). Provenance only.",
+    )
+    learn_parser.add_argument(
+        "--supporting-evidence",
+        action="append",
+        default=None,
+        metavar="EVIDENCE_ID",
+        help="Evidence ID explicitly designated as supporting this lesson (repeatable). "
+        "Required, and must include a qualifying kind, for --verified to succeed.",
+    )
+    learn_parser.add_argument(
+        "--verified",
+        action="store_true",
+        help="Request the lesson be recorded as verified (subject to the existing verification gate)",
     )
 
     recall_parser = subparsers.add_parser("recall", help="Search recorded memories")
@@ -222,6 +278,44 @@ def main(argv: list[str] | None = None) -> int:
             # above.
             for evidence_id in memory.evidence_ids:
                 print(f"Evidence [{evidence_id}]")
+            return 0
+
+        if args.command == "evidence":
+            if args.evidence_command == "add":
+                cx = Cortex.discover()
+                evidence = cx.add_evidence(args.content, kind=args.kind)
+                print(f"Evidence [{evidence.evidence_id}] ({evidence.kind})")
+                return 0
+            parser.error(f"unknown evidence command {args.evidence_command!r}")
+            return 2
+
+        if args.command == "learn":
+            cx = Cortex.discover()
+            # (A25.1) Same A20 pattern as `remember`: every cited id --
+            # provenance and supporting alike -- is resolved through the
+            # Core's own lookup BEFORE `learn()` is called, so an unknown
+            # id fails the whole command with zero Lesson recorded rather
+            # than after a partial write. Kept as two separate lists so
+            # the provenance/supporting distinction the public API makes
+            # is never collapsed here.
+            evidence = [cx.get_evidence(evidence_id) for evidence_id in (args.evidence or ())]
+            supporting_evidence = [
+                cx.get_evidence(evidence_id) for evidence_id in (args.supporting_evidence or ())
+            ]
+            memory = cx.learn(
+                args.text,
+                evidence=evidence,
+                supporting_evidence=supporting_evidence,
+                verified=args.verified,
+            )
+            state = "verified" if memory.epistemic_state == "verified" else "candidate"
+            print(f"Learned [{memory.memory_id}] ({state})")
+            # Printed from the PERSISTED memory, exactly like `remember`
+            # above: what matters is the provenance Cortex actually holds.
+            for evidence_id in memory.evidence_ids:
+                print(f"Evidence [{evidence_id}]")
+            for evidence_id in memory.supporting_evidence_ids:
+                print(f"Supporting evidence [{evidence_id}]")
             return 0
 
         if args.command == "recall":

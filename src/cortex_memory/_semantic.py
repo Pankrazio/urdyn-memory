@@ -87,6 +87,21 @@ floors are properties of the model's score geometry, so "the backend
 changed" and "the policy is still calibrated" are separate claims that
 need separate evidence, per pool.
 
+[A23.1] TWO ADMISSION POLICIES, ONE SIMILARITY ENGINE. `SEMANTIC_POLICY`
+above is a per-POOL calibration (which floors), not a per-pool decision
+about how many candidates a pool may return. That second question
+belongs to the category CONSUMING the pool: `semantic_admitted_id`
+answers "which single candidate is the intended one" (winner + margin,
+unchanged since A7.4), while `set_admitted_ids` answers "which
+candidates are relevant enough to include" (every candidate above the
+SAME absolute floor, capped, no margin). Nothing about the scores, the
+model, the index or the floors differs between them. A23 measured why
+the distinction is necessary: applying the single-winner question to
+verified Lessons -- a category whose own model expresses no exclusivity,
+and which the lexical/FTS channels already admit as a set -- rejected
+two complementary lessons for being 0.0576 apart while both sat far
+above the floor.
+
 [A7.7] Eligibility fix: `semantic_admitted_ids` accepts an optional
 `eligible_ids` filter, applied to the candidate pool BEFORE ranking
 (not after). A7.5/A7.6 found and reproduced a real correctness bug: an
@@ -235,6 +250,52 @@ SEMANTIC_POLICY: dict[str, PoolPolicy] = {
     ENTITY_MEMORY: PoolPolicy(absolute_floor=0.20, margin_floor=0.08),
     ENTITY_SKILL: PoolPolicy(absolute_floor=0.55, margin_floor=0.10),
 }
+
+# [A23.1/A23.2] The SET admission policy for verified Lessons: how deep
+# the pool may go, and how relevant a candidate must be. Internal policy
+# constants, deliberately not exposed through the CLI, the public API,
+# the manifest or an environment variable -- a caller able to raise them
+# would be able to turn preflight into a dump of the workspace.
+#
+# Both were CALIBRATED IN A23.2 on a prospective corpus frozen before it
+# was scored (78 verified lessons over 19 domains, 67 task scenes across
+# two languages, 13 of them scenes where the correct answer is to emit
+# nothing), then validated once against the untouched A23.1.1 diagnostic
+# corpus. They are a V1 operating point, not architectural truth: like
+# every number in `SEMANTIC_POLICY`, they are properties of this model's
+# score geometry and must be re-measured, not reasoned about, if the
+# backend changes.
+#
+# CAP = 2, and the third slot is what the measurement rejected: rank #3
+#   holds 2% (English) and 0% (Italian) of all genuinely relevant lessons,
+#   so at this floor k=3 and k=2 have IDENTICAL recall (0.37) while
+#   precision falls from 0.37 to 0.26 and output grows from 1.4 to 2.0
+#   rows per task. The oracle ceiling confirms it: a perfect top-3 policy
+#   would reach recall 0.41 against top-2's 0.40. Two is also the smallest
+#   cap that still satisfies A23's original requirement -- two
+#   complementary lessons CAN appear together.
+# FLOOR = 0.30, and what fixes it is the median: the median score of a
+#   genuinely relevant lesson is 0.327 (English) / 0.346 (Italian), so any
+#   floor at or above ~0.35 sits ABOVE the median true positive and
+#   discards more than half of what is relevant by construction. 0.30 is
+#   the highest value that stays under that ceiling while still recovering
+#   both wordings of the original A23 reproduction (whose weaker lesson
+#   scores 0.3206) and still rejecting the A23.1 journey's measured false
+#   positive (0.2750).
+#   What it buys, on scenes where the correct answer is to emit NOTHING:
+#   the 0.20 floor emitted at least one lesson in 92% of them, this one in
+#   25%. That is the job an absolute floor can actually do.
+#   What it cannot do is separate relevance: measured over the same
+#   corpus, false positives have a HIGHER median score (0.350) than
+#   genuinely relevant lessons do (0.327). The floor is a precision
+#   control, never semantic understanding -- see A23.2 for the
+#   rank-inversion cases it provably cannot fix.
+#
+# Deliberately NOT `SEMANTIC_POLICY[ENTITY_MEMORY].absolute_floor`: that
+# floor belongs to the single-winner MEMORY pool, is calibrated for a
+# different question, and is untouched by A23.2.
+LESSON_SEMANTIC_FLOOR = 0.30
+SET_ADMISSION_LIMIT = 2
 
 
 class SemanticUnavailable(Exception):
@@ -586,6 +647,59 @@ def semantic_admitted_ids(
     )
     admitted = semantic_admitted_id(ranked, entity_type)
     return frozenset({admitted}) if admitted is not None else frozenset()
+
+
+def set_admitted_ids(
+    ranked: list[tuple[str, float]], *, floor: float, limit: int = SET_ADMISSION_LIMIT
+) -> frozenset[str]:
+    """[A23.1/A23.2] SET admission: every candidate clearing `floor`,
+    capped at `limit`, with NO margin check. The alternative policy to
+    `semantic_admitted_id` below, for pools whose consumer wants "which
+    candidates are relevant enough to include" rather than "which single
+    candidate is the intended one".
+
+    Takes its `floor` explicitly rather than reading
+    `SEMANTIC_POLICY[entity_type]`: A23.2 calibrated a Lesson-specific
+    floor, and having this function reach into the MEMORY pool's policy
+    would silently couple two calibrations that answer different
+    questions. What is shared with `semantic_admitted_id` is the ranking
+    and the model -- nothing else. The difference in what a pool may
+    return is a property of the CONSUMING category, not of the
+    similarity engine (see `Cortex._preflight_lesson_semantic_admitted`
+    for the one caller, and A23 for why Lesson is such a category).
+
+    Why the margin is deliberately absent here rather than merely
+    relaxed: `margin_floor` asks "is #1 separated enough from #2 to be
+    trusted as THE answer", which is only a meaningful question when at
+    most one candidate can be right. A23 reproduced, on the real model,
+    two complementary verified lessons scoring 0.3782 and 0.3206 against
+    the same task -- both far above the 0.20 floor, both genuinely useful,
+    and rejected TOGETHER because they were 0.0576 apart. Requiring
+    co-relevant candidates to defeat each other is what that policy does;
+    for a set-valued category it is the wrong question, not a
+    mis-tuned answer to the right one. The margin is untouched for every
+    pool that still asks the single-winner question.
+
+    `limit` bounds context growth and, together with `floor`, is what
+    replaces the margin's incidental precision work -- both calibrated
+    together in A23.2, because neither is defensible alone: a cap without
+    a floor never abstains, and a floor high enough to abstain reliably
+    sits above the median relevant lesson. A `limit` of 0 or less admits
+    nothing.
+
+    Determinism: the returned SET is a pure function of `ranked`, which
+    the caller obtained from `rank_candidates` -- unchanged by A23.1.
+    This function never re-sorts and never breaks ties itself, so which
+    candidates fall inside the cap is exactly as deterministic as the
+    ranking that produced them. The ORDER experience is reported in is
+    not decided here at all: `build_preflight` filters its own
+    event-log-ordered lists by id membership, so a preflight result's
+    ordering is unaffected by this function's existence.
+    """
+    if limit <= 0:
+        return frozenset()
+    admitted = [entity_id for entity_id, score in ranked if score >= floor]
+    return frozenset(admitted[:limit])
 
 
 def semantic_admitted_id(ranked: list[tuple[str, float]], entity_type: str) -> str | None:

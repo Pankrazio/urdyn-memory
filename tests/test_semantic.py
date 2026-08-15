@@ -446,6 +446,15 @@ def _verified_lesson(cx, content):
     return cx.learn(content, supporting_evidence=[ev], verified=True)
 
 
+def _root_cause_with_own_evidence(cx, content):
+    """[A23.1] A root cause carrying its OWN Evidence -- the root-cause
+    counterpart of `_verified_lesson`, used where a test needs two
+    candidates that tie in the single-winner MEMORY pool without sharing
+    provenance (which would make them one A7.8 cluster)."""
+    ev = cx.add_evidence("observed", kind="error_observation")
+    return cx.remember(content, kind="root_cause", epistemic_state="inferred", evidence=[ev])
+
+
 def test_preflight_admits_a_semantic_paraphrase_lexical_alone_would_miss(tmp_path, fake_semantic):
     cx = Cortex.init(tmp_path, "dev")
     _verified_lesson(cx, "alpha topic explained in the original wording")
@@ -852,18 +861,29 @@ def test_guard_attempt_pool_ignores_succeeded_attempts_for_eligibility(tmp_path,
 # ---------------------------------------------------------------------------
 
 
-def test_preflight_corroboration_admits_a_near_floor_lesson_with_independently_relevant_attempt(
+def test_preflight_corroboration_admits_a_near_floor_memory_with_independently_relevant_attempt(
     tmp_path, fake_semantic
 ):
     """The one mechanism A7.6 validated as safe and useful: when normal
-    semantic admission abstains (here: two verified lessons tie exactly,
-    so the margin check rejects both), a related, INDEPENDENTLY
-    admitted failed Attempt (real relationship: shared Evidence) rescues
-    the tied candidate instead of leaving preflight() empty."""
+    semantic admission abstains (here: two root causes tie exactly, so
+    the margin check rejects both), a related, INDEPENDENTLY admitted
+    failed Attempt (real relationship: shared Evidence) rescues the tied
+    candidate instead of leaving preflight() empty.
+
+    [A23.1] The tie is built from ROOT CAUSES rather than verified
+    lessons, as it was until A23.1. Corroboration itself is unchanged and
+    still considers root causes and verified lessons alike (see
+    `_preflight_corroboration_admitted`), but a lesson tie no longer
+    reaches the abstention this test needs as its premise: verified
+    lessons now have their own bounded set admission channel, which
+    admits both sides of such a tie directly. Root causes are the kind
+    that still depends solely on the single-winner MEMORY pool, so they
+    are what can still exhibit -- and therefore still test -- the
+    corroboration fallback."""
     cx = Cortex.init(tmp_path, "dev")
     ev = cx.add_evidence("shared evidence for corroboration", kind="test_result")
-    cx.learn("alpha", supporting_evidence=[ev], verified=True)
-    _verified_lesson(cx, "alpha")  # exact tie -> margin floor rejects both on its own
+    cx.remember("alpha", kind="root_cause", epistemic_state="inferred", evidence=[ev])
+    _root_cause_with_own_evidence(cx, "alpha")  # exact tie -> margin floor rejects both on its own
     # related Attempt, sharing `ev`, independently and strongly relevant
     # to the same query on its own terms (own score clears ATTEMPT's floor)
     cx.record_attempt(task="alpha", approach="alpha", outcome="failed", evidence=[ev])
@@ -875,7 +895,7 @@ def test_preflight_corroboration_admits_a_near_floor_lesson_with_independently_r
     # like the existing thin-margin guard test above does
     diluted_query = "totally unrelated wording that still somehow concerns alpha topics here and nothing else"
     result = cx.preflight(diluted_query)
-    surfaced_ids = {m.memory_id for m in result.verified_lessons}
+    surfaced_ids = {m.memory_id for m in result.root_causes}
     assert len(surfaced_ids) == 1  # corroboration rescues exactly the pool's own rank-1, not both, not neither
 
 
@@ -883,13 +903,16 @@ def test_preflight_corroboration_rejects_a_merely_present_unrelated_attempt(tmp_
     """The WEAK version of corroboration A7.6 explicitly rejected (a
     related entity counts just because it exists / scores above some
     floor) must not be what got implemented: here the related Attempt
-    shares Evidence with the tied lesson but is NOT independently
+    shares Evidence with the tied root cause but is NOT independently
     relevant to the query at all (orthogonal concept) -- corroboration
-    must NOT fire, and the tie must remain unresolved (abstain)."""
+    must NOT fire, and the tie must remain unresolved (abstain).
+
+    [A23.1] Built from root causes for the same reason as the
+    corroboration-admits case above."""
     cx = Cortex.init(tmp_path, "dev")
     ev = cx.add_evidence("shared evidence, unrelated attempt", kind="test_result")
-    cx.learn("alpha", supporting_evidence=[ev], verified=True)
-    _verified_lesson(cx, "alpha")  # exact tie, same as the case above
+    cx.remember("alpha", kind="root_cause", epistemic_state="inferred", evidence=[ev])
+    _root_cause_with_own_evidence(cx, "alpha")  # exact tie, same as the case above
     # related Attempt shares the SAME evidence, but its own text has
     # nothing to do with the query -- must not count as corroboration
     cx.record_attempt(task="beta", approach="beta", outcome="failed", evidence=[ev])
@@ -897,25 +920,28 @@ def test_preflight_corroboration_rejects_a_merely_present_unrelated_attempt(tmp_
 
     diluted_query = "totally unrelated wording that still somehow concerns alpha topics here and nothing else"
     result = cx.preflight(diluted_query)
-    assert result.verified_lessons == ()
+    assert result.root_causes == ()
 
 
 def test_preflight_corroboration_requires_a_real_canonical_relationship(tmp_path, fake_semantic):
     """A related-looking Attempt that shares NO Evidence at all with the
     tied candidate (no real canonical relationship) must not corroborate
-    it either, even if its own text would independently score well."""
+    it either, even if its own text would independently score well.
+
+    [A23.1] Built from root causes for the same reason as the
+    corroboration-admits case above."""
     cx = Cortex.init(tmp_path, "dev")
-    ev1 = cx.add_evidence("evidence for the tied lesson", kind="test_result")
-    cx.learn("alpha", supporting_evidence=[ev1], verified=True)
-    _verified_lesson(cx, "alpha")
+    ev1 = cx.add_evidence("evidence for the tied root cause", kind="error_observation")
+    cx.remember("alpha", kind="root_cause", epistemic_state="inferred", evidence=[ev1])
+    _root_cause_with_own_evidence(cx, "alpha")
     # a DIFFERENT, unrelated attempt: independently strong on "alpha" but
-    # shares no Evidence with either tied lesson
+    # shares no Evidence with either tied root cause
     cx.record_attempt(task="alpha", approach="alpha", outcome="failed")
     cx.semantic_setup()
 
     diluted_query = "totally unrelated wording that still somehow concerns alpha topics here and nothing else"
     result = cx.preflight(diluted_query)
-    assert result.verified_lessons == ()
+    assert result.root_causes == ()
 
 
 def test_guard_never_gets_structural_corroboration_widening(tmp_path, fake_semantic):
@@ -945,9 +971,18 @@ def test_guard_never_gets_structural_corroboration_widening(tmp_path, fake_seman
 
 def test_preflight_favors_recall_guard_favors_precision_on_the_same_query(tmp_path, fake_semantic):
     """The explicit A7.7 product decision, proven on ONE shared query:
-    preflight() surfaces useful experience via corroboration where
-    guard() -- deliberately not widened the same way -- abstains. The
-    two APIs are not required to agree."""
+    preflight() surfaces useful experience where guard() -- deliberately
+    not widened the same way -- abstains. The two APIs are not required
+    to agree.
+
+    [A23.1] The asymmetry is unchanged and, if anything, sharper: what
+    carries the lesson into preflight() is now the verified-lesson set
+    admission channel rather than the corroboration fallback (the
+    corroboration mechanism itself is covered, unchanged, by the three
+    root-cause tests above). guard()'s SKILL pool is untouched by A23.1
+    -- it still asks the single-winner question, still has the identical
+    tie, and still abstains, which is the half of this test that
+    discriminates."""
     cx = Cortex.init(tmp_path, "dev")
     ev = cx.add_evidence("shared evidence for corroboration", kind="test_result")
     lesson = cx.learn("alpha", supporting_evidence=[ev], verified=True)
@@ -962,7 +997,7 @@ def test_preflight_favors_recall_guard_favors_precision_on_the_same_query(tmp_pa
     preflight_result = cx.preflight(diluted_query)
     guard_result = cx.guard(diluted_query)
 
-    assert len(preflight_result.verified_lessons) == 1  # recall: corroboration rescues the tie
+    assert lesson.memory_id in {m.memory_id for m in preflight_result.verified_lessons}  # recall
     # guard's own skill pool has the identical tie (two "alpha" skills,
     # cos=1.0 each) -- margin floor rejects it, and guard has no
     # corroboration fallback to rescue it the way preflight does

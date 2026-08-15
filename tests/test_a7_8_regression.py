@@ -117,8 +117,18 @@ def test_preflight_admits_sibling_root_cause_and_lesson_tied_on_score(tmp_path, 
 
 def test_preflight_does_not_cluster_memories_that_do_not_share_evidence(tmp_path, fake_semantic):
     """Regression safety: an exact tie between two memories that do NOT
-    share Evidence must stay rejected exactly as before -- clustering
-    must never merge candidates just because they happen to tie."""
+    share Evidence must stay rejected by the MEMORY pool exactly as
+    before -- clustering must never merge candidates just because they
+    happen to tie.
+
+    [A23.1] The assertion that carries that meaning is the ROOT CAUSE
+    one: it is admitted here only if the cluster admitted it, and the
+    cluster must not have formed. The lesson is no longer a witness to
+    the same fact, because verified lessons now have their own set
+    admission channel (see A23) that admits them above the absolute
+    floor without a margin -- so its presence says nothing about
+    clustering either way, and asserting its absence would be asserting
+    the A23 defect."""
     cx = Cortex.init(tmp_path, "dev")
     root_cause = cx.remember("alpha", kind="root_cause", epistemic_state="inferred")
     _verified_lesson(cx, "alpha")  # its own, unrelated evidence
@@ -127,7 +137,7 @@ def test_preflight_does_not_cluster_memories_that_do_not_share_evidence(tmp_path
     result = cx.preflight(_DILUTED_QUERY)
 
     assert result.root_causes == ()
-    assert result.verified_lessons == ()
+    assert root_cause.memory_id not in {m.memory_id for m in result.verified_lessons}
 
 
 def test_preflight_admits_low_scoring_sibling_via_cluster_membership(tmp_path, fake_semantic):
@@ -158,11 +168,21 @@ def test_preflight_cluster_still_loses_to_a_stronger_unrelated_competitor(tmp_pa
     unrelated candidate (different Evidence, different concept) beats
     the cluster's representative score by more than the margin floor,
     the cluster still loses, exactly as plain single-winner admission
-    already would for two unrelated candidates."""
+    already would for two unrelated candidates.
+
+    [A23.1] What proves the cluster lost is that its ROOT CAUSE is not
+    surfaced: the root cause has no channel other than the MEMORY pool,
+    so its absence is exactly "the cluster did not win". The cluster's
+    LESSON is no longer usable as that witness -- verified lessons now
+    have their own bounded set admission channel, and it admits every
+    lesson above the absolute floor independently of what the MEMORY
+    pool decided about the cluster."""
     cx = Cortex.init(tmp_path, "dev")
     ev = cx.add_evidence("observed failure", kind="error_observation")
     validation = cx.add_evidence("checked", kind="test_result")
-    cx.remember("alpha beta", kind="root_cause", epistemic_state="inferred", evidence=[ev])
+    clustered_root_cause = cx.remember(
+        "alpha beta", kind="root_cause", epistemic_state="inferred", evidence=[ev]
+    )
     cx.learn("alpha beta", evidence=[ev], supporting_evidence=[validation], verified=True)
     # unrelated, exact match on the query's own concept -- strictly stronger, no shared evidence
     strong_unrelated = _verified_lesson(cx, "alpha")
@@ -170,8 +190,9 @@ def test_preflight_cluster_still_loses_to_a_stronger_unrelated_competitor(tmp_pa
 
     result = cx.preflight("totally unrelated wording that still somehow concerns alpha and nothing else")
 
-    surfaced = {m.memory_id for m in result.verified_lessons}
-    assert surfaced == {strong_unrelated.memory_id}
+    assert clustered_root_cause.memory_id not in {m.memory_id for m in result.root_causes}
+    assert result.root_causes == ()
+    assert strong_unrelated.memory_id in {m.memory_id for m in result.verified_lessons}
 
 
 # ---------------------------------------------------------------------------

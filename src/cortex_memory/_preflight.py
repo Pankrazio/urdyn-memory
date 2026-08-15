@@ -26,9 +26,14 @@ A third, OPTIONAL channel (A7.4) can widen candidate recall further: a
 calibrated semantic-similarity admission (`_semantic.py`, brute-force
 cosine over static embeddings), passed in here as
 `attempt_semantic_admitted`/`memory_semantic_admitted` -- pre-computed
-sets of at most one id each, already filtered through the same
-abstention policy that decides "is this candidate semantically relevant
-enough" (see `_semantic.py`'s module docstring). This module never
+id sets, already filtered through whichever abstention policy decides
+"is this candidate semantically relevant enough" for the pool they came
+from (see `_semantic.py`'s module docstring). Historically at most one
+id each; since A23.1 the caller's verified-lesson pool contributes a
+BOUNDED SET instead of a single winner, which changes nothing here --
+this module has never done anything with these but test id membership,
+and deliberately does not know how many ids any pool decided to admit
+or why. This module never
 computes or sees a similarity score itself: it only checks id membership,
 exactly like the FTS channel above. Defaults to empty, so a workspace
 without the `[semantic]` extra installed (or without `cortex semantic

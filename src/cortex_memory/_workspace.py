@@ -859,6 +859,48 @@ class Cortex:
                 task, ENTITY_MEMORY, eligible_ids=pending_eligible_ids
             )
 
+            # [A23.1] A fourth DISJOINT, independently-ranked semantic
+            # pool, restricted to the verified lessons already computed
+            # above -- the A11.3/A22.1 pattern, but for a different
+            # reason and with a different ADMISSION POLICY. A11.3 and
+            # A22.1 separated POOLS (who competes with whom) so one
+            # category could not steal another's single slot; they left
+            # the POLICY (how candidates are admitted inside a pool)
+            # identical everywhere: winner-take-all plus margin. A23
+            # measured that this policy is itself wrong for lessons, and
+            # that pool separation alone cannot fix it, because the
+            # competition is between lessons and each other: two
+            # complementary verified lessons scoring 0.3782 and 0.3206
+            # against the same task were rejected TOGETHER for being
+            # 0.0576 apart, and a realistic four-lesson workspace
+            # returned zero or one of four. `set_admitted_ids` reuses the
+            # SAME absolute floor and the SAME ranking, drops only the
+            # margin, and is bounded by an internal cap.
+            #
+            # Deliberately ADDITIVE rather than a move: verified lessons
+            # stay in `memory_eligible_ids` above as well. Removing them
+            # from that pool would look tidier, but it would destroy the
+            # A7.8 shared-Evidence cluster rescue, under which a lesson
+            # whose OWN score is below the floor is admitted because its
+            # sibling root cause (same experience, same Evidence) cleared
+            # it -- measured by
+            # `test_preflight_admits_low_scoring_sibling_via_cluster_membership`.
+            # A lesson can therefore be admitted by either channel; since
+            # both only ever contribute ids to the same union below,
+            # running both cannot re-create competition, and no memory
+            # candidate can consume this pool's capacity because this
+            # pool contains lessons only.
+            #
+            # [A23.4] What that other channel may admit a lesson FOR is
+            # now bounded, though: on its own score it must clear this
+            # pool's floor, not MEMORY's lower one. Otherwise the floor
+            # and cap calibrated here would hold inside this pool only,
+            # which A23.2 measured happening on a real query.
+            lesson_eligible_ids = frozenset(m.memory_id for m in verified_lesson_memories)
+            lesson_semantic_admitted = self._preflight_lesson_semantic_admitted(
+                task, lesson_eligible_ids=lesson_eligible_ids
+            )
+
             return build_preflight(
                 task,
                 attempts=attempts,
@@ -869,7 +911,10 @@ class Cortex:
                 memory_fts_candidates=memory_fts_candidates,
                 attempt_semantic_admitted=attempt_semantic_admitted,
                 memory_semantic_admitted=(
-                    memory_semantic_admitted | invalidation_semantic_admitted | pending_semantic_admitted
+                    memory_semantic_admitted
+                    | invalidation_semantic_admitted
+                    | pending_semantic_admitted
+                    | lesson_semantic_admitted
                 ),
                 invariant_memories=invariant_memories,
                 invalidation_memories=invalidation_memories,
@@ -1225,6 +1270,56 @@ class Cortex:
         except Exception:
             return frozenset()
 
+    def _preflight_lesson_semantic_admitted(
+        self, task: str, *, lesson_eligible_ids: frozenset[str]
+    ) -> frozenset[str]:
+        """[A23.1] Semantic admission for preflight()'s LESSON pool: a
+        bounded SET, not a single winner.
+
+        Ranks the SAME MEMORY vectors with the SAME model against the
+        SAME query as every other semantic pool, restricted (before
+        ranking, per A7.7) to `lesson_eligible_ids`, then applies
+        `_semantic.set_admitted_ids`: the Lesson-specific floor
+        calibrated in A23.2, no margin, capped at `SET_ADMISSION_LIMIT`.
+        No lesson-specific SCORE, no boost, and specifically no "return
+        every verified lesson" shortcut -- a lesson below the floor is
+        rejected here as firmly as anywhere else. The MEMORY pool's own
+        floor and margin are untouched and unread by this path.
+
+        `lesson_eligible_ids` is the caller's ALREADY-computed
+        current+verified lesson set (see `preflight`), reused rather than
+        re-derived: this method has no idea what "verified" or "current"
+        mean, exactly like `_semantic_widen`. Relevance never grants
+        authority -- an unverified, superseded or non-current lesson is
+        not in that set, so no score can put it in this result.
+
+        The cap applies to THIS channel only. `build_preflight` still
+        unions these ids with whatever the lexical and FTS channels
+        admitted, and those channels remain unbounded, so a task whose
+        wording genuinely matches five lessons still surfaces five.
+
+        Falls back to empty -- never raises -- on any degraded
+        condition, exactly like `_semantic_widen`.
+        """
+        try:
+            context = self._semantic_context()
+            if context is None:
+                return frozenset()
+            semantic, model, meta = context
+            memory_vectors = self._semantic_vectors(ENTITY_MEMORY)
+            if not memory_vectors:
+                return frozenset()
+            ranked = semantic.semantic_rank_eligible(
+                task,
+                model=model,
+                stored_vectors=memory_vectors,
+                dimensions=meta.dimensions,
+                eligible_ids=lesson_eligible_ids,
+            )
+            return semantic.set_admitted_ids(ranked, floor=semantic.LESSON_SEMANTIC_FLOOR)
+        except Exception:
+            return frozenset()
+
     def _preflight_memory_semantic_widen(
         self,
         task: str,
@@ -1275,6 +1370,15 @@ class Cortex:
         exactly the partial, structurally-arbitrary result this method
         exists to avoid.
 
+        [A23.4] Two category-boundary conditions, and no others: a
+        representative that is a verified lesson must clear the LESSON
+        floor rather than this pool's, and a cluster of lessons only is
+        not admitted here at all. Both exist because verified lessons
+        alone are eligible in two pools, and this one's floor is the
+        lower of the two. Neither touches the cross-category rescue
+        above: a score-borne representative obeys its own category's
+        policy, a provenance-borne sibling does not have to.
+
         Falls back to empty -- never raises -- on any degraded
         condition, exactly like `_semantic_widen`.
         """
@@ -1300,6 +1404,18 @@ class Cortex:
             policy = semantic.SEMANTIC_POLICY[ENTITY_MEMORY]
             top_id, top_score = ranked[0]
             if top_score < policy.absolute_floor:
+                return frozenset()
+
+            # [A23.4] The representative establishes the experience's
+            # relevance with its OWN score, so that score must satisfy its
+            # OWN category's admission policy. A verified lesson is
+            # eligible here as well as in the Lesson pool, and this floor
+            # is MEMORY's 0.20 -- so without this check a lesson the
+            # calibrated Lesson floor (0.30) had rejected could establish
+            # relevance anyway, for itself and for whatever shares its
+            # Evidence.
+            lesson_ids = frozenset(m.memory_id for m in verified_lesson_memories)
+            if top_id in lesson_ids and top_score < semantic.LESSON_SEMANTIC_FLOOR:
                 return frozenset()
 
             evidence_by_id = {
@@ -1333,6 +1449,17 @@ class Cortex:
                 margin = top_score - competitor_score
                 if margin < policy.margin_floor:
                     return frozenset()
+
+            # [A23.4] A cluster of lessons only has no sibling of another
+            # category to reconstruct, so nothing this method exists for is
+            # at stake -- what is left is a pool with a lower floor and no
+            # cap deciding a question the Lesson pool owns. Those lessons
+            # reach preflight() through their own channel if its floor and
+            # its cap admit them. Cross-category clusters are unaffected:
+            # once a valid representative has established relevance,
+            # provenance still rescues every member, at any score.
+            if top_cluster <= lesson_ids:
+                return frozenset()
 
             return top_cluster
         except Exception:

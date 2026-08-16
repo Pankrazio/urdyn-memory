@@ -5,11 +5,12 @@ from __future__ import annotations
 import dataclasses
 import datetime as dt
 import uuid
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from ._attempt import OUTCOME_FAILED, VALID_OUTCOMES, Attempt
 from ._conflict import Conflict
+from ._context import DEFAULT_CONTEXT_BUDGET, CompiledContext, compile_context
 from ._errors import (
     CortexAlreadyInitializedError,
     CortexManifestError,
@@ -32,6 +33,7 @@ from ._memory import (
     DEFAULT_KIND,
     EPISTEMIC_USER_ASSERTED,
     EPISTEMIC_VERIFIED,
+    KIND_DECISION,
     KIND_INVALIDATION,
     KIND_INVARIANT,
     KIND_LESSON,
@@ -41,7 +43,7 @@ from ._memory import (
     VALID_KINDS,
     Memory,
 )
-from ._preflight import Preflight, PreflightConflict, build_preflight
+from ._preflight import Preflight, PreflightConflict, build_preflight, build_relevance_context, memory_is_relevant
 from ._relevance import attempt_search_text as _attempt_search_text
 from ._relevance import is_relevant as _is_relevant
 from ._relevance import memory_search_text as _memory_search_text
@@ -77,6 +79,63 @@ from ._store import MemoryStore, db_path_for
 
 CORTEX_DIRNAME = ".cortex"
 DEFAULT_RECALL_LIMIT = 20
+
+
+def _no_store_evidence_lookup(evidence_id: str) -> Evidence:
+    """`_ExperienceMaterial.empty()`'s `evidence_lookup`: unreachable in
+    practice, since an empty candidate set never cites any Evidence id,
+    but fails loudly rather than silently if that invariant is ever
+    violated."""
+    raise CortexStorageError(f"Evidence {evidence_id!r} was requested but this workspace has no store")
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class _ExperienceMaterial:
+    """Everything `preflight()` and `context()` (A29.1) both need from
+    one call to `Cortex._gather_experience`: current-state-filtered
+    candidate lists, already-admitted semantic id sets, and the
+    retrieval-lifecycle state that call produced. Purely an internal
+    hand-off between that method and its two callers -- never returned
+    from a public API, never persisted."""
+
+    attempts: list[Attempt]
+    root_cause_memories: list[Memory]
+    verified_lesson_memories: list[Memory]
+    invariant_memories: list[Memory]
+    invalidation_memories: list[Memory]
+    pending_memories: list[Memory]
+    decision_memories: list[Memory]
+    open_conflict_list: list[Conflict]
+    current_memory_by_id: dict[str, Memory]
+    evidence_lookup: Callable[[str], Evidence]
+    attempt_fts_candidates: list[tuple[str, str]]
+    memory_fts_candidates: list[tuple[str, str]]
+    attempt_semantic_admitted: frozenset[str]
+    memory_semantic_admitted: frozenset[str]
+    retrieval: "SemanticState"
+
+    @classmethod
+    def empty(cls, *, retrieval: "SemanticState") -> "_ExperienceMaterial":
+        """The answer for a workspace with no canonical store yet (A27):
+        every candidate list is empty, but `retrieval` still reports HOW
+        the (empty) answer was produced, exactly like a populated one."""
+        return cls(
+            attempts=[],
+            root_cause_memories=[],
+            verified_lesson_memories=[],
+            invariant_memories=[],
+            invalidation_memories=[],
+            pending_memories=[],
+            decision_memories=[],
+            open_conflict_list=[],
+            current_memory_by_id={},
+            evidence_lookup=_no_store_evidence_lookup,
+            attempt_fts_candidates=[],
+            memory_fts_candidates=[],
+            attempt_semantic_admitted=frozenset(),
+            memory_semantic_admitted=frozenset(),
+            retrieval=retrieval,
+        )
 
 
 def _open_conflicts_projection(conflicts: list[Conflict], current_ids: set[str]) -> list[Conflict]:
@@ -762,34 +821,30 @@ class Cortex:
 
         return attempt
 
-    def preflight(self, task: str) -> Preflight:
-        """Select prior experience relevant to `task`, before starting it.
+    def _gather_experience(self, task: str) -> "_ExperienceMaterial":
+        """Single read of canonical and derived-semantic state for
+        `task`, shared by `preflight()` and `context()` (A29.1) so both
+        answer from the SAME store snapshot, the SAME `timeline(None)`
+        materialization, and exactly ONE semantic-lifecycle pass
+        (`_semantic_prepare` -- A27's consumer-boundary contract): a
+        second call here would mean a second incremental-refresh attempt
+        and a second freshness classification for what is, from the
+        caller's perspective, one answer to one task.
 
-        Answers "what should an agent know before attempting this?" by
-        surfacing known failures (matching failed attempts), root causes,
-        verified lessons, still-open pending work, and any test/command
-        evidence recommended as validation — each only if Cortex has
-        something relevant on record. This is lexical and deterministic,
-        not a search engine: it will not return everything, and it will
-        not return nothing just because the wording differs slightly.
+        This method only gathers current-state-filtered candidates and
+        admits them through the existing lexical/FTS/semantic/provenance
+        channels -- identical to what `preflight()` alone did before
+        A29.1. It decides nothing about composition (which categories a
+        caller shows, in what shape, under what budget): that policy
+        lives in the caller (`preflight()`'s call to `build_preflight`,
+        `context()`'s call to `compile_context`), never here.
         """
-        if not isinstance(task, str) or not task.strip():
-            raise ValueError("Preflight task must not be empty or whitespace-only")
-
         store = MemoryStore.open_if_exists(self._db_path)
         if store is None:
             # (A27) Even a workspace with nothing recorded reports HOW it
             # looked: "nothing found" and "nothing could be found" are
             # different answers and must not print identically.
-            return Preflight(
-                task=task,
-                known_failures=(),
-                root_causes=(),
-                verified_lessons=(),
-                recommended_validation=(),
-                invariants=(),
-                retrieval=self.semantic_state(),
-            )
+            return _ExperienceMaterial.empty(retrieval=self.semantic_state())
         with store:
             current_ids = store.current_ids()
             # [A14.1] ONE `timeline(None)` read instead of four separate
@@ -818,7 +873,12 @@ class Cortex:
             verified_lesson_memories = [m for m in lesson_memories if m.epistemic_state == EPISTEMIC_VERIFIED]
             # [A9.1] Every CURRENT project-wide invariant, unfiltered by
             # task relevance -- see `Preflight.invariants`'s docstring for
-            # why this bypasses the lexical/FTS/semantic channels below.
+            # why `preflight()` bypasses the lexical/FTS/semantic channels
+            # for this list. `context()` (A29.1) does NOT inherit that
+            # bypass: it filters this same list for task relevance itself
+            # (see `Cortex.context`), which is the whole point of keeping
+            # it as one materialized list here rather than pre-deciding
+            # its treatment inside this method.
             invariant_memories = [m for m in current_memories if m.kind == KIND_INVARIANT]
             # [A11.3] Every CURRENT invalidation -- UNLIKE invariants, this
             # goes through the same relevance channels as root causes/
@@ -834,6 +894,15 @@ class Cortex:
             # ranks or restricts candidates must keep treating pending as
             # a separate population (see the semantic pool further down).
             pending_memories = [m for m in current_memories if m.kind == KIND_PENDING]
+            # [A29.1] Every CURRENT decision. `preflight()` never reads
+            # this list (see `_preflight.py`'s module docstring for why a
+            # Decision is not "prior experience"); `context()` filters it
+            # for task relevance exactly like pending/invalidations. Kept
+            # here, materialized unconditionally, because it costs one
+            # more list comprehension over data already in memory and lets
+            # both consumers share this single gathering pass regardless
+            # of which one a given call turns out to be.
+            decision_memories = [m for m in current_memories if m.kind == KIND_DECISION]
             # [A14.1] Every OPEN conflict (see `_open_conflicts_projection`
             # -- the SAME definition `Cortex.open_conflicts()` uses, over
             # the SAME `current_ids` already computed above). Relevance
@@ -841,8 +910,36 @@ class Cortex:
             open_conflict_list = _open_conflicts_projection(store.list_conflicts(), current_ids)
             attempts = store.list_attempts()
 
-            def _must_get_evidence(evidence_id: str) -> Evidence:
+            # [A29.1] `build_preflight`'s `evidence_lookup` is called with
+            # ids that only ever come from `verified_lesson_memories`/
+            # `attempts` (its `candidate_evidence_ids` loop draws
+            # exclusively from `verified_lessons`/`relevant_successes`,
+            # both subsets of these two lists -- see `_preflight.py`).
+            # This method's `with store:` block closes before its
+            # RETURN VALUE is used by its callers, so a lookup closure
+            # bound to `store` would try to query a closed connection the
+            # moment `preflight()`/`context()` call `build_preflight`.
+            # Materializing this bounded superset here, while `store` is
+            # still open, and handing back a plain dict lookup instead,
+            # is what keeps `evidence_lookup` usable after this method
+            # returns without reopening or holding a second connection.
+            evidence_ids_to_resolve: set[str] = set()
+            for memory in verified_lesson_memories:
+                evidence_ids_to_resolve.update(memory.evidence_ids)
+            for attempt in attempts:
+                evidence_ids_to_resolve.update(attempt.evidence_ids)
+            evidence_by_id: dict[str, Evidence] = {}
+            for evidence_id in evidence_ids_to_resolve:
                 evidence = store.get_evidence(evidence_id)
+                if evidence is None:
+                    raise CortexStorageError(
+                        f"Evidence {evidence_id!r} is referenced by recorded experience but "
+                        "missing from the store"
+                    )
+                evidence_by_id[evidence_id] = evidence
+
+            def _must_get_evidence(evidence_id: str) -> Evidence:
+                evidence = evidence_by_id.get(evidence_id)
                 if evidence is None:
                     raise CortexStorageError(
                         f"Evidence {evidence_id!r} is referenced by recorded experience but "
@@ -996,11 +1093,16 @@ class Cortex:
                 task, lesson_eligible_ids=lesson_eligible_ids
             )
 
-            return build_preflight(
-                task,
+            return _ExperienceMaterial(
                 attempts=attempts,
                 root_cause_memories=root_cause_memories,
                 verified_lesson_memories=verified_lesson_memories,
+                invariant_memories=invariant_memories,
+                invalidation_memories=invalidation_memories,
+                pending_memories=pending_memories,
+                decision_memories=decision_memories,
+                open_conflict_list=open_conflict_list,
+                current_memory_by_id=current_memory_by_id,
                 evidence_lookup=_must_get_evidence,
                 attempt_fts_candidates=attempt_fts_candidates,
                 memory_fts_candidates=memory_fts_candidates,
@@ -1011,13 +1113,154 @@ class Cortex:
                     | pending_semantic_admitted
                     | lesson_semantic_admitted
                 ),
-                invariant_memories=invariant_memories,
-                invalidation_memories=invalidation_memories,
-                pending_memories=pending_memories,
-                open_conflicts=open_conflict_list,
-                conflict_participants=current_memory_by_id,
                 retrieval=retrieval,
             )
+
+    def preflight(self, task: str) -> Preflight:
+        """Select prior experience relevant to `task`, before starting it.
+
+        Answers "what should an agent know before attempting this?" by
+        surfacing known failures (matching failed attempts), root causes,
+        verified lessons, still-open pending work, and any test/command
+        evidence recommended as validation — each only if Cortex has
+        something relevant on record. This is lexical and deterministic,
+        not a search engine: it will not return everything, and it will
+        not return nothing just because the wording differs slightly.
+
+        Unbounded and unbudgeted by design: every relevant item is
+        returned. For a compact, budgeted answer to a narrower question
+        ("what must this task respect right now"), see `context()`.
+        """
+        if not isinstance(task, str) or not task.strip():
+            raise ValueError("Preflight task must not be empty or whitespace-only")
+
+        material = self._gather_experience(task)
+        return build_preflight(
+            task,
+            attempts=material.attempts,
+            root_cause_memories=material.root_cause_memories,
+            verified_lesson_memories=material.verified_lesson_memories,
+            evidence_lookup=material.evidence_lookup,
+            attempt_fts_candidates=material.attempt_fts_candidates,
+            memory_fts_candidates=material.memory_fts_candidates,
+            attempt_semantic_admitted=material.attempt_semantic_admitted,
+            memory_semantic_admitted=material.memory_semantic_admitted,
+            invariant_memories=material.invariant_memories,
+            invalidation_memories=material.invalidation_memories,
+            pending_memories=material.pending_memories,
+            open_conflicts=material.open_conflict_list,
+            conflict_participants=material.current_memory_by_id,
+            retrieval=material.retrieval,
+        )
+
+    def context(self, task: str, *, budget: int = DEFAULT_CONTEXT_BUDGET) -> CompiledContext:
+        """Compile the smallest budgeted working context relevant to
+        `task` -- not "what does Cortex know" (`preflight()`), but "what
+        must an agent respect right now to start this task safely".
+
+        Shares its ENTIRE retrieval pipeline with `preflight()`
+        (`_gather_experience`, the same `_semantic_prepare` consumer-
+        boundary lifecycle from A27, the same lexical/FTS/semantic/
+        provenance admission from `_preflight.py`), so the two can never
+        silently disagree about what is relevant to `task`. What differs
+        is composition, decided entirely in `_context.compile_context`:
+
+        - a real character `budget` (see `DEFAULT_CONTEXT_BUDGET`), with
+          candidates admitted in one fixed cross-category priority order
+          until the next one no longer fits;
+        - current, project-wide Invariants are filtered for task
+          relevance instead of included unconditionally (A9.1's
+          `Preflight.invariants` bypass is deliberately NOT reused here);
+        - current Decisions are admitted, a Memory kind `preflight()`
+          never reads at all;
+        - an Attempt sharing Evidence with an already-relevant RootCause
+          is cited on that RootCause's line instead of costing a line of
+          its own.
+
+        Never mutates canonical state and is never itself persisted:
+        `CompiledContext` is derived and reconstructible from canonical
+        state plus `task` and `budget` alone, exactly like `Preflight`.
+        """
+        if not isinstance(task, str) or not task.strip():
+            raise ValueError("Context task must not be empty or whitespace-only")
+        if budget <= 0:
+            raise ValueError("Context budget must be a positive integer")
+
+        material = self._gather_experience(task)
+        preflight_view = build_preflight(
+            task,
+            attempts=material.attempts,
+            root_cause_memories=material.root_cause_memories,
+            verified_lesson_memories=material.verified_lesson_memories,
+            evidence_lookup=material.evidence_lookup,
+            attempt_fts_candidates=material.attempt_fts_candidates,
+            memory_fts_candidates=material.memory_fts_candidates,
+            attempt_semantic_admitted=material.attempt_semantic_admitted,
+            memory_semantic_admitted=material.memory_semantic_admitted,
+            invariant_memories=material.invariant_memories,
+            invalidation_memories=material.invalidation_memories,
+            pending_memories=material.pending_memories,
+            open_conflicts=material.open_conflict_list,
+            conflict_participants=material.current_memory_by_id,
+            retrieval=material.retrieval,
+        )
+
+        # [A29.1] Reuses `build_preflight`'s OWN selection for four of
+        # six categories (`root_causes`, `verified_lessons`, `pending`,
+        # `known_failures`/`recommended_validation`) rather than
+        # re-deriving them: `preflight_view` already IS the relevant-
+        # candidate answer `compile_context` needs for those, computed by
+        # the exact same admission policy `preflight()` itself returns.
+        relevance = build_relevance_context(
+            task,
+            attempts=material.attempts,
+            attempt_fts_candidates=material.attempt_fts_candidates,
+            memory_fts_candidates=material.memory_fts_candidates,
+            attempt_semantic_admitted=material.attempt_semantic_admitted,
+        )
+
+        # [A29.1] Two more DISJOINT semantic pools, the A11.3/A22.1
+        # pattern: `invariant`/`decision` candidates never compete with
+        # root causes/lessons/pending/invalidations for a shared
+        # admission slot. Cheap relative to the model load already paid
+        # for by `_gather_experience`'s `_semantic_prepare` call above --
+        # each is a brute-force rank over already-cached vectors, no
+        # second model load (see `_semantic._model_cache`).
+        invariant_eligible_ids = frozenset(m.memory_id for m in material.invariant_memories)
+        invariant_semantic_admitted = self._semantic_widen(task, ENTITY_MEMORY, eligible_ids=invariant_eligible_ids)
+        decision_eligible_ids = frozenset(m.memory_id for m in material.decision_memories)
+        decision_semantic_admitted = self._semantic_widen(task, ENTITY_MEMORY, eligible_ids=decision_eligible_ids)
+
+        def _relevant(memory: Memory, semantic_admitted: frozenset[str]) -> bool:
+            return memory_is_relevant(
+                relevance.query_tokens,
+                memory,
+                fts_admitted_ids=relevance.memory_fts_admitted,
+                semantic_admitted_ids=semantic_admitted,
+                relevant_attempt_evidence_ids=relevance.relevant_attempt_evidence_ids,
+            )
+
+        # [A29.1] THE discriminant from `preflight()`'s own `invariants`
+        # field: current invariants are filtered for task relevance here,
+        # never included unconditionally. `invariants_excluded` makes the
+        # exclusion itself visible rather than silent.
+        relevant_invariants = tuple(m for m in material.invariant_memories if _relevant(m, invariant_semantic_admitted))
+        relevant_decisions = tuple(m for m in material.decision_memories if _relevant(m, decision_semantic_admitted))
+
+        return compile_context(
+            task=task,
+            budget=budget,
+            invariants=relevant_invariants,
+            invariants_excluded=len(material.invariant_memories) - len(relevant_invariants),
+            pending=preflight_view.pending,
+            lessons=preflight_view.verified_lessons,
+            decisions=relevant_decisions,
+            root_causes=preflight_view.root_causes,
+            known_failures=preflight_view.known_failures,
+            recommended_validation_candidates=preflight_view.recommended_validation,
+            open_conflicts=material.open_conflict_list,
+            retrieval=material.retrieval,
+        )
 
     def promote(
         self,

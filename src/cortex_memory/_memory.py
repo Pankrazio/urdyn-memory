@@ -62,10 +62,16 @@ KIND_ENVIRONMENT = "environment"
 # lineage -- no separate "stale"/"invalidated" flag is introduced.
 KIND_INVALIDATION = "invalidation"
 
+# [A29.1] Named for the first consumer that needs to select this kind
+# specifically (`Cortex.context()`'s DECISIONS section) rather than treat
+# it as an opaque "note"-like default. Not a new primitive: a decision is
+# recorded and superseded exactly like any other Memory kind.
+KIND_DECISION = "decision"
+
 VALID_KINDS = frozenset(
     {
         "note",
-        "decision",
+        KIND_DECISION,
         KIND_LESSON,
         KIND_ROOT_CAUSE,
         KIND_PENDING,

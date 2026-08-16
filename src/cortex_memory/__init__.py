@@ -14,6 +14,7 @@ from ._errors import (
 )
 from ._attempt import Attempt
 from ._conflict import Conflict
+from ._context import DEFAULT_CONTEXT_BUDGET, CompiledContext, ContextItem, ContextSection
 from ._evidence import Evidence
 from ._guard import GuardResult
 from ._memory import Memory
@@ -30,6 +31,10 @@ __all__ = [
     "Attempt",
     "Preflight",
     "PreflightConflict",
+    "CompiledContext",
+    "ContextSection",
+    "ContextItem",
+    "DEFAULT_CONTEXT_BUDGET",
     "Skill",
     "GuardResult",
     "SemanticSetupResult",

@@ -68,6 +68,117 @@ from ._semantic_store import SemanticState
 _VALIDATION_EVIDENCE_KINDS = RECOMMENDED_VALIDATION_EVIDENCE_KINDS
 
 
+def attempt_is_relevant(
+    query_tokens: frozenset[str],
+    attempt: Attempt,
+    *,
+    fts_admitted_ids: frozenset[str],
+    semantic_admitted_ids: frozenset[str],
+) -> bool:
+    """Whether `attempt` clears any of the three independent attempt
+    relevance channels described in the module docstring: lexical
+    majority overlap, FTS5/BM25 widening, or semantic admission.
+
+    Extracted from `build_preflight` (A29.1) so `Cortex.context()` can
+    apply the identical admission decision to standalone attempt
+    candidates without re-deriving it -- there is exactly one definition
+    of "is this attempt relevant to this task", used by both consumers.
+    """
+    if _is_relevant(query_tokens, _attempt_search_text(attempt.task, attempt.approach)):
+        return True
+    if attempt.attempt_id in fts_admitted_ids:
+        return True
+    return attempt.attempt_id in semantic_admitted_ids
+
+
+def memory_is_relevant(
+    query_tokens: frozenset[str],
+    memory: Memory,
+    *,
+    fts_admitted_ids: frozenset[str],
+    semantic_admitted_ids: frozenset[str],
+    relevant_attempt_evidence_ids: frozenset[str],
+) -> bool:
+    """Whether `memory` clears any of the four independent memory
+    relevance channels described in the module docstring: lexical
+    majority overlap, FTS5/BM25 widening, semantic admission, or
+    evidence-provenance rescue.
+
+    Extracted from `build_preflight` (A29.1) for the same reason as
+    `attempt_is_relevant`: `Cortex.context()` needs the identical
+    decision for Memory kinds `build_preflight` itself never receives
+    (`invariant`, `decision`), and must not re-implement the four-channel
+    rule to get it.
+    """
+    if _is_relevant(query_tokens, _memory_search_text(memory.content)):
+        return True
+    if memory.memory_id in fts_admitted_ids:
+        return True
+    if memory.memory_id in semantic_admitted_ids:
+        return True
+    return not relevant_attempt_evidence_ids.isdisjoint(memory.evidence_ids)
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class RelevanceContext:
+    """Precomputed relevance-admission inputs shared by every candidate
+    category `build_preflight` and `Cortex.context()` both filter over:
+    the FTS-admitted id sets for each entity type, and which attempts are
+    already judged relevant to `task` -- the basis
+    `relevant_attempt_evidence_ids` (evidence-provenance rescue) needs.
+    Never persisted, never returned from a public API: purely an
+    intermediate result of `build_relevance_context`.
+    """
+
+    query_tokens: frozenset[str]
+    attempt_fts_admitted: frozenset[str]
+    memory_fts_admitted: frozenset[str]
+    known_failures: tuple[Attempt, ...]
+    relevant_successes: tuple[Attempt, ...]
+    relevant_attempt_evidence_ids: frozenset[str]
+
+
+def build_relevance_context(
+    task: str,
+    *,
+    attempts: list[Attempt],
+    attempt_fts_candidates: list[tuple[str, str]] = (),
+    memory_fts_candidates: list[tuple[str, str]] = (),
+    attempt_semantic_admitted: frozenset[str] = frozenset(),
+) -> RelevanceContext:
+    """The one place `task` is tokenized and attempts are sorted into
+    known-failure/relevant-success pools. Both `build_preflight` and
+    `Cortex.context()` call this rather than re-deriving it, so the two
+    consumers can never silently disagree about which attempts are
+    relevant to `task` or which Evidence a provenance rescue may cite.
+    """
+    query_tokens = frozenset(_tokens(task))
+    attempt_fts_admitted = _fts_admitted_ids(query_tokens, list(attempt_fts_candidates))
+    memory_fts_admitted = _fts_admitted_ids(query_tokens, list(memory_fts_candidates))
+
+    def _attempt_matches(attempt: Attempt) -> bool:
+        return attempt_is_relevant(
+            query_tokens,
+            attempt,
+            fts_admitted_ids=attempt_fts_admitted,
+            semantic_admitted_ids=attempt_semantic_admitted,
+        )
+
+    known_failures = tuple(a for a in attempts if a.outcome == OUTCOME_FAILED and _attempt_matches(a))
+    relevant_successes = tuple(a for a in attempts if a.outcome == OUTCOME_SUCCEEDED and _attempt_matches(a))
+    relevant_attempt_evidence_ids = frozenset(
+        evidence_id for attempt in (*known_failures, *relevant_successes) for evidence_id in attempt.evidence_ids
+    )
+    return RelevanceContext(
+        query_tokens=query_tokens,
+        attempt_fts_admitted=attempt_fts_admitted,
+        memory_fts_admitted=memory_fts_admitted,
+        known_failures=known_failures,
+        relevant_successes=relevant_successes,
+        relevant_attempt_evidence_ids=relevant_attempt_evidence_ids,
+    )
+
+
 @dataclasses.dataclass(frozen=True, slots=True)
 class PreflightConflict:
     """A derived, read-only pairing of a canonical `Conflict` with the two
@@ -297,32 +408,25 @@ def build_preflight(
     a dedicated conflict-only semantic pool (see A14.0.1's
     cross-conflict-suppression finding for why one was rejected).
     """
-    query_tokens = frozenset(_tokens(task))
-    attempt_admitted = _fts_admitted_ids(query_tokens, list(attempt_fts_candidates))
-    memory_admitted = _fts_admitted_ids(query_tokens, list(memory_fts_candidates))
-
-    def _attempt_matches(attempt: Attempt) -> bool:
-        if _is_relevant(query_tokens, _attempt_search_text(attempt.task, attempt.approach)):
-            return True
-        if attempt.attempt_id in attempt_admitted:
-            return True
-        return attempt.attempt_id in attempt_semantic_admitted
-
-    known_failures = tuple(a for a in attempts if a.outcome == OUTCOME_FAILED and _attempt_matches(a))
-    relevant_successes = tuple(a for a in attempts if a.outcome == OUTCOME_SUCCEEDED and _attempt_matches(a))
-
-    relevant_attempt_evidence_ids = frozenset(
-        evidence_id for attempt in (*known_failures, *relevant_successes) for evidence_id in attempt.evidence_ids
+    relevance = build_relevance_context(
+        task,
+        attempts=attempts,
+        attempt_fts_candidates=attempt_fts_candidates,
+        memory_fts_candidates=memory_fts_candidates,
+        attempt_semantic_admitted=attempt_semantic_admitted,
     )
+    query_tokens = relevance.query_tokens
+    known_failures = relevance.known_failures
+    relevant_successes = relevance.relevant_successes
 
     def _memory_matches(memory: Memory) -> bool:
-        if _is_relevant(query_tokens, _memory_search_text(memory.content)):
-            return True
-        if memory.memory_id in memory_admitted:
-            return True
-        if memory.memory_id in memory_semantic_admitted:
-            return True
-        return not relevant_attempt_evidence_ids.isdisjoint(memory.evidence_ids)
+        return memory_is_relevant(
+            query_tokens,
+            memory,
+            fts_admitted_ids=relevance.memory_fts_admitted,
+            semantic_admitted_ids=memory_semantic_admitted,
+            relevant_attempt_evidence_ids=relevance.relevant_attempt_evidence_ids,
+        )
 
     root_causes = tuple(memory for memory in root_cause_memories if _memory_matches(memory))
     verified_lessons = tuple(memory for memory in verified_lesson_memories if _memory_matches(memory))

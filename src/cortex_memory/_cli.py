@@ -17,6 +17,7 @@ import argparse
 import sys
 
 from ._attempt import VALID_OUTCOMES
+from ._context import DEFAULT_CONTEXT_BUDGET
 from ._errors import CortexError
 from ._evidence import DEFAULT_EVIDENCE_KIND, VALID_EVIDENCE_KINDS
 from ._manifest import CANONICAL_PROFILES
@@ -211,6 +212,17 @@ def _build_parser() -> argparse.ArgumentParser:
         "preflight", help="Show prior experience relevant to a task, before starting it"
     )
     preflight_parser.add_argument("task", help="Task description")
+
+    context_parser = subparsers.add_parser(
+        "context", help="Compile a budgeted working context relevant to a task, before starting it"
+    )
+    context_parser.add_argument("task", help="Task description")
+    context_parser.add_argument(
+        "--budget",
+        type=int,
+        default=DEFAULT_CONTEXT_BUDGET,
+        help=f"Character budget for the compiled context (default: {DEFAULT_CONTEXT_BUDGET})",
+    )
 
     subparsers.add_parser("skills", help="List recorded skills")
 
@@ -433,6 +445,16 @@ def main(argv: list[str] | None = None) -> int:
                     memory_a, memory_b = view.memories
                     print(f"- [{memory_a.memory_id}] {_safe(memory_a.content)}")
                     print(f"  <-> [{memory_b.memory_id}] {_safe(memory_b.content)}")
+            return 0
+
+        if args.command == "context":
+            cx = Cortex.discover()
+            compiled = cx.context(args.task, budget=args.budget)
+            # `CompiledContext.render()` is itself the rendering boundary
+            # (see `_context.py`): the text it returns is already
+            # terminal-safe, unlike `Preflight`'s raw fields above, so no
+            # second `_safe()` pass belongs here.
+            print(compiled.render())
             return 0
 
         if args.command == "skills":

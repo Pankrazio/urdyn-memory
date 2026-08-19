@@ -22,11 +22,22 @@ rest of the suite already uses.
 
 from __future__ import annotations
 
+import datetime as dt
+
 import pytest
 
 from cortex_memory import Cortex
 from cortex_memory._cli import main
-from cortex_memory._context import SECTION_CONSTRAINTS, SECTION_DECISIONS, SECTION_HISTORY, SECTION_OPEN_RISKS
+from cortex_memory._context import (
+    SECTION_CONSTRAINTS,
+    SECTION_DECISIONS,
+    SECTION_HISTORY,
+    SECTION_OPEN_RISKS,
+    ContextItem,
+    _render_item,
+    compile_context,
+)
+from cortex_memory._memory import Memory
 from test_cli_output_safety import assert_output_terminal_safe
 from test_semantic_real_model import _offline, skip_without_model
 
@@ -594,6 +605,184 @@ def test_realistic_developer_journey_single_context_call(tmp_path):
     assert compiled.invariants_excluded == 1
     assert not compiled.is_empty()
     assert len(compiled.render()) < 4000
+
+
+# ---------------------------------------------------------------------------
+# A36 -- golden contract: item representation IS the selection cost
+# ---------------------------------------------------------------------------
+#
+# A35 established that `compile_context`'s admission decisions are driven
+# by the exact character count `_render_item` produces for a candidate
+# (see `_context.py`'s `DEFAULT_CONTEXT_BUDGET` comment): the rendered
+# text a candidate would occupy on screen IS its budget cost, with no
+# canonical, renderer-independent cost model standing between the two.
+# One consequence: even a single extra character in `_render_item`'s
+# output can push a candidate past the budget boundary. The golden tests
+# below freeze every representation `_render_item` produces today,
+# byte-for-byte, so an edit to that function is caught here even when it
+# "only" touches spacing or a label -- and the test after them
+# demonstrates the coupling directly, on the real `compile_context` entry
+# point. This protects against ACCIDENTAL drift; it does not promise this
+# text is a stable public format -- a deliberate future change updates
+# these strings (and, consciously, whatever budget behavior follows from
+# it).
+
+_FIXED_RECORDED_AT = dt.datetime(2024, 1, 1, tzinfo=dt.timezone.utc)
+
+
+def _fixed_memory(memory_id: str, content: str, *, epistemic_state: str = "user_asserted") -> Memory:
+    return Memory(
+        memory_id=memory_id,
+        content=content,
+        kind="invariant",
+        epistemic_state=epistemic_state,
+        recorded_at=_FIXED_RECORDED_AT,
+    )
+
+
+def _compile_single_invariant(memory: Memory, budget: int):
+    return compile_context(
+        task=_TASK,
+        budget=budget,
+        invariants=(memory,),
+        invariants_excluded=0,
+        pending=(),
+        lessons=(),
+        decisions=(),
+        root_causes=(),
+        known_failures=(),
+        recommended_validation_candidates=(),
+        open_conflicts=[],
+        retrieval=None,
+    )
+
+
+def test_golden_render_item_with_authority_no_extras():
+    """The form every Invariant/Pending/Decision/Lesson/Evidence line
+    shares: `authority` set, no provenance, no conflict."""
+    item = ContextItem(
+        entity_id="0" * 32,
+        kind="invariant",
+        content="Retry handling for failed background jobs must never reorder the queue",
+        authority="user_asserted",
+    )
+    assert _render_item(item) == (
+        "- [00000000000000000000000000000000] (user_asserted) "
+        "Retry handling for failed background jobs must never reorder the queue"
+    )
+
+
+def test_golden_render_item_without_authority_attempt_form():
+    """The one kind with `authority is None`: a standalone Attempt."""
+    item = ContextItem(
+        entity_id="1" * 32,
+        kind="attempt",
+        content="Retry failed background jobs without blocking the queue -- Tried retrying synchronously",
+        authority=None,
+    )
+    assert _render_item(item) == (
+        "- [11111111111111111111111111111111] "
+        "Retry failed background jobs without blocking the queue -- Tried retrying synchronously"
+    )
+
+
+def test_golden_render_item_with_provenance_citation():
+    item = ContextItem(
+        entity_id="2" * 32,
+        kind="root_cause",
+        content="Background jobs failed to retry because the queue handling code swallowed the exception",
+        authority="user_asserted",
+        provenance=("3" * 32, "4" * 32),
+    )
+    assert _render_item(item) == (
+        "- [22222222222222222222222222222222] (user_asserted) "
+        "Background jobs failed to retry because the queue handling code swallowed the exception\n"
+        "  from attempt [33333333333333333333333333333333], [44444444444444444444444444444444]"
+    )
+
+
+def test_golden_render_item_with_conflict_marker():
+    item = ContextItem(
+        entity_id="5" * 32,
+        kind="decision",
+        content="Retry handling for failed background jobs uses exponential backoff capped at 5 attempts",
+        authority="user_asserted",
+        conflicts_with=("6" * 32,),
+    )
+    assert _render_item(item) == (
+        "- [55555555555555555555555555555555] (user_asserted) "
+        "Retry handling for failed background jobs uses exponential backoff capped at 5 attempts\n"
+        "  CONFLICTS WITH [66666666666666666666666666666666]"
+    )
+
+
+def test_golden_render_item_with_provenance_and_conflict_combined():
+    """A RootCause is the one kind reachable through `compile_context`
+    that can carry BOTH an absorbed-Attempt citation and a Conflict
+    marker at once: `conflicts_with` is populated from
+    `_conflict_partner_map` for every Memory-kind candidate independent
+    of `provenance` (see `_memory_item` in `_context.py`). A real
+    reachable combination, not a hypothetical one."""
+    item = ContextItem(
+        entity_id="7" * 32,
+        kind="root_cause",
+        content="Background jobs failed to retry because the queue handling code swallowed the exception",
+        authority="inferred",
+        provenance=("8" * 32,),
+        conflicts_with=("9" * 32,),
+    )
+    assert _render_item(item) == (
+        "- [77777777777777777777777777777777] (inferred) "
+        "Background jobs failed to retry because the queue handling code swallowed the exception\n"
+        "  from attempt [88888888888888888888888888888888]\n"
+        "  CONFLICTS WITH [99999999999999999999999999999999]"
+    )
+
+
+def test_budget_boundary_admits_item_exactly_at_its_rendered_cost():
+    """Anchors `CompiledContext.used` to `_render_item`'s actual byte
+    cost, not an independently-computed formula: a budget equal to the
+    section-header-plus-item cost admits the item with `used == budget`;
+    one character less and the SAME item is entirely excluded, never
+    partially rendered (see the PREFIX MONOTONICITY note in
+    `compile_context`)."""
+    memory = _fixed_memory("a" * 32, "Retry handling for failed background jobs must never reorder the queue")
+
+    exact_cost = _compile_single_invariant(memory, 100000).used
+    assert exact_cost > 0
+
+    at_boundary = _compile_single_invariant(memory, exact_cost)
+    assert at_boundary.used == exact_cost
+    assert at_boundary.omitted == 0
+    assert {item.entity_id for section in at_boundary.sections for item in section.items} == {memory.memory_id}
+
+    below_boundary = _compile_single_invariant(memory, exact_cost - 1)
+    assert below_boundary.sections == ()
+    assert below_boundary.omitted == 1
+
+
+def test_one_character_longer_representation_flips_budget_admission():
+    """The behavioral core of the A35 decision, exercised on the real
+    `compile_context` entry point: holding the budget FIXED at exactly
+    the cost of one item's current rendering, appending a single
+    character to that item's stored content -- one more character in
+    `_render_item`'s output -- is enough to move it from admitted to
+    entirely omitted. This is why the golden tests above are not
+    cosmetic: changing what `_render_item` emits changes what a budgeted
+    caller actually receives."""
+    short_memory = _fixed_memory("b" * 32, "Retry handling for failed background jobs must never reorder queues")
+    long_memory = _fixed_memory("b" * 32, "Retry handling for failed background jobs must never reorder queues.")
+
+    budget = _compile_single_invariant(short_memory, 100000).used
+
+    with_short_content = _compile_single_invariant(short_memory, budget)
+    with_long_content = _compile_single_invariant(long_memory, budget)
+
+    assert {item.entity_id for section in with_short_content.sections for item in section.items} == {
+        short_memory.memory_id
+    }
+    assert with_long_content.sections == ()
+    assert with_long_content.omitted == 1
 
 
 # ---------------------------------------------------------------------------

@@ -152,6 +152,61 @@ def test_unrelated_task_abstains_instead_of_filling_the_budget(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# N -- empty context rendering distinguishes no-candidates from budget
+# omission (A34)
+# ---------------------------------------------------------------------------
+
+
+def test_no_relevant_candidates_renders_no_context_message(tmp_path):
+    cx = _workspace(tmp_path)
+    _populate(cx)
+
+    result = cx.context("Rotate the TLS certificate for the nginx reverse proxy", budget=100000)
+
+    assert result.omitted == 0
+    assert "No compiled context for this task." in result.render()
+
+
+def test_relevant_candidate_omitted_for_budget_does_not_claim_no_context(tmp_path):
+    cx = _workspace(tmp_path)
+    cx.remember(_INVARIANT_RELEVANT, kind="invariant")
+
+    result = cx.context(_TASK, budget=1)
+
+    assert result.is_empty()
+    assert result.omitted > 0
+    rendered = result.render()
+    assert "No compiled context for this task." not in rendered
+    assert "No compiled items fit within the budget." in rendered
+    assert "0 of 1 selected; 1 omitted for budget" in rendered
+
+
+def test_selected_item_renders_normally_no_abstention_message(tmp_path):
+    cx = _workspace(tmp_path)
+    cx.remember(_INVARIANT_RELEVANT, kind="invariant")
+
+    result = cx.context(_TASK, budget=100000)
+
+    rendered = result.render()
+    assert not result.is_empty()
+    assert "No compiled context for this task." not in rendered
+    assert "No compiled items fit within the budget." not in rendered
+
+
+def test_cli_context_reports_budget_omission_not_absence_of_context(tmp_path, monkeypatch, capsys):
+    cx = _workspace(tmp_path)
+    cx.remember(_INVARIANT_RELEVANT, kind="invariant")
+    monkeypatch.chdir(tmp_path)
+
+    exit_code = main(["context", _TASK, "--budget", "1"])
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "No compiled context for this task." not in out
+    assert "No compiled items fit within the budget." in out
+
+
+# ---------------------------------------------------------------------------
 # C -- current-state filtering: superseded is excluded even under a huge budget
 # ---------------------------------------------------------------------------
 

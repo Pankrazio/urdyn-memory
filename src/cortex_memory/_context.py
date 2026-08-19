@@ -214,6 +214,14 @@ class CompiledContext:
                 lines.append(section.heading)
                 for item in section.items:
                     lines.append(_render_item(item))
+        elif self.omitted:
+            # Distinct from the no-candidates case below: `omitted` here
+            # equals the full relevant-candidate count (see
+            # `compile_context`), so a positive value means candidates
+            # existed and were admissible, but none fit under `budget` --
+            # never say "no context" when the footer is about to report
+            # otherwise-eligible items as omitted.
+            lines.append("No compiled items fit within the budget.")
         else:
             lines.append("No compiled context for this task.")
         lines.append("")

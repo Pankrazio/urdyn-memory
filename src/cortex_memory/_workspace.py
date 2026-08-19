@@ -1226,8 +1226,13 @@ class Cortex:
         # for by `_gather_experience`'s `_semantic_prepare` call above --
         # each is a brute-force rank over already-cached vectors, no
         # second model load (see `_semantic._model_cache`).
+        # [A31.2] The two pools no longer share an admission POLICY:
+        # invariants are a set-valued category and get their own, while
+        # decisions keep the single-winner one.
         invariant_eligible_ids = frozenset(m.memory_id for m in material.invariant_memories)
-        invariant_semantic_admitted = self._semantic_widen(task, ENTITY_MEMORY, eligible_ids=invariant_eligible_ids)
+        invariant_semantic_admitted = self._context_invariant_semantic_admitted(
+            task, invariant_eligible_ids=invariant_eligible_ids
+        )
         decision_eligible_ids = frozenset(m.memory_id for m in material.decision_memories)
         decision_semantic_admitted = self._semantic_widen(task, ENTITY_MEMORY, eligible_ids=decision_eligible_ids)
 
@@ -1872,6 +1877,65 @@ class Cortex:
                 eligible_ids=lesson_eligible_ids,
             )
             return semantic.set_admitted_ids(ranked, floor=semantic.LESSON_SEMANTIC_FLOOR)
+        except Exception:
+            return frozenset()
+
+    def _context_invariant_semantic_admitted(
+        self, task: str, *, invariant_eligible_ids: frozenset[str]
+    ) -> frozenset[str]:
+        """[A31.2] Semantic admission for `context()`'s INVARIANT pool: a
+        bounded SET, not a single winner.
+
+        Same shape as `_preflight_lesson_semantic_admitted` above and for
+        the same reason -- the project-wide constraints that bind one task
+        are a set, not a contest. A31.1 measured what the single-winner
+        policy costs this pool: the MEMORY floor rejected nothing at all
+        (rank #1 always cleared it), so admission was decided by the
+        margin alone, and near-tied CO-RELEVANT constraints were rejected
+        TOGETHER -- an empty CONSTRAINTS section on 27 of the 33 corpus
+        scenes that had a genuinely applicable invariant. The invariant
+        floor and cap calibrated in A31.1 replace it; the MEMORY pool's
+        own floor and margin are untouched and unread by this path, and
+        every other pool still asks the single-winner question.
+
+        `invariant_eligible_ids` is the caller's ALREADY-computed CURRENT
+        invariant set, reused rather than re-derived, and restricting the
+        pool BEFORE ranking (A7.7). A superseded or invalidated invariant
+        is not in that set, so no score can bring it back.
+
+        This channel is one of four, and the only one that changed: the
+        lexical, FTS and provenance channels are unchanged and still
+        unioned in `memory_is_relevant`. Admission is also not inclusion
+        -- an admitted invariant competes for `budget` in CONSTRAINTS like
+        any other candidate.
+
+        Deliberately NOT reused by `preflight()`, whose invariants stay
+        unconditional (A9.1): that view is the complete checklist, this
+        one is the task-relevant selection.
+
+        Falls back to empty -- never raises -- on any degraded condition,
+        exactly like `_semantic_widen`.
+        """
+        try:
+            context = self._semantic_context()
+            if context is None:
+                return frozenset()
+            semantic, model, meta = context
+            memory_vectors = self._semantic_vectors(ENTITY_MEMORY)
+            if not memory_vectors:
+                return frozenset()
+            ranked = semantic.semantic_rank_eligible(
+                task,
+                model=model,
+                stored_vectors=memory_vectors,
+                dimensions=meta.dimensions,
+                eligible_ids=invariant_eligible_ids,
+            )
+            return semantic.set_admitted_ids(
+                ranked,
+                floor=semantic.INVARIANT_SEMANTIC_FLOOR,
+                limit=semantic.INVARIANT_ADMISSION_LIMIT,
+            )
         except Exception:
             return frozenset()
 

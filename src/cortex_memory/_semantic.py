@@ -297,6 +297,59 @@ SEMANTIC_POLICY: dict[str, PoolPolicy] = {
 LESSON_SEMANTIC_FLOOR = 0.30
 SET_ADMISSION_LIMIT = 2
 
+# [A31.2] The SET admission policy for project-wide Invariants in the
+# COMPILED CONTEXT. Same internal-constant discipline as the Lesson pair
+# above: not exposed through the CLI, the public API, the manifest or an
+# environment variable. Kept separate from `LESSON_SEMANTIC_FLOOR` /
+# `SET_ADMISSION_LIMIT` on purpose -- reusing those would make an
+# Invariant-specific contract implicit and would couple two calibrations
+# that were measured independently, on different corpora, for different
+# categories.
+#
+# CALIBRATED IN A31.1 on a prospective corpus frozen before it was scored
+# (59 invariants over 22 domains grouped into 6 project pools, 44 task
+# scenes across three languages, 11 of them scenes where the correct
+# answer is to emit nothing, 8 held out by a rule fixed before scoring).
+# A V1 operating point, a property of this model's score geometry: it
+# must be re-measured, not reasoned about, if the backend changes.
+#
+# FLOOR = 0.35, anchored to the median with A23.2's own criterion: the
+#   median score of a genuinely relevant invariant is 0.383, so any floor
+#   at or above 0.40 sits above it and discards more than half of what is
+#   relevant by construction. 0.35 is the highest measured value staying
+#   under that ceiling, and the lowest one that preserves abstention
+#   EXACTLY as the previous policy did (10 of 11 empty-set scenes correct,
+#   the same single false alarm). Below it abstention collapses fast: at
+#   0.30, 9 correct; at 0.20, 2.
+# CAP = 2, because the second slot is the only one whose margin adds more
+#   signal than noise (+11 true positives against +9 false positives);
+#   the third costs 2.5 false positives per true positive and drops
+#   precision under 0.5. Cap 1 is excluded for an independent reason: it
+#   leaves critical false negatives at 21 of 24, identical to the
+#   single-winner policy, because a critical constraint is rarely the
+#   top-ranked candidate.
+#
+# NO MARGIN, and that is the actual defect this policy repairs. Measured
+# on the same corpus, `SEMANTIC_POLICY[ENTITY_MEMORY].absolute_floor`
+# never rejected a single invariant -- the rank #1 candidate always
+# cleared 0.40 -- so for this pool the single-winner policy WAS the margin
+# and nothing else, and the margin alone left the CONSTRAINTS section
+# empty in 27 of the 33 scenes that had a legitimately relevant
+# invariant. `margin_floor` asks "is #1 separated enough from #2 to be THE
+# answer", which is only meaningful when at most one candidate can be
+# right; 15 of 44 scenes have two or more co-relevant invariants, and
+# co-relevant constraints are by definition close to each other.
+#
+# What this policy does NOT do, measured and deliberately not tuned away:
+# it does not make the compiler a safety checklist (15 of 24 critical
+# constraints are still missed; `preflight` remains the unconditional,
+# complete view), and it does not solve precision -- false positives go
+# from 2 to 22 while true positives go from 5 to 24. It was accepted
+# because abstention does not degrade at all, silent scenes fall from 27
+# to 8, and no previously admitted true positive is lost.
+INVARIANT_SEMANTIC_FLOOR = 0.35
+INVARIANT_ADMISSION_LIMIT = 2
+
 
 class SemanticUnavailable(Exception):
     """Raised internally when the semantic channel cannot be used right

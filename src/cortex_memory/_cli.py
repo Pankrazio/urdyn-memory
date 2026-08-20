@@ -224,6 +224,31 @@ def _build_parser() -> argparse.ArgumentParser:
         help=f"Character budget for the compiled context (default: {DEFAULT_CONTEXT_BUDGET})",
     )
 
+    # (A38) A portable sibling of `context`, not a new domain API: it
+    # reuses `Cortex.context()` verbatim and only swaps the renderer
+    # (`CompiledContext.render_portable()` instead of `render()`), so
+    # stdout carries exactly the task-aware payload an external target
+    # can consume -- no `Retrieval:` line, no success/progress noise.
+    # `--for` is closed to `generic` on purpose: this tracer ships the
+    # one renderer-boundary target A37 scoped it to, not a plugin point.
+    export_parser = subparsers.add_parser(
+        "export", help="Compile a portable, task-aware working context for an external target"
+    )
+    export_parser.add_argument("task", help="Task description")
+    export_parser.add_argument(
+        "--for",
+        dest="target",
+        default="generic",
+        choices=["generic"],
+        help="Export target (default: generic)",
+    )
+    export_parser.add_argument(
+        "--budget",
+        type=int,
+        default=DEFAULT_CONTEXT_BUDGET,
+        help=f"Character budget for the compiled context (default: {DEFAULT_CONTEXT_BUDGET})",
+    )
+
     subparsers.add_parser("skills", help="List recorded skills")
 
     guard_parser = subparsers.add_parser(
@@ -455,6 +480,17 @@ def main(argv: list[str] | None = None) -> int:
             # terminal-safe, unlike `Preflight`'s raw fields above, so no
             # second `_safe()` pass belongs here.
             print(compiled.render())
+            return 0
+
+        if args.command == "export":
+            cx = Cortex.discover()
+            compiled = cx.context(args.task, budget=args.budget)
+            # `render_portable()` is itself the rendering boundary (see
+            # `_context.py`): stdout gets ONLY the portable payload, with
+            # no `Retrieval:` line and no CLI-added status text, so
+            # `cortex export "<task>" > context.txt` and `| cat` both
+            # capture exactly the payload an external target would read.
+            print(compiled.render_portable())
             return 0
 
         if args.command == "skills":

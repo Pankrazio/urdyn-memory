@@ -194,21 +194,15 @@ class CompiledContext:
     def is_empty(self) -> bool:
         return not self.sections
 
-    def render(self) -> str:
-        """Deterministic plain-text rendering: the same `task`, canonical
-        state, `budget` and `retrieval` state always produce
-        byte-identical output.
-
-        This is the rendering boundary for compiled context -- content
-        stored raw on `ContextItem` is sanitized here, exactly once,
-        through the same terminal-safety primitive the CLI already uses
-        for `Preflight` (`_terminal.terminal_safe_text`), so this text is
-        safe to print directly to a terminal or inject into a prompt
-        without carrying an embedded escape sequence or a forged line."""
+    def _render_body(self) -> list[str]:
+        """The part of the rendering shared by every consumer: sections
+        (or the appropriate empty-context message) and the footer. Held
+        apart from `render()`'s `Retrieval:` line and from
+        `render_portable()`'s `Task:` line because those two envelopes
+        are diagnostic/addressing metadata specific to ONE consumer each
+        -- a local terminal vs. a portable payload -- while this body is
+        the actual compiled content and must read identically in both."""
         lines: list[str] = []
-        if self.retrieval is not None:
-            lines.append(f"Retrieval: {self.retrieval.retrieval_mode()}")
-            lines.append("")
         if self.sections:
             for section in self.sections:
                 lines.append(section.heading)
@@ -234,6 +228,41 @@ class CompiledContext:
                 invariants_excluded=self.invariants_excluded,
             )
         )
+        return lines
+
+    def render(self) -> str:
+        """Deterministic plain-text rendering: the same `task`, canonical
+        state, `budget` and `retrieval` state always produce
+        byte-identical output.
+
+        This is the rendering boundary for compiled context -- content
+        stored raw on `ContextItem` is sanitized here, exactly once,
+        through the same terminal-safety primitive the CLI already uses
+        for `Preflight` (`_terminal.terminal_safe_text`), so this text is
+        safe to print directly to a terminal or inject into a prompt
+        without carrying an embedded escape sequence or a forged line."""
+        lines: list[str] = []
+        if self.retrieval is not None:
+            lines.append(f"Retrieval: {self.retrieval.retrieval_mode()}")
+            lines.append("")
+        lines.extend(self._render_body())
+        return "\n".join(lines)
+
+    def render_portable(self) -> str:
+        """Render a provider-independent payload: `task` (sanitized, the
+        same rendering boundary `render()` uses) followed by the SAME
+        compiled body `render()` shares -- and nothing else.
+
+        Deliberately excludes `Retrieval:`: it names which retrieval
+        substrate answered on THIS machine, which is diagnostic to a
+        local caller and meaningless -- and non-reproducible across
+        installs -- to whatever external target consumes this payload.
+        No timestamp, path, version or other run-specific metadata is
+        added either, so the same canonical state, `task` and `budget`
+        always produce byte-identical output regardless of when or where
+        this is called."""
+        lines = [f"Task: {_safe(self.task)}", ""]
+        lines.extend(self._render_body())
         return "\n".join(lines)
 
 

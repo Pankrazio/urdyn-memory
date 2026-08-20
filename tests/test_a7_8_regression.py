@@ -1,7 +1,7 @@
 """A7.8 regression: a real Human Acceptance miss, and its fix.
 
-A7 Final Human Acceptance failed on a real, spontaneous query from
-Leonardo against a real workspace (`/tmp/cortex_a7_final`):
+A7 Final Human Acceptance failed on a real, spontaneous query typed by
+a human tester against a real workspace:
 
     "I'm running a database migration and I want to make sure that if
     something fails, the system doesn't end up with only part of the
@@ -13,7 +13,7 @@ sharing Evidence -- were on record (a near-wording control query
 recovered both immediately, proving this was a retrieval miss, not a
 data-loss bug).
 
-Diagnosis (see the A7.8 report): the memory pool's semantic admission
+Diagnosis: the memory pool's semantic admission
 (`_semantic.semantic_admitted_ids`) is single-winner-plus-margin,
 treating every candidate as if it competes with every other candidate.
 A root cause and the verified lesson drawn from it are not competitors
@@ -35,12 +35,11 @@ against the best-scoring candidate OUTSIDE it (never against its own
 sibling), and an admitted cluster is admitted in full.
 
 These tests lock in that fix. `test_semantic_real_model.py` and
-`test_semantic.py` already cover (unchanged by this fix -- see the
-A7.8 report's corpus comparison table): the 4 Human Acceptance
-queries, the 2 A7.4 holdout paraphrases, the payment-guard-clause false
-positive, the CSS hard negative, the safe/unsafe refresh-token
-contradiction, and the bn-9 near-floor negative. This file does not
-repeat them.
+`test_semantic.py` already cover (unchanged by this fix): the 4 Human
+Acceptance queries, the 2 A7.4 holdout paraphrases, the
+payment-guard-clause false positive, the CSS hard negative, the
+safe/unsafe refresh-token contradiction, and the bn-9 near-floor
+negative. This file does not repeat them.
 """
 
 from __future__ import annotations
@@ -257,9 +256,9 @@ def _offline():
 
 
 def _build_database_migration_experience(cx):
-    """Verbatim content from the real `/tmp/cortex_a7_final` Human
-    Acceptance workspace (verified via Cortex's own public API during
-    A7.8 diagnosis), not reworded or simplified for this test."""
+    """Verbatim content from the real Human Acceptance workspace
+    (verified via Cortex's own public API during A7.8 diagnosis), not
+    reworded or simplified for this test."""
     failure_evidence = cx.add_evidence(
         "A database schema upgrade failed halfway through and left part of the new "
         "structure applied while the remaining changes were missing.",
@@ -305,8 +304,8 @@ def _build_database_migration_experience(cx):
 
 @skip_without_model
 def test_human_spontaneous_database_migration_query_now_recovers_useful_experience(tmp_path):
-    """THE regression case: the exact, frozen, spontaneous query
-    Leonardo typed during A7 Final Human Acceptance. Before the A7.8
+    """THE regression case: the exact, frozen, spontaneous query a
+    human tester typed during A7 Final Human Acceptance. Before the A7.8
     fix this returned `Preflight.is_empty() == True`. It must now
     surface the root cause AND the verified lesson together -- not just
     one of the two -- since they are the same experience and the fix

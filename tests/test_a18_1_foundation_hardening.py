@@ -1,8 +1,7 @@
 """A18.1 foundation hardening: MEDIUM-1 (canonical Memory must have
 canonical Event history) and PD-1 (first `memory.db` creation race).
 
-See /tmp/A18_foundation_integrity_audit.md for the full analysis these
-tests close. Both fixes live in `MemoryStore` (`_store.py`):
+Both fixes live in `MemoryStore` (`_store.py`):
 
 - MEDIUM-1: `MemoryStore.add()` now rejects a write that would insert a
   NEW Memory row without an accompanying `EVENT_KIND_MEMORY_RECORDED`

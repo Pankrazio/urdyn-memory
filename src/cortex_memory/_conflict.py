@@ -17,7 +17,7 @@ canonically ordered (ascending) rather than kept in call order -- this is
 what makes A<->B and B<->A collapse to the same identity instead of being
 treated as two different relations.
 
-Deliberately excluded from A13.1 (see the A13.1 report for the reasoning):
+Deliberately excluded from A13.1:
 no `conflict_id` (the ordered pair of Memory ids is itself a sufficient,
 storage-independent identity), no evidence, no status/resolution field, no
 severity/confidence. Whether a conflict is currently "open" is never

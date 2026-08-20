@@ -116,7 +116,7 @@ def _build_parser() -> argparse.ArgumentParser:
     # PATH` is likewise absent by decision: the caller cites an exact,
     # immutable evidence_id (read from `cortex sources <path>`), so the
     # provenance is never re-resolved against a file that has since
-    # changed. See the A20 report for the full reasoning.
+    # changed.
     remember_parser.add_argument(
         "--evidence",
         action="append",

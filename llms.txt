@@ -1,0 +1,27 @@
+# Cortex Memory Engine
+
+> A local-first, persistent, structured, model-independent memory engine for humans, AI systems, and agents.
+
+Cortex stores project knowledge (decisions, root causes, verified lessons, evidence, conflicts) in a local, canonical, append-preserving store, independent of any particular AI model or provider. It distinguishes Evidence (what was observed) from Memory (what is believed), and compiles task-aware working context on demand rather than exposing an ever-growing dump. The base engine requires no LLM and no cloud service; semantic (embedding-based) retrieval is an optional, separately installed extra.
+
+## Documentation
+
+- [README](README.md): English overview, installation, and quick start.
+- [Italian README](README.it.md): Italian documentation, semantically equivalent to the English README.
+
+## Package
+
+- [Python source](src/cortex_memory/): the `cortex_memory` package (also installs a `cortex` CLI).
+- [Tests](tests/): behavioral and regression tests.
+
+## Key concepts
+
+- **Canonical memory** — durable, typed records (`decision`, `lesson`, `root_cause`, `invariant`, `note`, and more) that can be superseded or invalidated but never silently rewritten.
+- **Evidence** — an observation (command output, test result, user confirmation, file content, ...) a memory can cite as support. A memory is only `verified` when backed by evidence of a kind strong enough to justify it.
+- **Context compiler** — given a task description, retrieves and compiles the relevant memories, lessons, and evidence into a single budgeted working context (`cortex context`).
+- **Generic export** — a portable, task-scoped compiled context suitable for piping into another tool or prompt (`cortex export`); not a full memory-archive export.
+- **Seed** — records existing project files as Source/Evidence observations (`cortex seed`), available in the `dev` profile. Seeded content is provenance, not automatically canonical truth.
+
+## License
+
+Apache License 2.0. See [LICENSE](LICENSE).

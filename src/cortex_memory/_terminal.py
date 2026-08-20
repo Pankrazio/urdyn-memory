@@ -14,7 +14,7 @@ exactly the certainty the CLI exists to report on.
 
 The fix belongs here and only here: SANITIZE ON OUTPUT, NOT ON STORAGE.
 The canonical record keeps every byte the caller wrote (`Memory.content`
-returned by the public API is never touched -- see A14.S's report and
+returned by the public API is never touched -- see
 `tests/test_cli_output_safety.py`'s API-invariance tests); only the
 representation handed to a terminal is made safe.
 
@@ -33,7 +33,7 @@ generic `sanitize()`. Terminal escaping is not JSON escaping, not
 Markdown escaping, and above all not prompt safety: a future Context
 Compiler feeding memory content to a model needs a structural
 separation between trusted instructions and untrusted data, which no
-amount of control-character escaping provides (see A14.S report, §24).
+amount of control-character escaping provides.
 """
 
 from __future__ import annotations

@@ -5,6 +5,11 @@ build/
 dist/
 wheels/
 *.egg-info
+.pytest_cache/
 
 # Virtual environments
 .venv
+
+# Cortex workspace data / local agent tooling
+.cortex/
+.claude/

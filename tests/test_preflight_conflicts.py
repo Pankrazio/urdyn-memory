@@ -60,8 +60,7 @@ def _existing_field_snapshot(preflight: Preflight) -> dict:
 
 
 # One-sided relevance pair, verified against the real `is_relevant`
-# threshold (see A14.1's report): the task shares a lexical majority with
-# A but not with B.
+# threshold: the task shares a lexical majority with A but not with B.
 _TASK_WEBHOOK = "Fix webhook delivery retry safety"
 _LESSON_A = "Retry of the webhook delivery is safe."
 _LESSON_B = "Duplicate charges occur when the webhook delivery is repeated."
@@ -141,8 +140,8 @@ def test_north_star_two_verified_lessons_in_open_conflict(tmp_path):
     a = _verified(cx, _LESSON_A)
     b = _verified(cx, _LESSON_B)
     task = "Fix the retry idempotency key handling"
-    # both lexically relevant to THIS task (see A14.1 report, cross-kind
-    # example) so this is genuinely two-sided, not relying on rescue.
+    # both lexically relevant to THIS task (cross-kind example), so this
+    # is genuinely two-sided, not relying on rescue.
     rc = cx.remember(
         "The retry loop reuses a stale idempotency key.",
         kind="root_cause",
@@ -246,7 +245,7 @@ def test_conflict_membership_never_admits_a_memory_into_an_authority_field(tmp_p
 )
 def test_exact_field_equality_before_and_after_conflict_across_kinds(tmp_path, build):
     """The before/after snapshot from `test_exact_non_interference_of_all_existing_fields`,
-    repeated across the four kind combinations the report calls out.
+    repeated across the four kind combinations exercised throughout this file.
     The only field allowed to differ is `open_conflicts`."""
     cx = Cortex.init(tmp_path, "dev")
 
@@ -287,7 +286,7 @@ def test_exact_field_equality_before_and_after_conflict_across_kinds(tmp_path, b
 
 def test_one_sided_participant_relevance_is_sufficient(tmp_path):
     """A is lexically relevant, B is not (verified against `is_relevant`
-    directly in the report) -- the conflict must still surface, because a
+    directly) -- the conflict must still surface, because a
     Memory shown as authoritative (A, in verified_lessons) must not hide
     that it is contradicted."""
     cx = Cortex.init(tmp_path, "dev")
@@ -772,7 +771,7 @@ def test_same_participant_in_two_conflicts_shows_both(tmp_path):
 
 
 def test_shared_participant_python_representation_uses_one_object_not_copies(tmp_path):
-    """DATABASE: proven separately in the A14.1 report (`list_conflicts()`
+    """DATABASE: proven separately (`list_conflicts()`
     costs a fixed 2 queries, independent of C). PYTHON REPRESENTATION:
     here -- every `PreflightConflict.memories` entry naming A must be the
     SAME object (`id()` identity), never a fresh copy, so N conflicts
@@ -1030,7 +1029,7 @@ class _QueryCounter:
     regardless of real query behavior. Patching `MemoryStore.__init__`
     instead traces whichever connection gets created, including the one
     `preflight()` opens for itself, and is the same technique already
-    used successfully in the A14.1 report's own manual probes.
+    used successfully in earlier manual probes of this same race.
     """
 
     def __enter__(self):
@@ -1085,9 +1084,9 @@ class TestTimelinePartitioningEquivalence:
     it in Python by kind + current-state, instead of calling
     `store.timeline(kind)` once per kind. These tests prove the
     partitioned result is identical -- ids AND order -- to what the
-    old per-kind calls would have produced, across the cases the report
-    named: empty workspace, mixed kinds, superseded memories,
-    invalidations, a `recorded_at` tie, and reopen.
+    old per-kind calls would have produced, across these cases: empty
+    workspace, mixed kinds, superseded memories, invalidations, a
+    `recorded_at` tie, and reopen.
     """
 
     @staticmethod
@@ -1343,8 +1342,8 @@ def test_cli_conflict_content_uses_terminal_safe_text(tmp_path, monkeypatch, cap
 )
 def test_cli_conflict_content_covers_every_a14s_attack_vector(tmp_path, monkeypatch, capsys, name):
     """A14.1.1 §9: reuse of the FULL A14.S vector set for the NEW
-    `OPEN CONFLICTS` surface, not just the header-spoof/ANSI subset the
-    A14.1 report happened to test. `PAYLOADS` is imported, not
+    `OPEN CONFLICTS` surface, not just the header-spoof/ANSI subset
+    originally covered. `PAYLOADS` is imported, not
     reimplemented -- the boundary primitive under test is
     `terminal_safe_text` exclusively (see `_cli.py`'s conflict-rendering
     branch: `_safe(memory_a.content)`/`_safe(memory_b.content)`, nothing

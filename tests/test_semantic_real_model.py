@@ -23,7 +23,7 @@ positive stays rejected. The A7.4 assertions that encoded
 potion-SPECIFIC score outcomes (which exact Human Acceptance paraphrase
 landed just under which calibrated floor) are NOT carried over pretending
 to be model-independent -- they measured one model's geometry, and this
-is a different model. See the A16.3 report for the honest before/after.
+is a different model.
 """
 
 from __future__ import annotations

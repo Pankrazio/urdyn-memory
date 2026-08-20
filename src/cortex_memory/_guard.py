@@ -34,8 +34,8 @@ conditions `guard()` requires together; widening which candidates can
 satisfy condition (3) does not loosen (1) or (2) — a Skill's own
 applicability match uses the SAME per-pool semantic abstention policy as
 `preflight()`, but that policy was itself calibrated more conservatively
-for the `skill` pool specifically (see `_semantic.SEMANTIC_POLICY` and
-the A7.4 report), so `guard()`'s applicable-skill matching stays harder
+for the `skill` pool specifically (see `_semantic.SEMANTIC_POLICY`), so
+`guard()`'s applicable-skill matching stays harder
 to satisfy than `preflight()`'s memory matching even though both go
 through the same code path.
 """

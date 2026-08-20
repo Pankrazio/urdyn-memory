@@ -5,7 +5,7 @@ This is deliberately a SEPARATE SQLite file from `memory.db`
 (`semantic_index.db`, next to it under `.cortex/`), not a table inside
 the canonical store managed by `_store.py`. The semantic index is
 DERIVED, OPTIONAL, REBUILDABLE, and REPLACEABLE (see `_semantic.py`'s
-module docstring and the A7.4 report): it holds no canonical truth,
+module docstring): it holds no canonical truth,
 nothing here is ever required for a canonical write to succeed, and
 deleting this entire file is always safe -- Cortex degrades to
 lexical/FTS-only, exactly as if the semantic extra were never installed.

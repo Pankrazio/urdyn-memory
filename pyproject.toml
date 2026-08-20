@@ -3,6 +3,8 @@ name = "cortex-memory"
 version = "0.1.0"
 description = "A standalone, local-first, persistent, model-independent memory engine"
 readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 authors = [
     { name = "Leonardo Panconi", email = "krankxxx0@proton.me" }
 ]

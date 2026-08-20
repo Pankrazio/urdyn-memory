@@ -2094,7 +2094,7 @@ class Cortex:
         memory_eligible_ids: frozenset[str],
     ) -> frozenset[str]:
         """[A7.7] Rigorous query-conditioned structural corroboration --
-        `preflight()` ONLY (see `_guard.py`/A7.7 report for why `guard()`
+        `preflight()` ONLY (see `_guard.py` for why `guard()`
         deliberately does not get this: A7.6 measured that the same
         mechanism, applied to the skill/attempt pools, could not be told
         apart from the payment-guard-clause false positive on any

@@ -183,6 +183,11 @@ class PoolPolicy:
     margin_floor: float
 
 
+# All thresholds below were calibrated empirically on frozen evaluation
+# corpora, each frozen BEFORE it was scored. The corpora are not shipped
+# with the package; the measured outcomes are recorded here so the
+# operating point can be audited and re-derived.
+#
 # Originally calibrated in A7.4 on the frozen A7.3 corpus. Scores are a
 # property of the MODEL, not of Cortex, so a backend change invalidates
 # these numbers until they are re-measured pool by pool.
@@ -216,8 +221,8 @@ class PoolPolicy:
 #   and 0.55 is simply its centre, chosen for distance from both edges
 #   rather than fitted to any one query. It removes all three calibration
 #   false positives (0.4134, 0.4555, 0.4570) at a measured cost of two
-#   holdout positives (0.4268, 0.5059) -- the trade the A16.3.1 brief
-#   asks for, since a Skill wrongly reported as applicable misleads an
+#   holdout positives (0.4268, 0.5059) -- the trade A16.3.1 accepted
+#   deliberately, since a Skill wrongly reported as applicable misleads an
 #   agent more than a missing one does. The A7.3 payment-guard-clause
 #   false positive (0.4555) was deliberately held out of calibration so
 #   the floor could not be fitted to it; it is rejected here while the

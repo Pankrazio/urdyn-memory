@@ -406,7 +406,7 @@ class MemoryStore:
         `remember()` of the same canonical memory is a retry of one
         operation, not a second fact, so it must not produce a second
         current record (which is what collapsed semantic retrieval into
-        false ambiguity in A16's Human Acceptance) and must not
+        false ambiguity in A16's acceptance testing) and must not
         fabricate a history entry claiming something happened. This is
         exactly the idempotency `add_conflict` already applies to a
         repeated conflict declaration, applied to the canonical memory
@@ -1177,7 +1177,7 @@ class MemoryStore:
         is a legitimate fact about the past (see `_conflict.py`'s module
         docstring).
 
-        Idempotency (A13.1 review decision 3/4/5): `record_conflict(A, B)`,
+        Idempotency: `record_conflict(A, B)`,
         `record_conflict(A, B)` again, and `record_conflict(B, A)` all
         resolve to the SAME row (identified by the canonically ordered
         pair, see `canonical_pair`) and never insert a second one. If the

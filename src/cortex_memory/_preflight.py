@@ -486,7 +486,7 @@ def build_preflight(
             return True
         return _memory_matches(conflict_participants[memory_id])
 
-    # One-sided sufficiency (A14.0.1 §8): a Memory Cortex is about to show
+    # One-sided sufficiency (A14.0.1): a Memory Cortex is about to show
     # as individually authoritative must not be shown without also
     # surfacing that it is contradicted, even when the other side of that
     # contradiction says nothing the task's own wording matches.

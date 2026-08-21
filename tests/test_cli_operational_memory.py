@@ -130,7 +130,7 @@ def test_cli_preflight_omits_pending_section_when_nothing_relevant(tmp_path, mon
 
 def test_cli_remember_kind_choices_include_new_operational_kinds(tmp_path, monkeypatch, capsys):
     """Confirms `--kind` accepts the new kinds without any extra CLI
-    branching (they come automatically from `VALID_KINDS`, A9.1 §25)."""
+    branching (they come automatically from `VALID_KINDS`, A9.1)."""
     monkeypatch.chdir(tmp_path)
     main(["init", "dev"])
 

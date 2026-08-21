@@ -100,8 +100,8 @@ def test_corpus_long_noisy_paraphrase_recovers_known_failure(tmp_path):
 
 
 def test_corpus_moderate_synonym_paraphrase_is_a_documented_residual_gap(tmp_path):
-    """Documents the residual semantic gap A7 does not close (see A7.0
-    report, section 27): a short paraphrase that swaps in synonyms and
+    """Documents the residual semantic gap A7 does not close: a short
+    paraphrase that swaps in synonyms and
     different surface forms ("exhausting" for "exhaustion") without
     reusing enough of the candidate's own exact vocabulary shares too
     little with a short candidate for either channel to admit it.

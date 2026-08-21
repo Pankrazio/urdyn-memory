@@ -236,7 +236,7 @@ def test_legacy_verified_memory_stays_verified_with_empty_supporting_ids(tmp_pat
 
 
 def test_legacy_verified_lesson_still_surfaces_in_preflight_after_migration(tmp_path):
-    """[A12.1.1 section 5/9] `preflight().verified_lessons` filters only
+    """`preflight().verified_lessons` filters only
     on `epistemic_state == "verified"` (see `_workspace.py`'s
     `Cortex.preflight`) -- it has never depended on
     `supporting_evidence_ids` and must not start doing so now. A
@@ -382,7 +382,7 @@ def test_invalid_role_value_raises_cleanly_instead_of_silently_dropping_support(
 
 
 def test_user_version_5_with_missing_role_column_raises_cleanly(tmp_path):
-    """[A12.1.1 section 4] `PRAGMA user_version == 5` alone must not be
+    """`PRAGMA user_version == 5` alone must not be
     trusted as proof the schema is actually shaped like v5: if
     `memory_evidence` is missing its `role` column (a corrupted or
     incomplete upgrade), every read/write path that touches

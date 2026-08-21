@@ -585,7 +585,7 @@ def test_duplicate_lookup_does_not_scan_linearly_in_python(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# The A16 Human Acceptance regression
+# The A16 acceptance-testing regression
 # ---------------------------------------------------------------------------
 
 
@@ -712,7 +712,7 @@ class TestDuplicateLookupNeverBypassesWriteBoundaryValidation:
         return legacy_id, recorded_at
 
     def test_the_a17r_blocker_case_stays_rejected(self, tmp_path):
-        """The exact reproduction from the A17.R report: a request that
+        """The exact reproduction of the A17.R regression: a request that
         would fail on the baseline must still fail, even though a
         matching legacy row already exists and would otherwise be
         recognized as a current equivalent."""

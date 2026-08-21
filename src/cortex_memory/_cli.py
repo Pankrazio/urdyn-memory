@@ -16,15 +16,29 @@ from __future__ import annotations
 import argparse
 import sys
 
+from . import _watcher
 from ._attempt import VALID_OUTCOMES
 from ._context import DEFAULT_CONTEXT_BUDGET
 from ._errors import CortexError
 from ._evidence import DEFAULT_EVIDENCE_KIND, VALID_EVIDENCE_KINDS
-from ._manifest import CANONICAL_PROFILES
+from ._manifest import CANONICAL_PROFILES, PROFILE_DEV
 from ._memory import DEFAULT_KIND, VALID_KINDS
 from ._source import SEED_UNCHANGED
 from ._terminal import terminal_safe_text as _safe
 from ._workspace import DEFAULT_RECALL_LIMIT, Cortex
+
+
+def _discover_and_supervise() -> Cortex:
+    """`Cortex.discover()` plus the watcher recovery hook: every normal
+    command is a chance to notice and restart a `dev` workspace's Dev
+    watcher if it is enabled but not currently running. A cheap no-op for
+    every other workspace. Deliberately NOT used by `watch status`/
+    `watch stop` (see their handlers) -- inspecting or stopping the
+    watcher must never itself resurrect it.
+    """
+    cx = Cortex.discover()
+    _watcher.supervise(cx)
+    return cx
 
 
 # (A27) Both of these are CLI STRUCTURE, not caller data: every
@@ -37,6 +51,32 @@ _SEMANTIC_SETUP_HINT = (
     "Semantic retrieval is not enabled. Run `cortex semantic setup` to enable it "
     "(one-time model download; everything else stays offline)."
 )
+
+# (A43) `cortex watch start`/`cortex watch stop` render exactly the facts
+# `_watcher.WatcherAction` returns; this module owns the wording, never
+# `_watcher.py` itself. Keyed by the action's `code`, one line each.
+_WATCH_START_MESSAGES = {
+    _watcher.ACTION_STARTED: lambda a: "Project watcher: enabled.",
+    _watcher.ACTION_ALREADY_RUNNING: lambda a: (
+        f"Watcher already running (pid {a.pid})." if a.pid is not None else "Watcher already running."
+    ),
+    _watcher.ACTION_RESTARTED: lambda a: "Watcher was not running; restarted.",
+    _watcher.ACTION_UNAVAILABLE: lambda a: (
+        "Project watcher: unavailable on this platform (Linux required in this release)."
+    ),
+}
+_WATCH_STOP_MESSAGES = {
+    _watcher.ACTION_STOPPED: lambda a: "Watcher stopped.",
+    _watcher.ACTION_ALREADY_STOPPED: lambda a: "Watcher was not running. Disabled.",
+    _watcher.ACTION_STOP_TIMEOUT: lambda a: (
+        f"Sent a stop signal to pid {a.pid}, but it did not exit in time. Disabled anyway."
+        if a.pid is not None
+        else "Watcher lock is still held but no pid was recorded to signal. Disabled anyway."
+    ),
+    _watcher.ACTION_UNAVAILABLE: lambda a: (
+        "Project watcher: unavailable on this platform (Linux required in this release)."
+    ),
+}
 
 
 def _print_retrieval(state) -> None:
@@ -282,6 +322,16 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Download/prepare the semantic model and (re)build the semantic index for this workspace",
     )
 
+    # (A43) `dev`-only: the background project watcher. Three commands,
+    # no more -- `start` enables it if needed, `stop` is persistent (it
+    # also disables it, deliberately with no separate temporary-stop
+    # state), `status` only ever reports what a lock probe shows.
+    watch_parser = subparsers.add_parser("watch", help="Control the dev project watcher")
+    watch_subparsers = watch_parser.add_subparsers(dest="watch_command", required=True)
+    watch_subparsers.add_parser("status", help="Show the dev watcher's status")
+    watch_subparsers.add_parser("start", help="Enable and start the dev watcher")
+    watch_subparsers.add_parser("stop", help="Stop the dev watcher and disable it")
+
     return parser
 
 
@@ -296,6 +346,21 @@ def main(argv: list[str] | None = None) -> int:
             # directory name can hold anything, so it is data.
             print(f"Initialized Cortex workspace at {_safe(str(cx.path))}")
             print(f"Profile: {_safe(cx.profile)}")
+            # (A43) `dev` is the only profile that starts a background
+            # process automatically, and it says so plainly every time --
+            # background observation must never be silent. `general`/`lab`
+            # are entirely unaffected: no config file is written, no
+            # process is started, matching their behavior before A43.
+            if cx.profile == PROFILE_DEV:
+                action = _watcher.enable_and_start(cx)
+                if action.code == _watcher.ACTION_UNAVAILABLE:
+                    print("Project watcher: unavailable on this platform (Linux required in this release).")
+                else:
+                    print(
+                        "Project watcher: enabled -- a local background process now records changes "
+                        "to tracked project documents into .cortex/. Nothing leaves this machine. "
+                        "Stop it with `cortex watch stop`."
+                    )
             # (A27) `init` deliberately does NOT enable semantic
             # retrieval: doing so would download an embedding model, and
             # a first command in a new project must not reach the network.
@@ -306,7 +371,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "status":
-            cx = Cortex.discover()
+            cx = _discover_and_supervise()
             # `profile`/`cortex_id` are read back from the on-disk
             # manifest, which a hand edit can change: data, not structure.
             print(f"Cortex workspace: {_safe(str(cx.path))}")
@@ -321,10 +386,15 @@ def main(argv: list[str] | None = None) -> int:
             # loaded, nothing is embedded, no network is touched and
             # nothing is refreshed -- `status` observes, it never repairs.
             print(f"Semantic: {cx.semantic_state().describe()}")
+            # (A43) One line, `dev` only, derived from a single lock probe
+            # -- see `_watcher.status_lines`. Absent entirely outside
+            # `dev`, so this command's output is unchanged there.
+            for line in _watcher.status_lines(cx):
+                print(_safe(line))
             return 0
 
         if args.command == "remember":
-            cx = Cortex.discover()
+            cx = _discover_and_supervise()
             # (A20) Every cited Evidence is resolved through the Core's own
             # lookup BEFORE anything is written, so an unknown id fails the
             # whole command with zero memories recorded rather than after a
@@ -359,7 +429,7 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.command == "evidence":
             if args.evidence_command == "add":
-                cx = Cortex.discover()
+                cx = _discover_and_supervise()
                 evidence = cx.add_evidence(args.content, kind=args.kind)
                 print(f"Evidence [{evidence.evidence_id}] ({evidence.kind})")
                 return 0
@@ -367,7 +437,7 @@ def main(argv: list[str] | None = None) -> int:
             return 2
 
         if args.command == "learn":
-            cx = Cortex.discover()
+            cx = _discover_and_supervise()
             # (A25.1) Same A20 pattern as `remember`: every cited id --
             # provenance and supporting alike -- is resolved through the
             # Core's own lookup BEFORE `learn()` is called, so an unknown
@@ -396,7 +466,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "recall":
-            cx = Cortex.discover()
+            cx = _discover_and_supervise()
             results = cx.recall(args.query, limit=args.limit, include_superseded=args.include_superseded)
             if not results:
                 print("No memories found.")
@@ -406,7 +476,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "timeline":
-            cx = Cortex.discover()
+            cx = _discover_and_supervise()
             history = cx.timeline(kind=args.kind)
             if not history:
                 print("No history found.")
@@ -418,13 +488,13 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "attempt":
-            cx = Cortex.discover()
+            cx = _discover_and_supervise()
             attempt = cx.record_attempt(task=args.task, approach=args.approach, outcome=args.outcome)
             print(f"Recorded attempt [{attempt.attempt_id}] ({attempt.outcome})")
             return 0
 
         if args.command == "preflight":
-            cx = Cortex.discover()
+            cx = _discover_and_supervise()
             result = cx.preflight(args.task)
             _print_retrieval(result.retrieval)
             if result.is_empty():
@@ -473,7 +543,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "context":
-            cx = Cortex.discover()
+            cx = _discover_and_supervise()
             compiled = cx.context(args.task, budget=args.budget)
             # `CompiledContext.render()` is itself the rendering boundary
             # (see `_context.py`): the text it returns is already
@@ -483,7 +553,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "export":
-            cx = Cortex.discover()
+            cx = _discover_and_supervise()
             compiled = cx.context(args.task, budget=args.budget)
             # `render_portable()` is itself the rendering boundary (see
             # `_context.py`): stdout gets ONLY the portable payload, with
@@ -494,7 +564,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "skills":
-            cx = Cortex.discover()
+            cx = _discover_and_supervise()
             items = cx.skills()
             if not items:
                 print("No skills recorded.")
@@ -504,7 +574,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "guard":
-            cx = Cortex.discover()
+            cx = _discover_and_supervise()
             result = cx.guard(args.action)
             _print_retrieval(result.retrieval)
             if result.is_empty():
@@ -530,7 +600,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "seed":
-            cx = Cortex.discover()
+            cx = _discover_and_supervise()
             if not args.paths:
                 # Discovery only: this branch must never write. It opens
                 # no store, creates no `memory.db`, and records nothing --
@@ -563,7 +633,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "sources":
-            cx = Cortex.discover()
+            cx = _discover_and_supervise()
             items = cx.sources()
             if args.path is None:
                 if not items:
@@ -617,7 +687,7 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.command == "semantic":
             if args.semantic_command == "setup":
-                cx = Cortex.discover()
+                cx = _discover_and_supervise()
                 result = cx.semantic_setup()
                 # [A16.3] `provider`/`model_id`/`model_revision` are all
                 # derived from module constants now that the model repo,
@@ -637,6 +707,27 @@ def main(argv: list[str] | None = None) -> int:
                 print("Semantic index ready.")
                 return 0
             parser.error(f"unknown semantic command {args.semantic_command!r}")
+            return 2
+
+        if args.command == "watch":
+            # Deliberately plain `Cortex.discover()`, never
+            # `_discover_and_supervise()`: inspecting or stopping the
+            # watcher must not itself resurrect it.
+            cx = Cortex.discover()
+            if args.watch_command == "status":
+                lines = _watcher.status_lines(cx, detailed=True)
+                for line in lines:
+                    print(_safe(line))
+                return 0
+            if args.watch_command == "start":
+                action = _watcher.enable_and_start(cx)
+                print(_safe(_WATCH_START_MESSAGES[action.code](action)))
+                return 0
+            if args.watch_command == "stop":
+                action = _watcher.stop_watcher(cx)
+                print(_safe(_WATCH_STOP_MESSAGES[action.code](action)))
+                return 0
+            parser.error(f"unknown watch command {args.watch_command!r}")
             return 2
 
         parser.error(f"unknown command {args.command!r}")

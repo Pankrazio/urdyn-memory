@@ -124,8 +124,8 @@ def test_pending_completed_by_note_disappears_from_current_pending(tmp_path):
 
 
 def test_pending_completed_by_decision_disappears_from_current_pending(tmp_path):
-    """The task's own example uses `note`; `decision` is the other kind
-    the design calls out as an appropriate closure kind."""
+    """The task's own example uses `note`; `decision` is another
+    appropriate closure kind."""
     cx = Cortex.init(tmp_path, "dev")
     pending = cx.remember("Choose a storage backend.", kind="pending")
 
@@ -154,8 +154,8 @@ def test_question_resolved_by_decision_disappears_from_current_questions(tmp_pat
 
 def test_cross_kind_supersession_preserves_full_history_across_both_kinds(tmp_path):
     cx = Cortex.init(tmp_path, "dev")
-    pending = cx.remember("Write the A9.1 report.", kind="pending")
-    closing_note = cx.remember("A9.1 report written.", kind="note", supersedes=pending.memory_id)
+    pending = cx.remember("Write the migration runbook.", kind="pending")
+    closing_note = cx.remember("Migration runbook written.", kind="note", supersedes=pending.memory_id)
 
     full_history = cx.timeline()
 

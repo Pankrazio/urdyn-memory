@@ -106,6 +106,18 @@ cortex seed README.md src/     # registra percorsi specifici
 
 I file sottoposti a seed diventano osservazioni **Source / Evidence** — un record di cosa conteneva un file e quando è stato osservato. Non diventano silenziosamente verità canonica: il seed di un file aggiunge provenienza che Cortex potrà citare in seguito, non crea di per sé una memory verificata.
 
+## Watcher di progetto (profilo dev)
+
+`cortex init dev` abilita anche un processo locale in background che mantiene automaticamente aggiornati i documenti di progetto tracciati, così non serve ricordarsi di rilanciare `cortex seed` dopo ogni modifica:
+
+```bash
+cortex watch status   # stato, pid, ultima osservazione, source tracciate mancanti su disco
+cortex watch start    # abilita + avvia (è anche ciò che fa "init dev")
+cortex watch stop     # ferma il processo e lo disabilita in modo persistente
+```
+
+Osserva soltanto percorsi già tracciati come Source, più la stessa allowlist di scoperta usata da `cortex seed` — mai una scansione dell'intero progetto. Non crea mai una Memory né altra conoscenza canonica: produce le stesse osservazioni Source/Evidence di `cortex seed`, e nulla lascia questa macchina. Tre limiti noti della V1: le cancellazioni e i rinomini di file non sono tracciati (la storia di un file cancellato resta, e un file rinominato ne inizia una nuova); il watcher non si riavvia da solo dopo un riavvio del sistema — il comando `cortex` successivo in quel workspace lo riavvia e ricontrolla ogni file già tracciato per le modifiche perse; e un file creato mentre il watcher non era in esecuzione viene recuperato solo alla sua modifica successiva, non retroattivamente al riavvio. Validato su Linux; su altre piattaforme `cortex watch status` lo segnala come non disponibile invece di dichiarare un supporto mai testato lì.
+
 ## Compilazione del contesto
 
 ```bash
@@ -153,11 +165,11 @@ Abilitare l'extra semantico opzionale scarica un modello da Hugging Face al prim
 cortex init [general|dev|lab]
 ```
 
-- **`dev`** — il profilo con il comportamento più concreto oggi: abilita la scoperta automatica dei file di progetto con `cortex seed`. È anche il profilo più esercitato dalla suite di test.
+- **`dev`** — il profilo con il comportamento più concreto oggi: abilita la scoperta automatica dei file di progetto con `cortex seed` e avvia il [watcher di progetto in background](#watcher-di-progetto-profilo-dev). È anche il profilo più esercitato dalla suite di test.
 - **`general`** — il profilo predefinito per un uso non di sviluppo di Cortex; si comporta come il motore di base, senza scoperta automatica dei file di progetto.
 - **`lab`** — un identificatore di profilo canonico riservato a un uso sperimentale/esplorativo; oggi si comporta come `general`.
 
-Tutti e tre i profili condividono lo stesso archivio canonico e lo stesso comportamento di recupero, preflight, context ed export. Al momento il profilo influisce solo sulla possibilità che `cortex seed` (senza percorsi) scopra automaticamente i file di progetto.
+Tutti e tre i profili condividono lo stesso archivio canonico e lo stesso comportamento di recupero, preflight, context ed export. Al momento il profilo influisce su due cose: la possibilità che `cortex seed` (senza percorsi) scopra automaticamente i file di progetto, e l'avvio del watcher di progetto in background.
 
 ## Ambito attuale / limiti
 

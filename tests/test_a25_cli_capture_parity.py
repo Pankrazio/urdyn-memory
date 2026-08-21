@@ -385,7 +385,7 @@ def test_verified_lesson_from_cli_appears_in_preflight(tmp_path, monkeypatch, ca
     assert "RECOMMENDED VALIDATION" in captured.out
     assert "12 passed" in captured.out
     # The non-qualifying provenance item must not appear as recommended
-    # validation: only test_result/command_output do (§13 of the design).
+    # validation: only test_result/command_output do (deliberate).
     assert "1 failed" not in captured.out
 
 

@@ -531,7 +531,7 @@ def test_migrated_store_with_absent_index_initializes_it_once_under_concurrency(
     boundary. The migration itself is performed serially first (a single
     open), so this test isolates the derived boundary -- concurrent
     execution of the migration chain is a separate, pre-existing defect
-    at a different critical section (see this module's companion report)
+    at a different critical section (covered separately)
     and is deliberately not what is asserted here.
     """
     Cortex.init(tmp_path, "dev")

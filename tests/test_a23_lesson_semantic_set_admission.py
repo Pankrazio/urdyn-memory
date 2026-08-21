@@ -456,7 +456,7 @@ def test_a_root_cause_does_not_consume_lesson_set_capacity(tmp_path, scored_sema
     rescue keeps working, where a lesson below the floor is admitted
     because its sibling root cause cleared it. A23.1 adds a channel; it
     removes none. What A23.4 later bounded is not that eligibility but
-    what a lesson's own SCORE may buy there -- see the A23.4 section
+    what a lesson's own SCORE may buy there -- see A23.4's admission rule
     below.)
     """
     root_cause_content = "The loader accepted a boolean where an integer was expected."

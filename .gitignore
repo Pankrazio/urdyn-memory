@@ -13,3 +13,4 @@ wheels/
 # Cortex workspace data / local agent tooling
 .cortex/
 .claude/
+validation/

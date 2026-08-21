@@ -64,7 +64,7 @@ def test_supporting_evidence_ids_is_always_a_subset_of_evidence_ids(tmp_path):
 
 
 def test_supporting_and_generic_evidence_ordering_is_deterministic(tmp_path):
-    """[A12.1.1 section 9] `evidence_ids` is the single master order (the
+    """`evidence_ids` is the single master order (the
     only order the storage layer's `position` column can reconstruct on
     reload): `evidence`'s own order comes first, supporting-only ids are
     appended afterward, in the order given, without duplicates.
@@ -92,7 +92,7 @@ def test_supporting_and_generic_evidence_ordering_is_deterministic(tmp_path):
 
 
 def test_supporting_evidence_ordering_survives_reopen(tmp_path):
-    """[A12.1.1 section 9, acceptance-critical] The object `remember()`
+    """The object `remember()`
     returns and the object a fresh reload produces for the same row must
     have byte-identical `supporting_evidence_ids` ordering -- this was
     NOT true before A12.1.1 (the in-process object preserved the
@@ -144,7 +144,7 @@ def _memory_evidence_rows(db_path, memory_id):
 
 
 def test_overlap_evidence_a_b_supporting_b(tmp_path):
-    """[A12.1.1 section 10] `evidence=[A, B], supporting_evidence=[B]`:
+    """`evidence=[A, B], supporting_evidence=[B]`:
     B must appear exactly once in `evidence_ids` (not duplicated because
     it is cited in both pools) and exactly once as a `memory_evidence`
     row, with `role='supporting'` winning over `related` for that id."""
@@ -169,7 +169,7 @@ def test_overlap_evidence_a_b_supporting_b(tmp_path):
 
 
 def test_overlap_evidence_b_supporting_b_b(tmp_path):
-    """[A12.1.1 section 10] `evidence=[B], supporting_evidence=[B, B]`:
+    """`evidence=[B], supporting_evidence=[B, B]`:
     duplicated both within `supporting_evidence` itself and against
     `evidence` -- B must still appear exactly once everywhere."""
     cx = Cortex.init(tmp_path, "dev")
@@ -192,7 +192,7 @@ def test_overlap_evidence_b_supporting_b_b(tmp_path):
 
 
 def test_overlap_evidence_a_c_supporting_b_c(tmp_path):
-    """[A12.1.1 section 10] `evidence=[A, C], supporting_evidence=[B, C]`:
+    """`evidence=[A, C], supporting_evidence=[B, C]`:
     B is supporting-only (folded in via supporting-implies-related), C
     overlaps both pools, A is generic-only. No duplicate rows; master
     order (evidence_ids) determines `supporting_evidence_ids`'s order."""
@@ -326,7 +326,7 @@ def test_supporting_qualifying_evidence_verifies(tmp_path):
 
 
 def test_verified_requires_supporting_evidence_even_if_generic_evidence_exists(tmp_path):
-    """[A12.1 section 6, dogfood case] `evidence_ids=(test_id,),
+    """(dogfood case) `evidence_ids=(test_id,),
     supporting_evidence_ids=()` must be REJECTED for `verified`, even
     though `evidence_ids` alone contains a qualifying kind."""
     cx = Cortex.init(tmp_path, "dev")
@@ -342,7 +342,7 @@ def test_verified_requires_supporting_evidence_even_if_generic_evidence_exists(t
 
 
 def test_non_qualifying_supporting_evidence_does_not_verify(tmp_path):
-    """[A12.1 section 21] The qualifying-kind check applies to the
+    """The qualifying-kind check applies to the
     SUPPORTING pool specifically -- a generic qualifying Evidence cannot
     substitute for a non-qualifying supporting one."""
     cx = Cortex.init(tmp_path, "dev")
@@ -359,7 +359,7 @@ def test_non_qualifying_supporting_evidence_does_not_verify(tmp_path):
 
 
 def test_non_qualifying_supporting_evidence_is_still_allowed_on_non_verified_memory(tmp_path):
-    """[A12.1 section 21] Support and verification-qualification are
+    """Support and verification-qualification are
     distinct concepts: a caller may designate a non-qualifying Evidence
     as supporting a candidate (non-verified) memory -- 'supporting'
     means 'the caller asserts this backs the claim', not 'this
@@ -407,7 +407,7 @@ def test_learn_verified_uses_the_same_gate_as_remember(tmp_path):
 
 
 def test_preflight_no_longer_surfaces_a_generically_related_false_verification(tmp_path):
-    """[A12.0 probe 1 + probe 5, closed] The exact false-verification
+    """The exact false-verification
     scenario A12.0 demonstrated empirically can no longer be constructed
     at all: the `remember()` call itself is rejected, so there is no
     falsely-verified lesson left for `preflight()` to surface."""
@@ -439,8 +439,8 @@ def test_skill_promoted_from_properly_supported_lesson_is_verified(tmp_path):
 
 
 def test_skill_authority_is_fully_traceable_to_the_supporting_evidence(tmp_path):
-    """[A12.1.1 section 11] Skill deliberately does NOT get its own
-    `supporting_evidence_ids` field (A12.1 section 26) -- but an auditor
+    """Skill deliberately does NOT get its own
+    `supporting_evidence_ids` field -- but an auditor
     must still be able to walk the full chain: Skill -> `source_lesson_id`
     -> the CANONICAL source Lesson (fetched fresh, not trusted from any
     forged/stale object -- see `test_promote_ignores_forged_*` in
@@ -462,7 +462,7 @@ def test_skill_authority_is_fully_traceable_to_the_supporting_evidence(tmp_path)
 
 
 def test_skill_cannot_inherit_false_authority_via_generic_evidence_path(tmp_path):
-    """[A12.1 section 24/A12.0 section 16] The Skill-propagation risk
+    """The Skill-propagation risk
     A12.0 flagged as the highest-severity path is closed at the source:
     a Lesson can no longer become falsely `verified` from generically
     related qualifying Evidence, so no Skill promoted from it can either."""
@@ -486,8 +486,7 @@ def test_skill_cannot_inherit_false_authority_via_generic_evidence_path(tmp_path
 
 
 def test_current_limitation_directionality_failed_test_can_still_be_designated_supporting(tmp_path):
-    """[A12.0 section 9, A12.1 section 9 -- documented, not hidden]
-    Cortex does not parse Evidence content for PASS/FAIL or any other
+    """Documented, not hidden: Cortex does not parse Evidence content for PASS/FAIL or any other
     keyword. A FAILED test explicitly designated as supporting a
     positive claim is still accepted: A12.1 requires an explicit
     assertion, it does not validate that assertion's truth."""
@@ -505,7 +504,7 @@ def test_current_limitation_directionality_failed_test_can_still_be_designated_s
 
 
 def test_current_limitation_negative_user_confirmation_can_still_verify_a_positive_claim(tmp_path):
-    """[A12.0 section 9] Same principle for `user_confirmation`: content
+    """Same principle for `user_confirmation`: content
     negativity is not interpreted."""
     cx = Cortex.init(tmp_path, "dev")
     denial = cx.add_evidence("I confirm this is NOT correct.", kind="user_confirmation")
@@ -521,7 +520,7 @@ def test_current_limitation_negative_user_confirmation_can_still_verify_a_positi
 
 
 def test_current_limitation_topically_irrelevant_evidence_can_still_be_designated_supporting(tmp_path):
-    """[A12.0 section 10, A12.1 section 10] Explicit support is not
+    """Explicit support is not
     semantic relevance: once the caller deliberately designates Evidence
     as supporting, Cortex does not judge whether it is actually about
     the same topic as the claim."""
@@ -539,8 +538,8 @@ def test_current_limitation_topically_irrelevant_evidence_can_still_be_designate
 
 
 def test_current_limitation_same_evidence_can_support_contradictory_claims(tmp_path):
-    """[A12.0 section 15/39, out of scope for A12] Conflict/non-
-    contradiction detection is explicitly not part of this tracer."""
+    """Conflict/non-contradiction detection is explicitly out of scope
+    for A12 and not part of this tracer."""
     cx = Cortex.init(tmp_path, "dev")
     validation = cx.add_evidence("tests passed: 12/12", kind="test_result")
 

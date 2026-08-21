@@ -260,9 +260,14 @@ def resolve_seed_path(workspace: Path, cortex_dirname: str, raw: str | Path) -> 
         # `resolve()` collapses `..` AND follows symlinks, so a single
         # containment check below covers traversal and symlink escape
         # together: whatever the path is spelled like, this is the file
-        # that would actually be read.
+        # that would actually be read. A self-referential or excessively
+        # deep symlink makes `resolve()` raise `RuntimeError`, not
+        # `OSError` -- caught here alongside it so such a path is refused
+        # like any other unresolvable one, never left to propagate as an
+        # unhandled exception out of a caller that only expects
+        # `CortexSourceError` (e.g. the watcher's discovery scan).
         resolved = candidate.resolve()
-    except OSError as exc:
+    except (OSError, RuntimeError) as exc:
         raise CortexSourceError(f"Cannot resolve path {str(raw)!r}: {exc}") from exc
 
     if not resolved.is_relative_to(workspace_root):

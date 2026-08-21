@@ -106,7 +106,7 @@ def test_original_memory_is_preserved_unmodified_in_history(tmp_path):
     assert preserved.supersedes is None
 
 
-# -- generic state() contract (A11.1 section 9) ---------------------------
+# -- generic state() contract ------------------------------------------------
 
 
 def test_generic_state_includes_the_invalidation_and_excludes_the_invalidated_memory(tmp_path):
@@ -128,7 +128,7 @@ def test_generic_state_includes_the_invalidation_and_excludes_the_invalidated_me
     assert old.memory_id not in current_ids
 
 
-# -- recall() contract (A11.1 section 10) ---------------------------------
+# -- recall() contract --------------------------------------------------------
 
 
 def test_generic_recall_can_surface_a_current_invalidation(tmp_path):
@@ -151,7 +151,7 @@ def test_generic_recall_can_surface_a_current_invalidation(tmp_path):
     assert results[0].kind == "invalidation"
 
 
-# -- preflight() interaction (A11.1 section 11) ---------------------------
+# -- preflight() interaction ---------------------------------------------------
 
 
 def test_invalidated_verified_lesson_disappears_from_preflight(tmp_path):
@@ -179,7 +179,7 @@ def test_invalidated_verified_lesson_disappears_from_preflight(tmp_path):
     assert lesson.memory_id not in {m.memory_id for m in after.verified_lessons}
 
 
-# -- invariant interaction (A11.1 section 12) ------------------------------
+# -- invariant interaction -------------------------------------------------
 
 
 def test_invalidated_invariant_disappears_from_preflight_invariants(tmp_path):
@@ -206,7 +206,7 @@ def test_invalidated_invariant_disappears_from_preflight_invariants(tmp_path):
     assert all(m.kind == "invariant" for m in after.invariants)
 
 
-# -- complete replacement chain (A11.1 sections 13/15) ---------------------
+# -- complete replacement chain ---------------------------------------------
 
 
 def test_complete_chain_original_invalidation_replacement(tmp_path):
@@ -230,7 +230,7 @@ def test_complete_chain_original_invalidation_replacement(tmp_path):
     assert history_ids == {a.memory_id, b.memory_id, c.memory_id}
 
 
-# -- timeline behavior, cross-kind nuance (A11.1 section 14) ---------------
+# -- timeline behavior, cross-kind nuance ------------------------------------
 
 
 def test_kind_filtered_timeline_excludes_the_invalidation(tmp_path):
@@ -312,7 +312,7 @@ def test_invalidation_of_unknown_memory_is_rejected(tmp_path):
         cx.remember("Doubt about something that was never recorded.", kind="invalidation", supersedes="0" * 32)
 
 
-# -- invalidation of an invalidation (A11.1 section 18) ---------------------
+# -- invalidation of an invalidation -----------------------------------------
 
 
 def test_invalidation_of_an_invalidation_is_allowed_by_the_generic_model(tmp_path):
@@ -340,7 +340,7 @@ def test_invalidation_of_an_invalidation_is_allowed_by_the_generic_model(tmp_pat
     assert cx.state(kind="invalidation") == [second_doubt]
 
 
-# -- standalone invalidation, no supersedes (A11.1 section 35) -------------
+# -- standalone invalidation, no supersedes ----------------------------------
 
 
 def test_invalidation_without_supersedes_is_legitimate(tmp_path):
@@ -361,7 +361,7 @@ def test_invalidation_without_supersedes_is_legitimate(tmp_path):
     assert [m.memory_id for m in cx.state(kind="invalidation")] == [standalone.memory_id]
 
 
-# -- epistemic state of the invalidation itself (A11.1 section 19) ---------
+# -- epistemic state of the invalidation itself ------------------------------
 
 
 def test_invalidation_can_be_recorded_user_asserted(tmp_path):
@@ -423,7 +423,7 @@ def test_verified_invalidation_requires_qualifying_evidence_like_any_other_kind(
         )
 
 
-# -- storage/schema surface (A11.1 section 17) ------------------------------
+# -- storage/schema surface --------------------------------------------------
 
 
 def test_store_schema_version_is_unchanged(tmp_path):
@@ -438,7 +438,7 @@ def test_store_schema_version_is_unchanged(tmp_path):
     assert STORE_SCHEMA_VERSION == 7
 
 
-# -- copied workspace (A11.1 section 19 test list) --------------------------
+# -- copied workspace ---------------------------------------------------------
 
 
 def test_invalidation_survives_a_copied_workspace(tmp_path):
@@ -462,7 +462,7 @@ def test_invalidation_survives_a_copied_workspace(tmp_path):
     assert len(copied.state(kind="invalidation")) == 1
 
 
-# -- CLI (A11.1 section 30): the existing `remember --kind` surface --------
+# -- CLI: the existing `remember --kind` surface -------------------------------
 
 
 def test_cli_remember_accepts_invalidation_kind(tmp_path, monkeypatch, capsys):

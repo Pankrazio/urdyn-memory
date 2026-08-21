@@ -87,7 +87,7 @@ SECTION_HISTORY = "HISTORY"
 SECTION_VALIDATION = "VALIDATION"
 
 # [A29.1] The one fixed cross-category priority this tracer uses, derived
-# from which categories a real Dev Memory Loop session (A28) actually
+# from which categories a real end-to-end development session (A28) actually
 # acted on: a current constraint first, then open operational risk (the
 # category A28 measured as having the highest marginal value -- absent
 # from code, tests and docs alike), then verified experience, then a

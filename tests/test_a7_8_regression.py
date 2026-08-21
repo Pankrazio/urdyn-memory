@@ -1,6 +1,6 @@
-"""A7.8 regression: a real Human Acceptance miss, and its fix.
+"""A7.8 regression: a real acceptance-testing miss, and its fix.
 
-A7 Final Human Acceptance failed on a real, spontaneous query typed by
+A7 Final acceptance testing failed on a real, spontaneous query typed by
 a human tester against a real workspace:
 
     "I'm running a database migration and I want to make sure that if
@@ -195,7 +195,7 @@ def test_preflight_cluster_still_loses_to_a_stronger_unrelated_competitor(tmp_pa
 
 
 # ---------------------------------------------------------------------------
-# Real-model integration test: the actual Human Acceptance failure, fixed.
+# Real-model integration test: the actual acceptance-testing failure, fixed.
 # Skipped unless the real model is already cached locally -- never
 # downloaded by the test suite itself (same policy as
 # test_semantic_real_model.py).
@@ -256,7 +256,7 @@ def _offline():
 
 
 def _build_database_migration_experience(cx):
-    """Verbatim content from the real Human Acceptance workspace
+    """Verbatim content from the real acceptance-testing workspace
     (verified via Cortex's own public API during A7.8 diagnosis), not
     reworded or simplified for this test."""
     failure_evidence = cx.add_evidence(
@@ -305,7 +305,7 @@ def _build_database_migration_experience(cx):
 @skip_without_model
 def test_human_spontaneous_database_migration_query_now_recovers_useful_experience(tmp_path):
     """THE regression case: the exact, frozen, spontaneous query a
-    human tester typed during A7 Final Human Acceptance. Before the A7.8
+    human tester typed during A7 Final acceptance testing. Before the A7.8
     fix this returned `Preflight.is_empty() == True`. It must now
     surface the root cause AND the verified lesson together -- not just
     one of the two -- since they are the same experience and the fix
@@ -321,7 +321,7 @@ def test_human_spontaneous_database_migration_query_now_recovers_useful_experien
             "update applied."
         )
 
-        assert not result.is_empty(), "this is the real Human Acceptance miss -- must not regress to empty"
+        assert not result.is_empty(), "this is the real acceptance-testing miss -- must not regress to empty"
         assert root_cause.memory_id in {m.memory_id for m in result.root_causes}
         assert lesson.memory_id in {m.memory_id for m in result.verified_lessons}
 

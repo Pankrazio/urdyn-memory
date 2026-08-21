@@ -7,7 +7,7 @@ gates for a task could never appear in a `Preflight`, because nothing ever
 offered it as a candidate. Not a retrieval defect -- a wiring gap. So the
 tests here deliberately assert two different things at once:
 
-1. the relevant pending is surfaced and the unrelated one is not (§8's
+1. the relevant pending is surfaced and the unrelated one is not (the
    no-unconditional-dump gate), using the SAME thresholds every other
    category already uses; and
 2. giving pending its own pool did not make it compete with anything --

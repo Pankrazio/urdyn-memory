@@ -211,7 +211,7 @@ def test_promote_records_source_lesson_provenance(tmp_path):
 
 
 def test_promote_ignores_forged_verification_state_on_caller_object(tmp_path):
-    """BLOCKER fix: the persisted Lesson is authoritative, not the
+    """The persisted Lesson is authoritative, not the
     `Memory` object the caller happens to pass in. Build a second object
     that shares a real, persisted CANDIDATE lesson's `memory_id` but
     claims `epistemic_state="verified"`; the resulting Skill must still
@@ -229,7 +229,7 @@ def test_promote_ignores_forged_verification_state_on_caller_object(tmp_path):
 
 
 def test_promote_ignores_forged_evidence_ids_on_caller_object(tmp_path):
-    """BLOCKER fix: provenance is derived from the persisted Lesson's own
+    """Provenance is derived from the persisted Lesson's own
     evidence links, not from whatever `evidence_ids` the caller's object
     happens to carry. A forged object sharing a real Lesson's memory_id
     but claiming different evidence must not redirect the Skill's

@@ -106,6 +106,18 @@ cortex seed README.md src/     # record specific paths
 
 Seeded files become **Source / Evidence observations** — a record of what a file contained and when it was observed. They do not silently become canonical truth: seeding a file adds provenance Cortex can later cite, it does not create a verified memory on its own.
 
+## Project watcher (dev profile)
+
+`cortex init dev` also enables a local background process that keeps tracked project documents up to date automatically, so you do not have to remember to re-run `cortex seed` after every edit:
+
+```bash
+cortex watch status   # state, pid, last observation, tracked sources missing on disk
+cortex watch start    # enable + start (also what "init dev" does)
+cortex watch stop     # stop the process and disable it persistently
+```
+
+It only ever watches paths that are already a tracked Source, plus the same discovery allowlist `cortex seed` uses — never a scan of the whole project. It never creates a Memory or any other canonical belief; it produces the same Source/Evidence observations `cortex seed` does, and nothing leaves this machine. Three known V1 limits: file deletions and renames are not tracked (a deleted file's existing history is kept, and a renamed file starts a new one); the watcher does not restart on its own after a reboot — the next `cortex` command in that workspace restarts it and re-checks every already-tracked file for changes it missed; and a file created while the watcher was not running is picked up only the next time it changes, not retroactively at restart. Validated on Linux; on other platforms `cortex watch status` reports it as unavailable rather than claiming support that has not been tested there.
+
 ## Context compilation
 
 ```bash
@@ -153,11 +165,11 @@ Enabling the optional semantic extra downloads a model from Hugging Face on firs
 cortex init [general|dev|lab]
 ```
 
-- **`dev`** — the profile with the most concrete behavior today: it enables `cortex seed` project-file discovery. It is also the profile most exercised by the test suite.
+- **`dev`** — the profile with the most concrete behavior today: it enables `cortex seed` project-file discovery and starts the [background project watcher](#project-watcher-dev-profile). It is also the profile most exercised by the test suite.
 - **`general`** — the default profile for non-development use of Cortex; behaves like the core engine without automatic project-file discovery.
 - **`lab`** — a canonical profile identifier reserved for experimental or exploratory use; currently behaves the same as `general`.
 
-All three profiles share the same canonical store, retrieval, preflight, context, and export behavior. The profile only currently affects whether `cortex seed` (with no paths) can discover project files automatically.
+All three profiles share the same canonical store, retrieval, preflight, context, and export behavior. The profile currently affects two things: whether `cortex seed` (with no paths) can discover project files automatically, and whether the background project watcher runs.
 
 ## Current scope / limitations
 

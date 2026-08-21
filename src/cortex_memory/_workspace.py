@@ -749,6 +749,21 @@ class Cortex:
             )
         return discover_candidate_paths(self._path, CORTEX_DIRNAME)
 
+    def watcher_scope(self) -> frozenset[str]:
+        """Workspace-relative paths the Dev watcher may observe:
+        every path already tracked as a `Source`, unioned with the `dev`
+        discovery allowlist (`discover_candidate_paths`).
+
+        Deliberately bounded, never a recursive crawl of the workspace --
+        this is what keeps automatic background observation storage- and
+        privacy-safe (see `_watcher.py`). Nothing is cached: both halves
+        are recomputed fresh on every call, so a file newly seeded or a
+        new allowlist match joins the scope the moment it exists.
+        """
+        tracked = {source.path for source in self.sources()}
+        discoverable = set(discover_candidate_paths(self._path, CORTEX_DIRNAME))
+        return frozenset(tracked | discoverable)
+
     def learn(
         self,
         content: str,
@@ -1953,7 +1968,7 @@ class Cortex:
         described from two angles, not two candidates competing for
         the pool's single admission slot.
 
-        Diagnosed in A7.8 from a real Human Acceptance miss: plain
+        Diagnosed in A7.8 from a real acceptance-testing miss: plain
         `_semantic_widen`'s single-winner-plus-margin admission
         (`_semantic.semantic_admitted_ids`) treats a root-cause/lesson
         pair as competitors. A query relevant to the underlying

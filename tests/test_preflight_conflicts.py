@@ -183,7 +183,8 @@ def test_verified_lessons_remain_verified_when_part_of_a_conflict(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# 3.1 (A14.1.1, BLOCKING PROPERTY): Rule A' dependency direction.
+# Rule A' dependency direction -- a structural invariant that must never
+# be violated:
 #
 # existing relevance-gated Preflight fields --> Conflict relevance,
 # NEVER the reverse. A memory's participation in an open Conflict must
@@ -192,12 +193,11 @@ def test_verified_lessons_remain_verified_when_part_of_a_conflict(tmp_path):
 # data that has no notion of Conflict at all (see `build_preflight`:
 # `root_causes`/`verified_lessons`/`open_invalidations` are assigned
 # before `_conflict_gated_ids` is even built FROM them). This section
-# exists because an earlier draft of this file's own docstring/Human
-# Acceptance notes used ambiguous wording ("B admitted via Rule A' through
-# conflict membership") that, if it described the real behavior, would be
-# exactly the forbidden direction. It does not: this is a documentation
-# correction, not a code fix -- the tests below prove the code was
-# already right.
+# exists because an earlier wording of this rule was ambiguous ("B
+# admitted via Rule A' through conflict membership") that, if it
+# described the real behavior, would be exactly the forbidden direction.
+# It does not: this is a documentation correction, not a code fix -- the
+# tests below prove the code was already right.
 # ---------------------------------------------------------------------------
 
 
@@ -500,7 +500,7 @@ def test_decision_versus_invariant_relevant_case(tmp_path):
 
 
 def test_invariant_content_itself_relevant_makes_the_conflict_appear(tmp_path):
-    """CASE B (A14.1.1 §5), distinct from CASE A above: here the INVARIANT
+    """CASE B, distinct from CASE A above: here the INVARIANT
     side (not the decision side) is genuinely lexically relevant to its
     OWN content, while its partner is not relevant on any channel. The
     conflict must still appear -- an invariant Memory does not lose its
@@ -749,11 +749,11 @@ def test_same_participant_in_two_conflicts_shows_both(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# A14.1.1 §6-7: output amplification / large-conflict scaling.
+# Output amplification / large-conflict scaling.
 #
 # Worst case: a single Memory A participates in N open conflicts
 # (A<->B1, ..., A<->BN), and A alone is independently relevant -- by
-# one-sided sufficiency (§6-8 above), ALL N conflicts are then relevant,
+# one-sided sufficiency (see above), ALL N conflicts are then relevant,
 # regardless of whether any B_i says anything the task matches. This is
 # the actual amplification threat, not a contrived one.
 #
@@ -837,7 +837,7 @@ def test_cli_output_size_grows_linearly_with_shared_participant_conflict_count(t
 
 
 def test_result_and_query_count_do_not_blow_up_as_shared_participant_conflicts_grow(tmp_path):
-    """Large-conflict probe (A14.1.1 §7): C = 10 / 100 / 500, ALL sharing
+    """Large-conflict probe: C = 10 / 100 / 500, ALL sharing
     one participant so all become relevant (the worst case). Checks the
     TREND for superlinear (let alone O(C^2)) behavior in both query count
     and result count -- not an SLA."""
@@ -863,7 +863,7 @@ def test_result_and_query_count_do_not_blow_up_as_shared_participant_conflicts_g
 
     # O(C^2) from C=10 to C=500 (50x the conflicts) would multiply query
     # count by roughly 2500x. Actual growth must stay far below that --
-    # this is the BLOCKER gate from A14.1.1 §7.
+    # this is the release gate from A14.1.1.
     assert counts[500][0] < counts[10][0] * 100
 
 
@@ -1017,7 +1017,7 @@ class _QueryCounter:
     """Counts every SQL statement executed by ANY `MemoryStore` connection
     opened while active, by patching `MemoryStore.__init__` itself.
 
-    (A14.1.1 adversarial finding) A first version of this helper opened
+    A first version of this helper opened
     its OWN `MemoryStore`/connection via `MemoryStore.open_if_exists` and
     installed `sqlite3.Connection.set_trace_callback` on THAT connection,
     then called `cx.preflight(...)` expecting it to share the trace.
@@ -1155,7 +1155,7 @@ class TestTimelinePartitioningEquivalence:
         self._assert_equivalent_for_all_kinds(reopened)
 
     def test_legacy_migrated_workspace(self, tmp_path):
-        """A14.1.1 §11: the workspace's row wasn't ever written by the
+        """The workspace's row wasn't ever written by the
         current `remember()`/`learn()` code path -- it comes from a
         hand-built pre-A12.1 (schema v4) database, migrated transparently
         on first open (same technique as `test_migration_v5.py`). Proves
@@ -1171,7 +1171,7 @@ class TestTimelinePartitioningEquivalence:
         self._assert_equivalent_for_all_kinds(cx)
 
     def test_copied_workspace(self, tmp_path):
-        """A14.1.1 §11: the SAME `.cortex` directory, opened from a
+        """The SAME `.cortex` directory, opened from a
         DIFFERENT path after a filesystem copy (the same scenario A13's
         own `test_conflict_survives_a_copied_workspace` exercises for
         conflicts specifically)."""
@@ -1191,7 +1191,7 @@ class TestTimelinePartitioningEquivalence:
         self._assert_equivalent_for_all_kinds(copied)
 
     def test_malformed_storage_fails_the_same_way_as_before_the_partitioning_change(self, tmp_path):
-        """A14.1.1 §11: `timeline(None)` still runs `_row_to_memory`'s
+        """`timeline(None)` still runs `_row_to_memory`'s
         validation on every row, exactly like `timeline(kind)` did per
         kind -- so a corrupted row must still surface as
         `CortexStorageError` through `preflight()`, never silently
@@ -1341,7 +1341,7 @@ def test_cli_conflict_content_uses_terminal_safe_text(tmp_path, monkeypatch, cap
     ["ansi_sgr", "osc_bel", "osc_st", "cr_overwrite", "cursor_move", "c1_csi", "header_spoof", "nul_and_del", "bidi"],
 )
 def test_cli_conflict_content_covers_every_a14s_attack_vector(tmp_path, monkeypatch, capsys, name):
-    """A14.1.1 §9: reuse of the FULL A14.S vector set for the NEW
+    """Reuse of the FULL A14.S vector set for the NEW
     `OPEN CONFLICTS` surface, not just the header-spoof/ANSI subset
     originally covered. `PAYLOADS` is imported, not
     reimplemented -- the boundary primitive under test is
@@ -1371,8 +1371,8 @@ def test_cli_conflict_content_covers_every_a14s_attack_vector(tmp_path, monkeypa
 
 
 def test_a_lone_surrogate_cannot_be_persisted_as_memory_content_at_all(tmp_path):
-    """A14.1.1 §9 asked for the surrogate vector to be reused here too.
-    It cannot be, for a stronger reason than "the sanitizer handles it":
+    """The surrogate vector cannot simply be reused here, for a reason
+    stronger than "the sanitizer handles it":
     unlike a filesystem path (which can legitimately contain
     `surrogateescape` bytes, per A14.S.1), `Memory.content` arrives as a
     plain Python `str` argument, and `sqlite3` encodes it strict-UTF-8

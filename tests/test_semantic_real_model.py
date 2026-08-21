@@ -20,7 +20,7 @@ that were properties of the SYSTEM rather than of that particular model
 are kept and still asserted here: an unverified memory never gains
 authority, a hard negative never surfaces, the payment-guard-clause false
 positive stays rejected. The A7.4 assertions that encoded
-potion-SPECIFIC score outcomes (which exact Human Acceptance paraphrase
+potion-SPECIFIC score outcomes (which exact acceptance-testing paraphrase
 landed just under which calibrated floor) are NOT carried over pretending
 to be model-independent -- they measured one model's geometry, and this
 is a different model.
@@ -414,7 +414,7 @@ def test_repeated_setup_is_idempotent_and_still_correct(tmp_path):
 
 @skip_without_model
 def test_oversize_and_malformed_text_stay_data(tmp_path):
-    """[§38] Hostile input is data, not a hazard: very long content and
+    """Hostile input is data, not a hazard: very long content and
     malformed Unicode are bounded by the tokenizer's 128-token truncation
     and must not break setup, retrieval, or canonical storage."""
     with _offline():

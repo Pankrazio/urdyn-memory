@@ -1015,7 +1015,7 @@ def test_preflight_favors_recall_guard_favors_precision_on_the_same_query(tmp_pa
 
 
 # ---------------------------------------------------------------------------
-# A7.7: adversarial review closeout (cases not already covered above)
+# A7.7: adversarial cases not already covered above
 # ---------------------------------------------------------------------------
 
 
@@ -1159,7 +1159,7 @@ def test_index_from_a_foreign_model_provider_or_normalization_is_refused():
 
 
 def test_a_pre_a16_3_potion_index_degrades_to_lexical_and_is_rebuildable(tmp_path, fake_semantic):
-    """[A16.3, §21/§41] The honest upgrade story, end to end: canonical
+    """[A16.3] The honest upgrade story, end to end: canonical
     memory survives untouched, the OLD derived semantic index is refused
     rather than misread as if it were this backend's, retrieval degrades
     to lexical/FTS, and a fresh `semantic_setup()` restores the semantic
@@ -1263,7 +1263,7 @@ def test_retrieval_degrades_when_the_cached_artifact_is_gone(tmp_path, fake_sema
 
 
 def test_setup_falls_back_to_the_portable_artifact_and_records_it(monkeypatch):
-    """[§10] Exactly one fallback: preferred artifact -> portable
+    """Exactly one fallback: preferred artifact -> portable
     full-precision artifact. Whatever succeeded is what gets recorded, so
     a fallback can never be silently mixed with another artifact's
     vectors."""
@@ -1326,7 +1326,7 @@ def test_retrieval_never_asks_the_network_for_a_missing_artifact(monkeypatch):
 
 
 def test_encoding_is_chunked_so_peak_memory_does_not_scale_with_the_workspace():
-    """[A16.3, §38] `semantic_setup()` hands the encoder every memory in
+    """[A16.3] `semantic_setup()` hands the encoder every memory in
     the workspace in one call. With the previous static-embedding backend
     that was free; with a transformer the intermediate activations scale
     with the batch, and a 1002-memory workspace encoded as a single batch

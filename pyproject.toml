@@ -13,9 +13,9 @@ dependencies = []
 
 [project.optional-dependencies]
 # Every package here is imported DIRECTLY by `_semantic.py`; none is
-# relied on transitively. `model2vec` was removed in A16.3 together with
-# the potion backend it provided -- no production path or test needs it
-# any more, and rollback is a `git revert`, not a pinned leftover.
+# relied on transitively. `model2vec` and the potion backend it provided
+# were removed together -- no production path or test needs them any
+# more, and rollback is a `git revert`, not a pinned leftover.
 semantic = [
     "onnxruntime>=1.17.0",
     "tokenizers>=0.15,<1.0",

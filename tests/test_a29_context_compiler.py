@@ -283,7 +283,7 @@ def test_context_shows_decision_preflight_never_can(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# §29/§35 -- the Invariant discriminant: preflight is unconditional, context is not
+# The Invariant discriminant: preflight is unconditional, context is not
 # ---------------------------------------------------------------------------
 
 

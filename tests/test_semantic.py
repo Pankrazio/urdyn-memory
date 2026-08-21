@@ -1,8 +1,8 @@
 """A7.4: the optional semantic retrieval channel.
 
 Fast, deterministic unit tests only. None of these load the real
-ONNX model or touch the network: wherever `Cortex` needs to load
-a semantic model, `cortex_memory._semantic.load_model_for_setup`/
+ONNX model or touch the network: wherever `Urdyn` needs to load
+a semantic model, `urdyn._semantic.load_model_for_setup`/
 `load_model_for_retrieval` are monkeypatched to return `_FakeStaticModel`,
 a small controllable stand-in whose vectors are exact functions of a
 fixed "concept" vocabulary, so admission/abstention outcomes can be
@@ -19,9 +19,9 @@ import sys
 import numpy as np
 import pytest
 
-from cortex_memory import Cortex, CortexSemanticUnavailableError
-from cortex_memory._retrieval import ENTITY_ATTEMPT, ENTITY_MEMORY, ENTITY_SKILL
-from cortex_memory._semantic_store import SemanticIndexStore, semantic_db_path_for
+from urdyn import Urdyn, UrdynSemanticUnavailableError
+from urdyn._retrieval import ENTITY_ATTEMPT, ENTITY_MEMORY, ENTITY_SKILL
+from urdyn._semantic_store import SemanticIndexStore, semantic_db_path_for
 
 # ---------------------------------------------------------------------------
 # Fake deterministic embedding backend
@@ -62,7 +62,7 @@ def fake_semantic(monkeypatch):
     to the fake backend above, and give a fixed, non-None fake revision
     (real revision resolution is tested separately, against the real
     `huggingface_hub` cache, in the real-model integration test)."""
-    import cortex_memory._semantic as semantic
+    import urdyn._semantic as semantic
 
     fake_model = _FakeStaticModel()
     monkeypatch.setattr(semantic, "load_model_for_setup", lambda model_id=None: fake_model)
@@ -70,7 +70,7 @@ def fake_semantic(monkeypatch):
     monkeypatch.setattr(semantic, "resolve_local_revision", lambda model_id=None: "fake-revision")
     # [A27] `artifacts_available` is the cheap "can this index be queried
     # here at all" probe the lifecycle uses instead of loading a model
-    # (see `Cortex.semantic_state`). Its real implementation resolves
+    # (see `Urdyn.semantic_state`). Its real implementation resolves
     # paths in the Hugging Face cache, which the fake backend by
     # definition has nothing in, so it is faked at the same boundary as
     # the loaders above -- keeping its ONE real behaviour, that an index
@@ -102,34 +102,34 @@ def _block_semantic_runtime(monkeypatch):
     must never do. Whatever this blocks must stay the package
     `_semantic.py` genuinely imports.
 
-    Deleting `sys.modules["cortex_memory._semantic"]` alone is not
+    Deleting `sys.modules["urdyn._semantic"]` alone is not
     enough: once a submodule has been imported anywhere in the process,
     Python also binds it as an ATTRIBUTE on the parent package object
-    (`cortex_memory._semantic`), and `from . import _semantic` resolves
+    (`urdyn._semantic`), and `from . import _semantic` resolves
     via that attribute directly, bypassing `sys.modules`/the import
     machinery entirely if the attribute is still there (found while
     writing this test: the block silently had no effect without this
     second step, and a later test picked up the real, already-cached
     module instead of re-raising ImportError)."""
-    import cortex_memory
+    import urdyn
 
     monkeypatch.setitem(sys.modules, "onnxruntime", None)
-    monkeypatch.delitem(sys.modules, "cortex_memory._semantic", raising=False)
-    monkeypatch.delattr(cortex_memory, "_semantic", raising=False)
+    monkeypatch.delitem(sys.modules, "urdyn._semantic", raising=False)
+    monkeypatch.delattr(urdyn, "_semantic", raising=False)
 
 
 def test_base_import_does_not_require_the_semantic_runtime(monkeypatch):
     _block_semantic_runtime(monkeypatch)
     import importlib
 
-    import cortex_memory
+    import urdyn
 
-    importlib.reload(cortex_memory)  # re-run __init__ under the block, just in case
-    assert cortex_memory.Cortex is not None
+    importlib.reload(urdyn)  # re-run __init__ under the block, just in case
+    assert urdyn.Urdyn is not None
 
 
 def test_preflight_and_guard_degrade_silently_without_the_extra(tmp_path, monkeypatch):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     cx.record_attempt(task="Fix connection pool exhaustion", approach="Closed leaked connections", outcome="failed")
 
     _block_semantic_runtime(monkeypatch)
@@ -141,10 +141,10 @@ def test_preflight_and_guard_degrade_silently_without_the_extra(tmp_path, monkey
 
 
 def test_semantic_setup_raises_clear_error_without_the_extra(tmp_path, monkeypatch):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     _block_semantic_runtime(monkeypatch)
 
-    with pytest.raises(CortexSemanticUnavailableError, match="semantic"):
+    with pytest.raises(UrdynSemanticUnavailableError, match="semantic"):
         cx.semantic_setup()
 
 
@@ -154,7 +154,7 @@ def test_semantic_setup_raises_clear_error_without_the_extra(tmp_path, monkeypat
 
 
 def test_rank_candidates_orders_best_first():
-    from cortex_memory._semantic import rank_candidates
+    from urdyn._semantic import rank_candidates
 
     matrix = np.array([[1.0, 0.0], [0.0, 1.0], [0.7071, 0.7071]], dtype=np.float32)
     ranked = rank_candidates(np.array([1.0, 0.0], dtype=np.float32), ["low", "high", "mid"], matrix)
@@ -162,7 +162,7 @@ def test_rank_candidates_orders_best_first():
 
 
 def test_rank_candidates_scores_the_full_pool_no_early_cutoff():
-    from cortex_memory._semantic import rank_candidates
+    from urdyn._semantic import rank_candidates
 
     n = 50
     matrix = np.eye(n, dtype=np.float32)[:, :2]
@@ -173,21 +173,21 @@ def test_rank_candidates_scores_the_full_pool_no_early_cutoff():
 
 
 def test_semantic_admitted_id_admits_a_clear_winner():
-    from cortex_memory._semantic import semantic_admitted_id
+    from urdyn._semantic import semantic_admitted_id
 
     ranked = [("winner", 0.9), ("runner_up", 0.1)]
     assert semantic_admitted_id(ranked, ENTITY_MEMORY) == "winner"
 
 
 def test_semantic_admitted_id_abstains_below_absolute_floor():
-    from cortex_memory._semantic import semantic_admitted_id
+    from urdyn._semantic import semantic_admitted_id
 
     ranked = [("weak", 0.05), ("weaker", 0.01)]
     assert semantic_admitted_id(ranked, ENTITY_MEMORY) is None
 
 
 def test_semantic_admitted_id_abstains_when_margin_too_thin():
-    from cortex_memory._semantic import semantic_admitted_id
+    from urdyn._semantic import semantic_admitted_id
 
     ranked = [("top", 0.30), ("close_runner_up", 0.29)]  # both above MEMORY's 0.20 floor
     assert semantic_admitted_id(ranked, ENTITY_MEMORY) is None
@@ -199,14 +199,14 @@ def test_semantic_admitted_id_single_candidate_pool_skips_margin_floor():
     (which measures ambiguity against a runner-up) must not apply --
     only the absolute floor should. Without this fix, a real, strong
     single-candidate match was incorrectly rejected."""
-    from cortex_memory._semantic import semantic_admitted_id
+    from urdyn._semantic import semantic_admitted_id
 
     assert semantic_admitted_id([("only_one", 0.99)], ENTITY_MEMORY) == "only_one"
     assert semantic_admitted_id([("only_one", 0.01)], ENTITY_MEMORY) is None  # still needs the absolute floor
 
 
 def test_semantic_admitted_id_never_admits_below_rank_1():
-    from cortex_memory._semantic import semantic_admitted_id
+    from urdyn._semantic import semantic_admitted_id
 
     # rank 2 clears every floor on its own but is never even considered
     ranked = [("rank1", 0.20001), ("rank2", 0.99)]
@@ -215,7 +215,7 @@ def test_semantic_admitted_id_never_admits_below_rank_1():
 
 
 def test_vector_blob_round_trip():
-    from cortex_memory._semantic import blob_to_vector, vector_to_blob
+    from urdyn._semantic import blob_to_vector, vector_to_blob
 
     original = np.array([0.1, -0.2, 0.3, 0.0], dtype=np.float32)
     restored = blob_to_vector(vector_to_blob(original), dimensions=4)
@@ -223,7 +223,7 @@ def test_vector_blob_round_trip():
 
 
 def test_corrupted_vector_blob_wrong_dimension_raises():
-    from cortex_memory._semantic import blob_to_vector, vector_to_blob
+    from urdyn._semantic import blob_to_vector, vector_to_blob
 
     blob = vector_to_blob(np.array([1.0, 2.0, 3.0], dtype=np.float32))
     with pytest.raises(ValueError):
@@ -231,14 +231,14 @@ def test_corrupted_vector_blob_wrong_dimension_raises():
 
 
 def test_is_normalized_detects_unit_and_non_unit_vectors():
-    from cortex_memory._semantic import is_normalized
+    from urdyn._semantic import is_normalized
 
     assert is_normalized(np.array([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32)) is True
     assert is_normalized(np.array([[3.0, 4.0]], dtype=np.float32)) is False
 
 
 def test_embed_normalizes_even_if_the_backend_did_not(fake_semantic):
-    from cortex_memory._semantic import embed, is_normalized
+    from urdyn._semantic import embed, is_normalized
 
     vectors = embed(fake_semantic, ["alpha", "alpha beta"])
     assert is_normalized(vectors)
@@ -364,12 +364,12 @@ def test_semantic_vectors_entity_type_isolates_a_deliberate_id_collision():
 
 
 # ---------------------------------------------------------------------------
-# Cortex.semantic_setup(): idempotency, canonical isolation, representation
+# Urdyn.semantic_setup(): idempotency, canonical isolation, representation
 # ---------------------------------------------------------------------------
 
 
 def test_semantic_setup_is_idempotent(tmp_path, fake_semantic):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     cx.remember("alpha content here", kind="note")
 
     first = cx.semantic_setup()
@@ -381,7 +381,7 @@ def test_semantic_setup_is_idempotent(tmp_path, fake_semantic):
 
 
 def test_semantic_setup_never_touches_canonical_memory_db(tmp_path, fake_semantic):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     cx.remember("alpha content here", kind="note")
 
     connection = sqlite3.connect(cx._db_path)
@@ -397,15 +397,15 @@ def test_semantic_setup_never_touches_canonical_memory_db(tmp_path, fake_semanti
 
 
 def test_semantic_setup_on_an_empty_workspace_succeeds_with_zero_vectors(tmp_path, fake_semantic):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     result = cx.semantic_setup()
     assert (result.attempt_count, result.memory_count, result.skill_count) == (0, 0, 0)
 
 
 def test_semantic_setup_persists_model_metadata(tmp_path, fake_semantic):
-    import cortex_memory._semantic as semantic
+    import urdyn._semantic as semantic
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     cx.remember("alpha content", kind="note")
     cx.semantic_setup()
 
@@ -425,7 +425,7 @@ def test_semantic_representation_excludes_skill_steps(tmp_path, fake_semantic):
     Verified here by putting a concept word ONLY in `steps` and confirming
     it never influences the stored vector (would show up as a nonzero
     component on that concept's axis if steps leaked in)."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     ev = cx.add_evidence("checked", kind="test_result")
     lesson = cx.learn("something about beta", supporting_evidence=[ev], verified=True)
     cx.promote(
@@ -439,7 +439,7 @@ def test_semantic_representation_excludes_skill_steps(tmp_path, fake_semantic):
 
     with SemanticIndexStore.create_or_open(cx._semantic_db_path) as store:
         ((_, blob),) = store.all_vectors(ENTITY_SKILL)
-    from cortex_memory._semantic import blob_to_vector
+    from urdyn._semantic import blob_to_vector
 
     vector = blob_to_vector(blob, dimensions=_FAKE_DIM)
     gamma_index = _FAKE_CONCEPTS.index("gamma")
@@ -466,7 +466,7 @@ def _root_cause_with_own_evidence(cx, content):
 
 
 def test_preflight_admits_a_semantic_paraphrase_lexical_alone_would_miss(tmp_path, fake_semantic):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     _verified_lesson(cx, "alpha topic explained in the original wording")
     cx.semantic_setup()
 
@@ -493,9 +493,9 @@ def test_guard_abstains_on_a_thin_margin_even_with_a_top1_candidate(tmp_path, fa
     hit once, see `_block_semantic_runtime`)."""
     import math
 
-    from cortex_memory._semantic import SEMANTIC_POLICY
+    from urdyn._semantic import SEMANTIC_POLICY
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     lesson1 = _verified_lesson(cx, "alpha skill lesson")
     cx.promote(lesson1, name="alpha beta skill", purpose="gamma work", steps=["do alpha"])
     lesson2 = _verified_lesson(cx, "alpha beta skill lesson")
@@ -518,7 +518,7 @@ def test_guard_abstains_on_a_thin_margin_even_with_a_top1_candidate(tmp_path, fa
 
 
 def test_semantic_index_missing_falls_back_to_lexical_cleanly(tmp_path, fake_semantic):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     cx.record_attempt(task="Fix connection pool exhaustion", approach="closed leaks", outcome="failed")
     # deliberately never call semantic_setup()
     result = cx.preflight("Fix connection pool exhaustion")
@@ -526,7 +526,7 @@ def test_semantic_index_missing_falls_back_to_lexical_cleanly(tmp_path, fake_sem
 
 
 def test_semantic_index_stale_metadata_is_not_used_silently(tmp_path, fake_semantic):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     _verified_lesson(cx, "alpha content")
     cx.semantic_setup()
 
@@ -542,9 +542,9 @@ def test_semantic_index_stale_metadata_is_not_used_silently(tmp_path, fake_seman
 
 
 def test_semantic_index_mid_rebuild_is_not_used(tmp_path, fake_semantic):
-    import cortex_memory._semantic as semantic
+    import urdyn._semantic as semantic
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     _verified_lesson(cx, "alpha content")
     cx.semantic_setup()
 
@@ -561,7 +561,7 @@ def test_semantic_index_mid_rebuild_is_not_used(tmp_path, fake_semantic):
 
 
 def test_corrupted_vector_in_index_degrades_the_whole_pool_safely(tmp_path, fake_semantic):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     _verified_lesson(cx, "alpha content")
     cx.semantic_setup()
 
@@ -579,14 +579,14 @@ def test_portability_copied_workspace_preserves_canonical_ids_and_semantic_resul
     import shutil
 
     src = tmp_path / "src"
-    cx = Cortex.init(src, "dev")
+    cx = Urdyn.init(src, "dev")
     lesson = _verified_lesson(cx, "alpha content")
     cx.semantic_setup()
 
     dst = tmp_path / "dst"
     shutil.copytree(src, dst)
 
-    copied = Cortex.open(dst)
+    copied = Urdyn.open(dst)
     result = copied.preflight("a completely different phrasing that happens to be about alpha")
     assert [m.memory_id for m in result.verified_lessons] == [lesson.memory_id]
 
@@ -595,21 +595,21 @@ def test_portability_missing_semantic_index_after_copy_falls_back_safely(tmp_pat
     import shutil
 
     src = tmp_path / "src"
-    cx = Cortex.init(src, "dev")
+    cx = Urdyn.init(src, "dev")
     cx.record_attempt(task="Fix connection pool exhaustion", approach="closed leaks", outcome="failed")
     cx.semantic_setup()
 
     dst = tmp_path / "dst"
     shutil.copytree(src, dst)
-    (dst / ".cortex" / semantic_db_path_for(src / ".cortex").name).unlink()
+    (dst / ".urdyn" / semantic_db_path_for(src / ".urdyn").name).unlink()
 
-    copied = Cortex.open(dst)
+    copied = Urdyn.open(dst)
     result = copied.preflight("Fix connection pool exhaustion")
     assert len(result.known_failures) == 1  # lexical channel, no crash
 
 
 def test_empty_and_whitespace_query_never_crash_semantic_widening(tmp_path, fake_semantic):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     _verified_lesson(cx, "alpha content")
     cx.semantic_setup()
 
@@ -618,7 +618,7 @@ def test_empty_and_whitespace_query_never_crash_semantic_widening(tmp_path, fake
 
 
 def test_unicode_query_does_not_crash_semantic_widening(tmp_path, fake_semantic):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     _verified_lesson(cx, "alpha content")
     cx.semantic_setup()
 
@@ -627,7 +627,7 @@ def test_unicode_query_does_not_crash_semantic_widening(tmp_path, fake_semantic)
 
 
 def test_very_long_query_does_not_crash_semantic_widening(tmp_path, fake_semantic):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     _verified_lesson(cx, "alpha content")
     cx.semantic_setup()
 
@@ -637,7 +637,7 @@ def test_very_long_query_does_not_crash_semantic_widening(tmp_path, fake_semanti
 
 
 def test_very_short_single_word_query_does_not_crash_semantic_widening(tmp_path, fake_semantic):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     _verified_lesson(cx, "alpha content")
     cx.semantic_setup()
 
@@ -649,15 +649,15 @@ def test_fts_disabled_semantic_enabled_still_widens_via_semantic(tmp_path, fake_
     """FTS5 unavailable (simulated the same way `test_search_index.py`
     does) must not disable the independent semantic channel: the two
     widening channels are meant to degrade independently."""
-    import cortex_memory._store as store_module
+    import urdyn._store as store_module
 
     monkeypatch.setattr(store_module, "_try_create_search_index", lambda connection: False)
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     _verified_lesson(cx, "alpha topic explained in the original wording")
     cx.semantic_setup()
 
-    from cortex_memory._store import MemoryStore
+    from urdyn._store import MemoryStore
 
     with MemoryStore.open_if_exists(cx._db_path) as store:
         assert store.fts_enabled is False
@@ -667,12 +667,12 @@ def test_fts_disabled_semantic_enabled_still_widens_via_semantic(tmp_path, fake_
 
 
 def test_both_fts_and_semantic_unavailable_falls_back_to_pure_lexical(tmp_path, monkeypatch):
-    import cortex_memory._store as store_module
+    import urdyn._store as store_module
 
     monkeypatch.setattr(store_module, "_try_create_search_index", lambda connection: False)
     _block_semantic_runtime(monkeypatch)
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     cx.record_attempt(task="Fix connection pool exhaustion", approach="closed leaks", outcome="failed")
 
     result = cx.preflight("Fix connection pool exhaustion")  # exact match: pure lexical still works
@@ -685,7 +685,7 @@ def test_both_fts_and_semantic_unavailable_falls_back_to_pure_lexical(tmp_path, 
 
 
 def test_superseded_memory_is_not_resurrected_via_semantic_channel(tmp_path, fake_semantic):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     old = _verified_lesson(cx, "alpha old content")
     _verified_lesson(cx, "alpha new content")  # supersedes intentionally omitted below to keep both "current"
     cx.semantic_setup()
@@ -703,7 +703,7 @@ def test_superseded_memory_is_not_resurrected_via_semantic_channel(tmp_path, fak
 
 
 def test_unverified_lesson_is_not_promoted_via_semantic_channel(tmp_path, fake_semantic):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     cx.learn("alpha unverified content")  # default: not verified
     cx.semantic_setup()
 
@@ -717,8 +717,8 @@ def test_unverified_lesson_is_not_promoted_via_semantic_channel(tmp_path, fake_s
 
 
 def test_cli_semantic_setup_reports_success(tmp_path, fake_semantic, monkeypatch, capsys):
-    import cortex_memory._semantic as semantic
-    from cortex_memory._cli import main
+    import urdyn._semantic as semantic
+    from urdyn._cli import main
 
     monkeypatch.chdir(tmp_path)
     assert main(["init", "dev"]) == 0
@@ -733,7 +733,7 @@ def test_cli_semantic_setup_reports_success(tmp_path, fake_semantic, monkeypatch
 
 
 def test_cli_semantic_setup_without_extra_fails_cleanly_no_traceback(tmp_path, monkeypatch, capsys):
-    from cortex_memory._cli import main
+    from urdyn._cli import main
 
     monkeypatch.chdir(tmp_path)
     assert main(["init", "dev"]) == 0
@@ -744,7 +744,7 @@ def test_cli_semantic_setup_without_extra_fails_cleanly_no_traceback(tmp_path, m
     captured = capsys.readouterr()
     assert exit_code == 1
     assert "Traceback" not in captured.err
-    assert "cortex: error:" in captured.err
+    assert "urdyn: error:" in captured.err
 
 
 # ---------------------------------------------------------------------------
@@ -753,11 +753,11 @@ def test_cli_semantic_setup_without_extra_fails_cleanly_no_traceback(tmp_path, m
 
 
 def test_semantic_admitted_ids_eligible_ids_filters_pool_before_ranking():
-    """Unit-level proof of the [A7.7] fix, independent of Cortex: an
+    """Unit-level proof of the [A7.7] fix, independent of Urdyn: an
     ineligible candidate that would win the FULL pool must not be able
     to consume the single admission slot once `eligible_ids` excludes
     it -- the eligible runner-up gets a real chance instead."""
-    from cortex_memory._semantic import blob_to_vector, semantic_admitted_ids, vector_to_blob
+    from urdyn._semantic import blob_to_vector, semantic_admitted_ids, vector_to_blob
 
     class _Model:
         def encode(self, texts):
@@ -795,7 +795,7 @@ def test_semantic_admitted_ids_eligible_ids_does_not_auto_promote_below_floor():
     """The fix must not become "always show the best eligible
     candidate": if the only eligible candidate does not itself clear the
     normal absolute floor, the result is still abstention."""
-    from cortex_memory._semantic import semantic_admitted_ids, vector_to_blob
+    from urdyn._semantic import semantic_admitted_ids, vector_to_blob
 
     class _Model:
         def encode(self, texts):
@@ -820,7 +820,7 @@ def test_preflight_ineligible_top1_no_longer_blocks_eligible_verified_lesson(tmp
     finding: an UNVERIFIED lesson that dominates the raw ranking must no
     longer prevent a DIFFERENT, VERIFIED, current lesson from being
     admitted through the semantic channel."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     cx.remember("alpha", kind="lesson", epistemic_state="user_asserted")  # unverified: cos=1.0 with "alpha"
     verified = _verified_lesson(cx, "alpha beta")  # verified: cos=0.707 with "alpha", alone once filtered
     cx.semantic_setup()
@@ -834,7 +834,7 @@ def test_preflight_superseded_current_does_not_block_verified_lesson(tmp_path, f
     (even if it would have scored higher) must not block its own
     successor -- or any other current, verified lesson -- from being
     considered."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     old = _verified_lesson(cx, "alpha")  # will be superseded
     new = _verified_lesson(cx, "alpha beta")
     ev = cx.add_evidence("superseding check", kind="test_result")
@@ -854,7 +854,7 @@ def test_guard_attempt_pool_ignores_succeeded_attempts_for_eligibility(tmp_path,
     never appear in guard()'s known_failures (guard only ever surfaces
     FAILED attempts), so it must not be able to dominate the semantic
     ranking pool and starve a genuinely relevant failed attempt either."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     cx.record_attempt(task="alpha", approach="alpha", outcome="succeeded")  # cos=1.0, but never eligible
     ev = cx.add_evidence("observed failure", kind="test_result")
     failed = cx.record_attempt(task="alpha beta", approach="alpha beta", outcome="failed", evidence=[ev])
@@ -890,7 +890,7 @@ def test_preflight_corroboration_admits_a_near_floor_memory_with_independently_r
     that still depends solely on the single-winner MEMORY pool, so they
     are what can still exhibit -- and therefore still test -- the
     corroboration fallback."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     ev = cx.add_evidence("shared evidence for corroboration", kind="test_result")
     cx.remember("alpha", kind="root_cause", epistemic_state="inferred", evidence=[ev])
     _root_cause_with_own_evidence(cx, "alpha")  # exact tie -> margin floor rejects both on its own
@@ -919,7 +919,7 @@ def test_preflight_corroboration_rejects_a_merely_present_unrelated_attempt(tmp_
 
     [A23.1] Built from root causes for the same reason as the
     corroboration-admits case above."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     ev = cx.add_evidence("shared evidence, unrelated attempt", kind="test_result")
     cx.remember("alpha", kind="root_cause", epistemic_state="inferred", evidence=[ev])
     _root_cause_with_own_evidence(cx, "alpha")  # exact tie, same as the case above
@@ -940,7 +940,7 @@ def test_preflight_corroboration_requires_a_real_canonical_relationship(tmp_path
 
     [A23.1] Built from root causes for the same reason as the
     corroboration-admits case above."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     ev1 = cx.add_evidence("evidence for the tied root cause", kind="error_observation")
     cx.remember("alpha", kind="root_cause", epistemic_state="inferred", evidence=[ev1])
     _root_cause_with_own_evidence(cx, "alpha")
@@ -960,7 +960,7 @@ def test_guard_never_gets_structural_corroboration_widening(tmp_path, fake_seman
     (tied skills + an independently strong related failed Attempt) and
     confirm guard() still abstains -- there is no corroboration fallback
     wired into guard() at all."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     ev = cx.add_evidence("shared evidence", kind="test_result")
     lesson_a = _verified_lesson(cx, "alpha")
     cx.promote(lesson_a, name="alpha skill a", purpose="alpha", steps=["s"])
@@ -993,7 +993,7 @@ def test_preflight_favors_recall_guard_favors_precision_on_the_same_query(tmp_pa
     -- it still asks the single-winner question, still has the identical
     tie, and still abstains, which is the half of this test that
     discriminates."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     ev = cx.add_evidence("shared evidence for corroboration", kind="test_result")
     lesson = cx.learn("alpha", supporting_evidence=[ev], verified=True)
     _verified_lesson(cx, "alpha")  # tie partner, forces the memory-pool margin abstain path
@@ -1024,7 +1024,7 @@ def test_eligible_rank_2_below_its_own_floor_still_abstains(tmp_path, fake_seman
     the ineligible rank #1 is filtered out, does not itself clear the
     absolute floor must still result in abstention -- the fix restricts
     the pool, it does not lower the bar for whatever is left in it."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     cx.remember("alpha", kind="lesson", epistemic_state="user_asserted")  # unverified, cos=1.0, rank #1, ineligible
     _verified_lesson(cx, "epsilon")  # verified, but cos=0.0 with an "alpha" query -- eligible, still below floor
     cx.semantic_setup()
@@ -1037,7 +1037,7 @@ def test_stale_semantic_index_disables_corroboration_too(tmp_path, fake_semantic
     """The corroboration path shares `_semantic_context()` with normal
     semantic widening, so a stale/mismatched index must disable it the
     same way -- verified explicitly rather than assumed from shared code."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     ev = cx.add_evidence("shared evidence", kind="test_result")
     cx.learn("alpha", supporting_evidence=[ev], verified=True)
     _verified_lesson(cx, "alpha")
@@ -1057,7 +1057,7 @@ def test_stale_semantic_index_disables_corroboration_too(tmp_path, fake_semantic
 
 
 def test_corroboration_does_not_crash_without_the_extra(tmp_path, monkeypatch):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     ev = cx.add_evidence("shared evidence", kind="test_result")
     cx.learn("alpha", supporting_evidence=[ev], verified=True)
     cx.record_attempt(task="alpha", approach="alpha", outcome="failed", evidence=[ev])
@@ -1076,8 +1076,8 @@ def test_corroboration_does_not_crash_without_the_extra(tmp_path, monkeypatch):
 def _meta(model_id, *, provider=None, normalization="l2", dimensions=384, status="ready"):
     """A `SemanticMeta` built directly, so index-compatibility can be
     tested without standing up a workspace for every variation."""
-    import cortex_memory._semantic as semantic
-    from cortex_memory._semantic_store import SemanticMeta
+    import urdyn._semantic as semantic
+    from urdyn._semantic_store import SemanticMeta
 
     return SemanticMeta(
         provider=semantic.SEMANTIC_PROVIDER if provider is None else provider,
@@ -1095,7 +1095,7 @@ def test_preferred_artifact_is_chosen_by_architecture_never_by_os():
     string must give the same artifact whatever the OS is, and anything
     unrecognized must land on the portable full-precision artifact
     rather than on a guess."""
-    import cortex_memory._semantic as semantic
+    import urdyn._semantic as semantic
 
     assert semantic.preferred_artifact("x86_64") == semantic.ARTIFACT_X86_64
     assert semantic.preferred_artifact("AMD64") == semantic.ARTIFACT_X86_64  # Windows spelling
@@ -1107,7 +1107,7 @@ def test_preferred_artifact_is_chosen_by_architecture_never_by_os():
 
 
 def test_effective_identity_names_repo_revision_and_artifact():
-    import cortex_memory._semantic as semantic
+    import urdyn._semantic as semantic
 
     identity = semantic.model_identity_for(semantic.ARTIFACT_X86_64)
     assert semantic.SEMANTIC_MODEL_REPO in identity
@@ -1124,7 +1124,7 @@ def test_index_is_queried_with_the_artifact_it_was_built_with():
     whose preferred artifact is a different one. Answering with the
     RECORDED artifact is what makes it impossible to score stored
     vectors against a query embedded by a different artifact."""
-    import cortex_memory._semantic as semantic
+    import urdyn._semantic as semantic
 
     for artifact in sorted(semantic.SUPPORTED_ARTIFACTS):
         meta = _meta(semantic.model_identity_for(artifact))
@@ -1135,7 +1135,7 @@ def test_index_from_a_different_revision_of_the_same_model_is_refused():
     """An upstream re-export of the same repo and the same artifact
     filename can still produce different vectors, so the pinned revision
     is part of the identity and a different one is not readable here."""
-    import cortex_memory._semantic as semantic
+    import urdyn._semantic as semantic
 
     foreign = (
         f"{semantic.SEMANTIC_MODEL_REPO}@0000000000000000000000000000000000000000"
@@ -1145,7 +1145,7 @@ def test_index_from_a_different_revision_of_the_same_model_is_refused():
 
 
 def test_index_from_a_foreign_model_provider_or_normalization_is_refused():
-    import cortex_memory._semantic as semantic
+    import urdyn._semantic as semantic
 
     good = semantic.model_identity_for(semantic.ARTIFACT_X86_64)
     assert semantic.artifact_for_index(_meta(good)) is not None
@@ -1164,7 +1164,7 @@ def test_a_pre_a16_3_potion_index_degrades_to_lexical_and_is_rebuildable(tmp_pat
     rather than misread as if it were this backend's, retrieval degrades
     to lexical/FTS, and a fresh `semantic_setup()` restores the semantic
     channel. No vector migration exists, and none is promised."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     lesson = _verified_lesson(cx, "alpha content")
     cx.record_attempt(task="Fix connection pool exhaustion", approach="closed leaks", outcome="failed")
     cx.semantic_setup()
@@ -1196,28 +1196,28 @@ def test_a_pre_a16_3_potion_index_degrades_to_lexical_and_is_rebuildable(tmp_pat
 # ---------------------------------------------------------------------------
 
 
-def test_setup_reports_a_cortex_error_when_the_model_cannot_be_loaded(tmp_path, monkeypatch):
+def test_setup_reports_a_urdyn_error_when_the_model_cannot_be_loaded(tmp_path, monkeypatch):
     """A download or ONNX-session failure during setup must surface as
-    Cortex's own error type, not as a raw onnxruntime/huggingface_hub
+    Urdyn's own error type, not as a raw onnxruntime/huggingface_hub
     traceback (which the CLI would print verbatim)."""
-    import cortex_memory._semantic as semantic
+    import urdyn._semantic as semantic
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
 
     def _boom():
         raise RuntimeError("simulated artifact download/session failure")
 
     monkeypatch.setattr(semantic, "load_model_for_setup", _boom)
-    with pytest.raises(CortexSemanticUnavailableError, match="semantic model"):
+    with pytest.raises(UrdynSemanticUnavailableError, match="semantic model"):
         cx.semantic_setup()
 
 
 def test_setup_failure_leaves_a_previously_built_index_intact(tmp_path, fake_semantic, monkeypatch):
     """Fail closed: a setup that cannot load a model must not destroy the
     index that was already there and working."""
-    import cortex_memory._semantic as semantic
+    import urdyn._semantic as semantic
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     lesson = _verified_lesson(cx, "alpha content")
     cx.semantic_setup()
 
@@ -1233,7 +1233,7 @@ def test_setup_failure_leaves_a_previously_built_index_intact(tmp_path, fake_sem
         return working_loader()
 
     monkeypatch.setattr(semantic, "load_model_for_setup", _maybe_boom)
-    with pytest.raises(CortexSemanticUnavailableError):
+    with pytest.raises(UrdynSemanticUnavailableError):
         cx.semantic_setup()
 
     failing["now"] = False
@@ -1245,9 +1245,9 @@ def test_retrieval_degrades_when_the_cached_artifact_is_gone(tmp_path, fake_sema
     """The artifact disappearing from the local cache after setup (a
     pruned cache, a workspace copied without one) must degrade to
     lexical/FTS -- never crash, and never reach for the network."""
-    import cortex_memory._semantic as semantic
+    import urdyn._semantic as semantic
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     _verified_lesson(cx, "alpha content")
     cx.record_attempt(task="Fix connection pool exhaustion", approach="closed leaks", outcome="failed")
     cx.semantic_setup()
@@ -1267,7 +1267,7 @@ def test_setup_falls_back_to_the_portable_artifact_and_records_it(monkeypatch):
     full-precision artifact. Whatever succeeded is what gets recorded, so
     a fallback can never be silently mixed with another artifact's
     vectors."""
-    import cortex_memory._semantic as semantic
+    import urdyn._semantic as semantic
 
     attempted = []
 
@@ -1290,7 +1290,7 @@ def test_setup_falls_back_to_the_portable_artifact_and_records_it(monkeypatch):
 
 
 def test_setup_gives_up_after_one_fallback_rather_than_looping(monkeypatch):
-    import cortex_memory._semantic as semantic
+    import urdyn._semantic as semantic
 
     attempted = []
 
@@ -1311,7 +1311,7 @@ def test_retrieval_never_asks_the_network_for_a_missing_artifact(monkeypatch):
     `local_files_only=True`. This is the property that keeps
     `preflight()`/`guard()` offline by construction rather than by
     convention."""
-    import cortex_memory._semantic as semantic
+    import urdyn._semantic as semantic
 
     seen = {}
 
@@ -1332,7 +1332,7 @@ def test_encoding_is_chunked_so_peak_memory_does_not_scale_with_the_workspace():
     with the batch, and a 1002-memory workspace encoded as a single batch
     was measured peaking at 6.3 GB of RSS during A16.3. The encoder must
     therefore chunk, and no caller should have to know that."""
-    import cortex_memory._semantic as semantic
+    import urdyn._semantic as semantic
 
     batch_sizes = []
 

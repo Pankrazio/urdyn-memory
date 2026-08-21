@@ -7,18 +7,18 @@
         + recommended validation
 
 This mirrors how `test_preflight.py`'s A4 scenario test works: one
-`Cortex` handle records everything and is discarded, and a second,
+`Urdyn` handle records everything and is discarded, and a second,
 independent handle stands in for a fresh agent/session with no shared
 conversation state.
 """
 
 import shutil
 
-from cortex_memory import Cortex
+from urdyn import Urdyn
 
 
 def test_attempt_lesson_skill_guard_end_to_end(tmp_path):
-    process_a = Cortex.init(tmp_path, "dev")
+    process_a = Urdyn.init(tmp_path, "dev")
 
     error_evidence = process_a.add_evidence(
         "Refresh token was invalidated during rotation.", kind="error_observation"
@@ -62,7 +62,7 @@ def test_attempt_lesson_skill_guard_end_to_end(tmp_path):
     del process_a
 
     # a brand-new agent/session discovers the workspace with no shared state
-    process_b = Cortex.discover(tmp_path)
+    process_b = Urdyn.discover(tmp_path)
 
     result = process_b.guard("Modify refresh-token persistence logic")
     assert len(result.known_failures) == 1
@@ -76,17 +76,17 @@ def test_attempt_lesson_skill_guard_end_to_end(tmp_path):
 
     # a third, equally independent handle confirms an unrelated action
     # gets no warning at all
-    process_c = Cortex.discover(tmp_path)
+    process_c = Urdyn.discover(tmp_path)
     unrelated = process_c.guard("Change CSS button color")
     assert unrelated.is_empty()
 
 
 def test_workspace_is_portable_after_promotion(tmp_path):
-    """Copying `.cortex/` to a new path must preserve skill ids, steps,
+    """Copying `.urdyn/` to a new path must preserve skill ids, steps,
     conditions, provenance, verification state, and guard behavior."""
     original_root = tmp_path / "original"
     original_root.mkdir()
-    cx = Cortex.init(original_root, "dev")
+    cx = Urdyn.init(original_root, "dev")
 
     validation = cx.add_evidence("Authentication tests passed.", kind="test_result")
     lesson = cx.learn(
@@ -106,7 +106,7 @@ def test_workspace_is_portable_after_promotion(tmp_path):
     copied_root = tmp_path / "copied"
     shutil.copytree(original_root, copied_root)
 
-    reopened = Cortex.open(copied_root)
+    reopened = Urdyn.open(copied_root)
     (copied_skill,) = reopened.skills()
 
     assert copied_skill.skill_id == original_skill.skill_id

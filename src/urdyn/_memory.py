@@ -1,6 +1,6 @@
 """The canonical `Memory` model.
 
-A `Memory` is Cortex's public unit of recorded knowledge. It carries no
+A `Memory` is Urdyn's public unit of recorded knowledge. It carries no
 storage details (no row ids, no SQL, no file paths) so that the backend
 can evolve without changing what callers see.
 """
@@ -36,7 +36,7 @@ KIND_ROOT_CAUSE = "root_cause"
 #     by a `decision` or `note` carrying the answer -- never `verified`,
 #     which has no meaning for a question.
 #   - `invariant`: a PROJECT-WIDE operational constraint that must not be
-#     violated (e.g. ".cortex/ must remain gitignored"). A9.1 deliberately
+#     violated (e.g. ".urdyn/ must remain gitignored"). A9.1 deliberately
 #     restricts this kind to project-wide constraints only -- a
 #     constraint that applies to a narrow subsystem is a FUTURE
 #     POSSIBILITY pending a real `scope` model, not something to force
@@ -63,7 +63,7 @@ KIND_ENVIRONMENT = "environment"
 KIND_INVALIDATION = "invalidation"
 
 # [A29.1] Named for the first consumer that needs to select this kind
-# specifically (`Cortex.context()`'s DECISIONS section) rather than treat
+# specifically (`Urdyn.context()`'s DECISIONS section) rather than treat
 # it as an opaque "note"-like default. Not a new primitive: a decision is
 # recorded and superseded exactly like any other Memory kind.
 KIND_DECISION = "decision"
@@ -90,9 +90,9 @@ VALID_EPISTEMIC_STATES = frozenset({EPISTEMIC_USER_ASSERTED, EPISTEMIC_INFERRED,
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class Memory:
-    """A single canonical memory persisted by Cortex.
+    """A single canonical memory persisted by Urdyn.
 
-    `recorded_at` is when Cortex recorded the memory, in UTC. It is not
+    `recorded_at` is when Urdyn recorded the memory, in UTC. It is not
     a claim about when the underlying fact occurred or was observed.
 
     `supersedes` is the memory_id of an older memory this one replaces,
@@ -126,7 +126,7 @@ class Memory:
     `supporting_evidence_ids` -- this is "verified under the pre-A12.1
     contract", preserved as-is, never rewritten or downgraded.
 
-    Explicit support is not truth: Cortex does not semantically judge
+    Explicit support is not truth: Urdyn does not semantically judge
     whether the designated Evidence actually proves this memory's
     content, only that the caller deliberately asserted it does, with
     a kind that represents an actual check having occurred.

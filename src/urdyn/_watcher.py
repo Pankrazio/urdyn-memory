@@ -1,30 +1,30 @@
 """The Dev profile's automatic filesystem watcher.
 
-Turns "the user seeded a file once" into "Cortex keeps noticing when it
+Turns "the user seeded a file once" into "Urdyn keeps noticing when it
 changes", for the `dev` profile only. This module owns exactly four
 things: a persistent on/off switch, a detached background process, a
 bounded polling/reconciliation loop, and the OS-held lock that makes both
 liveness and single-instance ownership answerable without a PID registry.
 
 WHAT THIS IS NOT. It is not a second storage path: every write goes
-through `Cortex.seed()`, which already owns validation, digest comparison
+through `Urdyn.seed()`, which already owns validation, digest comparison
 and the `Source`/`SourceObservation`/`document_observation` Evidence
 contract (see `_source.py`). It is not a knowledge writer: nothing here
 can create a Memory, mark anything verified, or otherwise reach past the
 Source/Evidence boundary -- that boundary is enforced by `seed()` itself,
 not re-checked here. And it is not an event-driven watcher: correctness
-rests on comparing current filesystem state against what Cortex last
+rests on comparing current filesystem state against what Urdyn last
 recorded, never on the delivery of any particular OS notification (kernel
 event queues are lossy under load; a periodic reconciliation is not).
 
-SCOPE, BY CONSTRUCTION. `Cortex.watcher_scope()` returns tracked `Source`
+SCOPE, BY CONSTRUCTION. `Urdyn.watcher_scope()` returns tracked `Source`
 paths unioned with the `dev` discovery allowlist -- both bounded,
 non-recursive sets. This module never walks a directory tree: every scan
 is "stat these specific paths", not "find files under this root". A
 directory denylist (`.git/`, `node_modules/`, ...) is therefore not
 needed as the exclusion mechanism -- scope structurally cannot contain
 such a path, since neither `sources()` (itself gated by
-`resolve_seed_path`, which already refuses anything under `.cortex/` or
+`resolve_seed_path`, which already refuses anything under `.urdyn/` or
 outside the workspace) nor the allowlist globs can ever match one. The one
 denylist this module DOES apply is `_looks_like_temp_name`, because the
 allowlist's `README*`-style globs can transiently match an editor's own
@@ -34,13 +34,13 @@ LIFECYCLE. A workspace has a persistent switch (`watcher.json`,
 `{"enabled": bool}`) and a live process holding an advisory lock
 (`watcher.lock`) for as long as it runs. The two are independent on
 purpose: `enabled=true` with no live holder is `stale`, not a
-contradiction, and is exactly the state every normal Cortex CLI command
+contradiction, and is exactly the state every normal Urdyn CLI command
 recovers from via `supervise()` -- the reboot story is "the machine
-restarts, the watcher does not, and the next `cortex` command notices and
+restarts, the watcher does not, and the next `urdyn` command notices and
 restarts it", not a login item or a system service.
 
 Baseline is a cache, not state: this module persists no baseline file.
-The durable answer to "what did Cortex last see" is already canonical --
+The durable answer to "what did Urdyn last see" is already canonical --
 `Source.latest_observation.digest` -- so losing the in-memory map on
 crash or restart costs one reconciliation pass, never history (see
 `_reconcile_baseline`).
@@ -60,10 +60,10 @@ from collections import deque
 from collections.abc import Callable
 from pathlib import Path
 
-from ._errors import CortexError, CortexManifestError, CortexSourceError
-from ._manifest import PROFILE_DEV, read_manifest
+from ._errors import UrdynError, UrdynManifestError, UrdynSourceError
+from ._manifest import LEGACY_WORKSPACE_ID_KEY, PROFILE_DEV, read_manifest
 from ._source import SEED_UNCHANGED
-from ._workspace import CORTEX_DIRNAME, Cortex
+from ._workspace import URDYN_DIRNAME, Urdyn
 
 try:
     import fcntl
@@ -117,7 +117,7 @@ _STOP_WAIT_SECONDS = 5.0
 # Temp/editor artifacts that can transiently match the discovery
 # allowlist's `README*`-style globs (an emacs save produces `README.md~`,
 # which DOES match `README*`). Scope from tracked Sources is never
-# filtered by this -- an explicit `cortex seed foo.orig` is a deliberate
+# filtered by this -- an explicit `urdyn seed foo.orig` is a deliberate
 # choice, not an accident this guards against.
 _TEMP_NAME_PATTERNS = (
     "*.swp", "*.swo", "*.swx", "*~", ".#*", "#*#",
@@ -132,16 +132,16 @@ def _looks_like_temp_name(name: str) -> bool:
 # -- persistent config: watcher.json -----------------------------------------
 
 
-def _config_path(cortex_dir: Path) -> Path:
-    return cortex_dir / WATCHER_CONFIG_FILENAME
+def _config_path(urdyn_dir: Path) -> Path:
+    return urdyn_dir / WATCHER_CONFIG_FILENAME
 
 
-def read_config(cortex_dir: Path) -> dict:
+def read_config(urdyn_dir: Path) -> dict:
     """Read `watcher.json`, defaulting to disabled for any absent or
     unreadable config -- a corrupt config must degrade to "off", never
-    crash an unrelated `cortex` command."""
+    crash an unrelated `urdyn` command."""
     try:
-        raw = _config_path(cortex_dir).read_text(encoding="utf-8")
+        raw = _config_path(urdyn_dir).read_text(encoding="utf-8")
         data = json.loads(raw)
     except (OSError, ValueError):
         return {"enabled": False}
@@ -150,12 +150,12 @@ def read_config(cortex_dir: Path) -> dict:
     return data
 
 
-def write_config(cortex_dir: Path, data: dict) -> None:
+def write_config(urdyn_dir: Path, data: dict) -> None:
     """Write `watcher.json` atomically (tmp + `os.replace`), the same
     corruption-avoidance pattern `_manifest.py` uses for the canonical
     manifest."""
-    config_path = _config_path(cortex_dir)
-    tmp_path = cortex_dir / f".{WATCHER_CONFIG_FILENAME}.tmp"
+    config_path = _config_path(urdyn_dir)
+    tmp_path = urdyn_dir / f".{WATCHER_CONFIG_FILENAME}.tmp"
     tmp_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     os.replace(tmp_path, config_path)
 
@@ -184,11 +184,11 @@ class LockProbe:
     metadata: dict | None
 
 
-def _lock_path(cortex_dir: Path) -> Path:
-    return cortex_dir / WATCHER_LOCK_FILENAME
+def _lock_path(urdyn_dir: Path) -> Path:
+    return urdyn_dir / WATCHER_LOCK_FILENAME
 
 
-def probe_lock(cortex_dir: Path) -> LockProbe:
+def probe_lock(urdyn_dir: Path) -> LockProbe:
     """Non-destructively determine whether a watcher currently holds the
     lock, without ever becoming the holder.
 
@@ -200,7 +200,7 @@ def probe_lock(cortex_dir: Path) -> LockProbe:
     if fcntl is None:
         return LockProbe(state=LOCK_STOPPED, metadata=None)
 
-    lock_path = _lock_path(cortex_dir)
+    lock_path = _lock_path(urdyn_dir)
     fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o644)
     try:
         try:
@@ -234,7 +234,7 @@ def _read_lock_metadata(fd: int) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
-def peek_lock_metadata(cortex_dir: Path) -> dict | None:
+def peek_lock_metadata(urdyn_dir: Path) -> dict | None:
     """Read whatever metadata is currently in `watcher.lock`, WITHOUT
     ever attempting to acquire it.
 
@@ -252,7 +252,7 @@ def peek_lock_metadata(cortex_dir: Path) -> dict | None:
     if fcntl is None:
         return None
     try:
-        fd = os.open(_lock_path(cortex_dir), os.O_RDONLY)
+        fd = os.open(_lock_path(urdyn_dir), os.O_RDONLY)
     except OSError:
         return None
     try:
@@ -296,14 +296,14 @@ class _HeldLock:
             os.close(self._fd)
 
 
-def try_acquire_lock(cortex_dir: Path) -> _HeldLock | None:
+def try_acquire_lock(urdyn_dir: Path) -> _HeldLock | None:
     """Attempt to become the watcher for this workspace. Returns `None`
     immediately (never blocks, never retries) if another process already
     holds the lock -- the fail-fast contract: the loser never
     opens the store and never produces a second observation stream."""
     if fcntl is None:
         return None
-    lock_path = _lock_path(cortex_dir)
+    lock_path = _lock_path(urdyn_dir)
     fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o644)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -316,15 +316,15 @@ def try_acquire_lock(cortex_dir: Path) -> _HeldLock | None:
 # -- log: watcher.log ---------------------------------------------------------
 
 
-def _log_path(cortex_dir: Path) -> Path:
-    return cortex_dir / WATCHER_LOG_FILENAME
+def _log_path(urdyn_dir: Path) -> Path:
+    return urdyn_dir / WATCHER_LOG_FILENAME
 
 
-def log_line(cortex_dir: Path, message: str) -> None:
+def log_line(urdyn_dir: Path, message: str) -> None:
     """Append one bounded diagnostic line. Best-effort: a logging failure
     must never be the reason the watcher stops observing changes."""
     try:
-        log_path = _log_path(cortex_dir)
+        log_path = _log_path(urdyn_dir)
         if log_path.exists() and log_path.stat().st_size >= _LOG_MAX_BYTES:
             log_path.write_text("", encoding="utf-8")
         timestamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -341,11 +341,11 @@ def _stat_fingerprint(full_path: Path) -> tuple[int, int] | None:
     """The cheap tier-1 fingerprint: `(mtime_ns, size)` from a
     non-symlink-following stat. Returns `None` for anything missing or not
     a regular file -- a symlink swapped in for a tracked path reads as
-    "changed", and the eventual `Cortex.seed()` call rejects it through
+    "changed", and the eventual `Urdyn.seed()` call rejects it through
     the existing `resolve_seed_path` regular-file check; this module adds
     no new symlink policy of its own -- including NOT filtering out
     non-regular dirents here: doing so would make them invisible to the
-    settle/observe pipeline instead of reaching `Cortex.seed()`'s refusal
+    settle/observe pipeline instead of reaching `Urdyn.seed()`'s refusal
     (the earlier shape of this function did exactly that, silently
     hiding e.g. a symlinked path forever instead of ever refusing it)."""
     try:
@@ -355,37 +355,37 @@ def _stat_fingerprint(full_path: Path) -> tuple[int, int] | None:
     return (info.st_mtime_ns, info.st_size)
 
 
-def _scan_scope(cortex: Cortex) -> list[str]:
-    """The current watched paths: `Cortex.watcher_scope()`, filtered for
+def _scan_scope(urdyn: Urdyn) -> list[str]:
+    """The current watched paths: `Urdyn.watcher_scope()`, filtered for
     editor/temp artifacts that can transiently match the allowlist (see
     `_looks_like_temp_name`). Recomputed on every call -- cheap by
     construction, since neither half of `watcher_scope()` walks a tree."""
-    scope = cortex.watcher_scope()
+    scope = urdyn.watcher_scope()
     return sorted(path for path in scope if not _looks_like_temp_name(Path(path).name))
 
 
-def _is_transient_source_error(exc: CortexSourceError) -> bool:
+def _is_transient_source_error(exc: UrdynSourceError) -> bool:
     """True if `exc` wraps an `OSError` (EACCES, EMFILE, EIO, ESTALE, a
     file vanishing between discovery and read, ...) rather than a
     content-dependent refusal (oversize, binary, invalid UTF-8, symlink
     escape/loop, secret name, ...).
 
-    `_source.py` raises `CortexSourceError` for both, but every one of its
-    `except OSError as exc: raise CortexSourceError(...) from exc` sites
+    `_source.py` raises `UrdynSourceError` for both, but every one of its
+    `except OSError as exc: raise UrdynSourceError(...) from exc` sites
     (and `_seed_one`'s own `except RuntimeError as exc: raise
-    CortexSourceError(...) from exc` for a self-referential symlink,
+    UrdynSourceError(...) from exc` for a self-referential symlink,
     which must stay classified as permanent) sets `__cause__` via `raise
     ... from exc`, while every content-dependent refusal raises bare. That
     chained cause is enough to tell "the SAME bytes will never seed
     successfully" apart from "this attempt could not read the bytes at
-    all" without CortexSourceError growing a subclass or `_source.py`
+    all" without UrdynSourceError growing a subclass or `_source.py`
     growing a second exception type."""
     return isinstance(exc.__cause__, OSError)
 
 
-def _seed_one(cortex: Cortex, path: str):
-    """`cortex.seed([path])[0]`, with one `pathlib` detail folded into
-    the `CortexSourceError` refusal both callers already handle: a
+def _seed_one(urdyn: Urdyn, path: str):
+    """`urdyn.seed([path])[0]`, with one `pathlib` detail folded into
+    the `UrdynSourceError` refusal both callers already handle: a
     self-referential or excessively deep symlink makes `Path.resolve()`
     raise `RuntimeError` ("Symlink loop from ..."), not `OSError` --
     `resolve_seed_path` catches only the latter. A single bad path must
@@ -393,9 +393,9 @@ def _seed_one(cortex: Cortex, path: str):
     binary files), so it is folded in here rather than left to
     propagate as an unhandled exception out of the observe loop."""
     try:
-        (result,) = cortex.seed([path])
+        (result,) = urdyn.seed([path])
     except RuntimeError as exc:
-        raise CortexSourceError(f"Refusing to seed {path!r}: {exc}") from exc
+        raise UrdynSourceError(f"Refusing to seed {path!r}: {exc}") from exc
     return result
 
 
@@ -403,11 +403,11 @@ def _seed_one(cortex: Cortex, path: str):
 
 
 def _reconcile_baseline(
-    cortex: Cortex,
+    urdyn: Urdyn,
     scope: list[str],
     *,
     retro_observe: bool,
-    cortex_dir: Path,
+    urdyn_dir: Path,
     stats: "_RuntimeStats",
     should_stop: Callable[[], bool],
 ) -> dict[str, tuple[int, int]]:
@@ -417,16 +417,16 @@ def _reconcile_baseline(
     its CURRENT on-disk fingerprint with no comparison and no read --
     "start observing from now", producing zero observations even if a
     scope path happens to already be a tracked Source with drifted
-    content. This is `cortex init dev`'s contract: enabling is not the
+    content. This is `urdyn init dev`'s contract: enabling is not the
     same claim as having watched continuously.
 
     `retro_observe=True` (process (re)start while already enabled): every
-    scope path that IS a tracked Source is re-seeded -- `Cortex.seed()`
+    scope path that IS a tracked Source is re-seeded -- `Urdyn.seed()`
     hashes it and compares against `Source.latest_observation.digest`,
     recording exactly one observation if it differs and nothing if it
     does not. A scope path that is NOT yet a tracked Source is baselined
     like the enable case, never retroactively observed -- acquiring
-    pre-existing content has always been `cortex seed`'s job, not the
+    pre-existing content has always been `urdyn seed`'s job, not the
     watcher's. This is what recovers a change made while the watcher was
     down, from canonical data rather than from a lost in-memory cache.
 
@@ -442,53 +442,53 @@ def _reconcile_baseline(
     that was actually read BEFORE the seed attempt, never a fresh
     post-write stat -- the file can change again while `seed()` runs, and
     adopting that newer state as "already seen" would lose it silently.
-    On a transient/retryable failure -- a `CortexError` that is not a
-    `CortexSourceError` at all, or a `CortexSourceError` wrapping an
+    On a transient/retryable failure -- a `UrdynError` that is not a
+    `UrdynSourceError` at all, or a `UrdynSourceError` wrapping an
     `OSError` rather than a permanent, content-dependent refusal (see
     `_is_transient_source_error`) -- the path is left OUT of the
     returned baseline entirely, so the observe loop treats it as
     unbaselined and retries it on its very next scan instead of silently
     dropping the pending change.
     """
-    tracked_paths = {source.path for source in cortex.sources()}
+    tracked_paths = {source.path for source in urdyn.sources()}
     baseline: dict[str, tuple[int, int]] = {}
     for path in scope:
         if should_stop():
             break
-        full_path = cortex.path / path
+        full_path = urdyn.path / path
         fingerprint = _stat_fingerprint(full_path)
         if fingerprint is None:
             continue
         if retro_observe and path in tracked_paths:
             try:
-                result = _seed_one(cortex, path)
+                result = _seed_one(urdyn, path)
                 if result.status != SEED_UNCHANGED:
                     stats.observation_count += 1
                     stats.last_observation_path = path
                     stats.last_observation_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-                    log_line(cortex_dir, f"reconciled {result.status} {path}")
-            except CortexSourceError as exc:
+                    log_line(urdyn_dir, f"reconciled {result.status} {path}")
+            except UrdynSourceError as exc:
                 stats.last_error = str(exc)
                 if _is_transient_source_error(exc):
                     # I/O failure, not a content-dependent refusal (see
                     # `_is_transient_source_error`): nothing was recorded,
                     # so this path must not be baselined at all -- same
-                    # as the `CortexError` branch below -- letting the
+                    # as the `UrdynError` branch below -- letting the
                     # next reconciliation retry it instead of treating a
                     # never-attempted read as already handled.
-                    log_line(cortex_dir, f"error {path}: {exc}")
+                    log_line(urdyn_dir, f"error {path}: {exc}")
                     continue
                 # Permanent, content-dependent refusal: the SAME bytes
                 # will never seed successfully, so the baseline still
                 # advances to the fingerprint that was attempted --
                 # otherwise every future scan would re-refuse it forever.
-                log_line(cortex_dir, f"refused {path}: {exc}")
-            except CortexError as exc:
+                log_line(urdyn_dir, f"refused {path}: {exc}")
+            except UrdynError as exc:
                 # Transient/environment failure (e.g. a locked store): no
                 # observation was actually recorded, so this path must
                 # not be baselined at all -- see the docstring above.
                 stats.last_error = str(exc)
-                log_line(cortex_dir, f"error {path}: {exc}")
+                log_line(urdyn_dir, f"error {path}: {exc}")
                 continue
         baseline[path] = fingerprint
     return baseline
@@ -546,9 +546,9 @@ class _RuntimeStats:
 
 
 def _run_loop(
-    cortex: Cortex,
+    urdyn: Urdyn,
     lock: _HeldLock,
-    cortex_dir: Path,
+    urdyn_dir: Path,
     stats: _RuntimeStats,
     should_stop: Callable[[], bool],
     baseline: dict[str, tuple[int, int]],
@@ -569,18 +569,18 @@ def _run_loop(
     while not should_stop():
         scan_start = time.monotonic()
         try:
-            manifest = read_manifest(cortex_dir)
-        except CortexManifestError as exc:
-            log_line(cortex_dir, f"error: workspace manifest unreadable, exiting: {exc}")
+            manifest = read_manifest(urdyn_dir)
+        except UrdynManifestError as exc:
+            log_line(urdyn_dir, f"error: workspace manifest unreadable, exiting: {exc}")
             return
-        if manifest["cortex_id"] != cortex.cortex_id:
-            log_line(cortex_dir, "workspace identity changed, exiting")
+        if manifest[LEGACY_WORKSPACE_ID_KEY] != urdyn.urdyn_id:
+            log_line(urdyn_dir, "workspace identity changed, exiting")
             return
 
         try:
-            scope = _scan_scope(cortex)
+            scope = _scan_scope(urdyn)
         except OSError as exc:
-            log_line(cortex_dir, f"error: scope resolution failed: {exc}")
+            log_line(urdyn_dir, f"error: scope resolution failed: {exc}")
             scope = list(baseline)
 
         current_paths = set(scope)
@@ -591,7 +591,7 @@ def _run_loop(
 
         now = time.monotonic()
         for path in scope:
-            fingerprint = _stat_fingerprint(cortex.path / path)
+            fingerprint = _stat_fingerprint(urdyn.path / path)
             if fingerprint is None:
                 pending.pop(path, None)
                 continue
@@ -609,23 +609,23 @@ def _run_loop(
                 # changed again while `_seed_one` was running.
                 baseline_advances = False
                 try:
-                    result = _seed_one(cortex, path)
+                    result = _seed_one(urdyn, path)
                     if result.status != SEED_UNCHANGED:
                         stats.observation_count += 1
                         stats.last_observation_path = path
                         stats.last_observation_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-                        log_line(cortex_dir, f"observed {result.status} {path}")
+                        log_line(urdyn_dir, f"observed {result.status} {path}")
                     baseline_advances = True
-                except CortexSourceError as exc:
+                except UrdynSourceError as exc:
                     stats.last_error = str(exc)
                     if _is_transient_source_error(exc):
                         # I/O failure, not a content-dependent refusal
                         # (see `_is_transient_source_error`): nothing was
                         # recorded, so the baseline must NOT advance --
-                        # same as the `CortexError` branch below -- so
+                        # same as the `UrdynError` branch below -- so
                         # the next scan retries this exact change instead
                         # of treating a never-attempted read as handled.
-                        log_line(cortex_dir, f"error {path}: {exc}")
+                        log_line(urdyn_dir, f"error {path}: {exc}")
                     else:
                         # Permanent, content-dependent refusal: retrying
                         # the SAME bytes can never succeed, so the
@@ -633,22 +633,22 @@ def _run_loop(
                         # fingerprint -- otherwise every scan would
                         # re-refuse it forever. A later edit produces a
                         # new fingerprint and is evaluated fresh.
-                        log_line(cortex_dir, f"refused {path}: {exc}")
+                        log_line(urdyn_dir, f"refused {path}: {exc}")
                         baseline_advances = True
-                except CortexError as exc:
+                except UrdynError as exc:
                     # Transient/environment failure (e.g. a locked
                     # store): nothing was actually recorded, so the
                     # baseline must NOT advance -- leaving `pending`
                     # unchanged below means the next scan retries this
                     # exact change instead of silently losing it.
                     stats.last_error = str(exc)
-                    log_line(cortex_dir, f"error {path}: {exc}")
+                    log_line(urdyn_dir, f"error {path}: {exc}")
 
                 if baseline_advances:
                     baseline[path] = fingerprint
                     pending.pop(path, None)
                 last_change_monotonic = now
-                lock.update_metadata(_lock_metadata(cortex, stats))
+                lock.update_metadata(_lock_metadata(urdyn, stats))
             else:
                 pending[path] = (fingerprint, now)
                 last_change_monotonic = now
@@ -667,12 +667,12 @@ def _interruptible_sleep(total_seconds: float, should_stop) -> None:
         time.sleep(min(_SHUTDOWN_POLL_SECONDS, remaining))
 
 
-def _lock_metadata(cortex: Cortex, stats: _RuntimeStats) -> dict:
+def _lock_metadata(urdyn: Urdyn, stats: _RuntimeStats) -> dict:
     return {
         "pid": os.getpid(),
         "started_at": _PROCESS_STARTED_AT,
-        "cortex_id": cortex.cortex_id,
-        "cortex_version": _cortex_version(),
+        "urdyn_id": urdyn.urdyn_id,
+        "urdyn_version": _urdyn_version(),
         "executable": sys.executable,
         "observation_count": stats.observation_count,
         "last_observation_path": stats.last_observation_path,
@@ -681,13 +681,13 @@ def _lock_metadata(cortex: Cortex, stats: _RuntimeStats) -> dict:
     }
 
 
-def _cortex_version() -> str:
+def _urdyn_version() -> str:
     try:
         from importlib.metadata import PackageNotFoundError, version
     except ImportError:  # pragma: no cover
         return "unknown"
     try:
-        return version("cortex-memory")
+        return version("urdyn-memory")
     except PackageNotFoundError:
         return "unknown"
 
@@ -706,19 +706,19 @@ _SPAWN_CONFIRM_TIMEOUT = 2.0
 # -- process launcher ---------------------------------------------------------
 
 
-def spawn_watcher(cortex: Cortex, *, fresh: bool) -> int:
-    """Launch the detached watcher child for `cortex` and return its pid.
+def spawn_watcher(urdyn: Urdyn, *, fresh: bool) -> int:
+    """Launch the detached watcher child for `urdyn` and return its pid.
 
     An argument list, never a shell string: no injection surface. Run
     with `sys.executable` so the active interpreter/venv is what actually
-    runs, never a `cortex` shim that might not be on `PATH` at all.
+    runs, never a `urdyn` shim that might not be on `PATH` at all.
     `start_new_session=True` gives the child its own session/process
     group so it survives the launching terminal closing;
     `stdin`/`stdout`/`stderr` are all `DEVNULL` so it can neither
     block on nor write into a terminal that later goes away. The child
     re-resolves and re-opens the workspace itself from `--workspace`.
     """
-    argv = [sys.executable, "-m", "cortex_memory._watcher", "--workspace", str(cortex.path)]
+    argv = [sys.executable, "-m", "urdyn._watcher", "--workspace", str(urdyn.path)]
     if fresh:
         argv.append("--fresh")
     process = subprocess.Popen(
@@ -732,7 +732,7 @@ def spawn_watcher(cortex: Cortex, *, fresh: bool) -> int:
     return process.pid
 
 
-def _wait_until_running(cortex_dir: Path, expected_pid: int, timeout: float = _SPAWN_CONFIRM_TIMEOUT) -> bool:
+def _wait_until_running(urdyn_dir: Path, expected_pid: int, timeout: float = _SPAWN_CONFIRM_TIMEOUT) -> bool:
     """Wait for the freshly spawned `expected_pid` to publish its lock
     metadata -- i.e. to have finished reconciling its baseline and
     started the observe loop (see `_child_main`'s publish-after-baseline
@@ -745,22 +745,22 @@ def _wait_until_running(cortex_dir: Path, expected_pid: int, timeout: float = _S
     """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        metadata = peek_lock_metadata(cortex_dir)
+        metadata = peek_lock_metadata(urdyn_dir)
         if metadata is not None and metadata.get("pid") == expected_pid:
             return True
         time.sleep(0.05)
-    metadata = peek_lock_metadata(cortex_dir)
+    metadata = peek_lock_metadata(urdyn_dir)
     return metadata is not None and metadata.get("pid") == expected_pid
 
 
-def _terminate_and_wait(cortex_dir: Path, pid: int, timeout: float = _STOP_WAIT_SECONDS) -> None:
+def _terminate_and_wait(urdyn_dir: Path, pid: int, timeout: float = _STOP_WAIT_SECONDS) -> None:
     try:
         os.kill(pid, signal.SIGTERM)
     except ProcessLookupError:
         return
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if probe_lock(cortex_dir).state != LOCK_RUNNING:
+        if probe_lock(urdyn_dir).state != LOCK_RUNNING:
             return
         time.sleep(0.1)
 
@@ -789,45 +789,45 @@ class WatcherAction:
 ACTION_UNAVAILABLE_RESULT = WatcherAction(ACTION_UNAVAILABLE)
 
 
-def _require_dev_profile(cortex: Cortex) -> None:
-    if cortex.profile != PROFILE_DEV:
+def _require_dev_profile(urdyn: Urdyn) -> None:
+    if urdyn.profile != PROFILE_DEV:
         raise ValueError(
             f"The project watcher is only available in the {PROFILE_DEV!r} profile; "
-            f"this workspace is {cortex.profile!r}"
+            f"this workspace is {urdyn.profile!r}"
         )
 
 
-def enable_and_start(cortex: Cortex) -> WatcherAction:
-    """`cortex init dev`'s and `cortex watch start`'s shared entry point:
+def enable_and_start(urdyn: Urdyn) -> WatcherAction:
+    """`urdyn init dev`'s and `urdyn watch start`'s shared entry point:
     idempotently make the Dev watcher enabled and running.
 
     A first-ever call (config absent or `enabled=false`) flips the switch
     and launches a FRESH watcher -- zero-observation baseline.
     Every subsequent call is exactly the same supervision opportunity any
-    other Cortex command performs (`supervise()`): a healthy running
+    other Urdyn command performs (`supervise()`): a healthy running
     watcher is left alone, a stale one is restarted with reconciliation.
     Raises `ValueError` outside the `dev` profile. Never raises for an
     unavailable platform backend -- returns `ACTION_UNAVAILABLE` instead,
     for the CLI to render as a professional status line, not a crash.
     """
-    _require_dev_profile(cortex)
+    _require_dev_profile(urdyn)
     if fcntl is None:
         return ACTION_UNAVAILABLE_RESULT
 
-    cortex_dir = cortex.path / CORTEX_DIRNAME
-    config = read_config(cortex_dir)
+    urdyn_dir = urdyn.path / URDYN_DIRNAME
+    config = read_config(urdyn_dir)
     if not config.get("enabled", False):
-        write_config(cortex_dir, {"enabled": True})
-        pid = spawn_watcher(cortex, fresh=True)
-        _wait_until_running(cortex_dir, pid)
+        write_config(urdyn_dir, {"enabled": True})
+        pid = spawn_watcher(urdyn, fresh=True)
+        _wait_until_running(urdyn_dir, pid)
         return WatcherAction(ACTION_STARTED, pid=pid)
 
-    action = supervise(cortex)
+    action = supervise(urdyn)
     return action if action is not None else WatcherAction(ACTION_ALREADY_RUNNING)
 
 
-def supervise(cortex: Cortex) -> WatcherAction | None:
-    """The recovery hook every normal Cortex command performs:
+def supervise(urdyn: Urdyn) -> WatcherAction | None:
+    """The recovery hook every normal Urdyn command performs:
     a cheap no-op unless this is a `dev` workspace with the watcher
     enabled, in which case it restarts a stale watcher (with
     reconciliation) or a version-mismatched one, and otherwise leaves a
@@ -837,90 +837,90 @@ def supervise(cortex: Cortex) -> WatcherAction | None:
     enabled, or the platform backend is unavailable) so callers can tell
     "nothing to report" apart from "checked, and it is healthy".
     """
-    if fcntl is None or cortex.profile != PROFILE_DEV:
+    if fcntl is None or urdyn.profile != PROFILE_DEV:
         return None
-    cortex_dir = cortex.path / CORTEX_DIRNAME
-    config = read_config(cortex_dir)
+    urdyn_dir = urdyn.path / URDYN_DIRNAME
+    config = read_config(urdyn_dir)
     if not config.get("enabled", False):
         return None
 
-    probe = probe_lock(cortex_dir)
+    probe = probe_lock(urdyn_dir)
     if probe.state == LOCK_RUNNING:
         metadata = probe.metadata or {}
         pid = metadata.get("pid")
         pid = pid if isinstance(pid, int) else None
-        if metadata.get("cortex_version") != _cortex_version():
+        if metadata.get("urdyn_version") != _urdyn_version():
             # Package-upgrade policy: stop the mismatched holder
             # and start a fresh one of the current version, logging once.
             if pid is not None:
-                _terminate_and_wait(cortex_dir, pid)
-            log_line(cortex_dir, f"version mismatch ({metadata.get('cortex_version')!r}), restarting")
-            new_pid = spawn_watcher(cortex, fresh=False)
-            _wait_until_running(cortex_dir, new_pid)
+                _terminate_and_wait(urdyn_dir, pid)
+            log_line(urdyn_dir, f"version mismatch ({metadata.get('urdyn_version')!r}), restarting")
+            new_pid = spawn_watcher(urdyn, fresh=False)
+            _wait_until_running(urdyn_dir, new_pid)
             return WatcherAction(ACTION_RESTARTED, pid=new_pid)
         return WatcherAction(ACTION_ALREADY_RUNNING, pid=pid)
 
     # `stopped` or `stale`: nothing healthy holds the lock right now.
-    new_pid = spawn_watcher(cortex, fresh=False)
-    _wait_until_running(cortex_dir, new_pid)
+    new_pid = spawn_watcher(urdyn, fresh=False)
+    _wait_until_running(urdyn_dir, new_pid)
     return WatcherAction(ACTION_RESTARTED, pid=new_pid)
 
 
-def stop_watcher(cortex: Cortex) -> WatcherAction:
-    """`cortex watch stop`: persistently disable the watcher and stop any
+def stop_watcher(urdyn: Urdyn) -> WatcherAction:
+    """`urdyn watch stop`: persistently disable the watcher and stop any
     running process. Disables the config FIRST, before signaling, so a
     command racing this one can never resurrect it through `supervise()`
     -- `stop` is deliberately persistent: there is no separate
     temporary-stop state to fall back into. Raises `ValueError` outside
     the `dev` profile.
     """
-    _require_dev_profile(cortex)
+    _require_dev_profile(urdyn)
     if fcntl is None:
         return ACTION_UNAVAILABLE_RESULT
-    cortex_dir = cortex.path / CORTEX_DIRNAME
-    write_config(cortex_dir, {"enabled": False})
+    urdyn_dir = urdyn.path / URDYN_DIRNAME
+    write_config(urdyn_dir, {"enabled": False})
 
-    probe = probe_lock(cortex_dir)
+    probe = probe_lock(urdyn_dir)
     if probe.state != LOCK_RUNNING:
         return WatcherAction(ACTION_ALREADY_STOPPED)
 
     pid = (probe.metadata or {}).get("pid")
     pid = pid if isinstance(pid, int) else None
     if pid is not None:
-        _terminate_and_wait(cortex_dir, pid)
+        _terminate_and_wait(urdyn_dir, pid)
 
-    if probe_lock(cortex_dir).state == LOCK_RUNNING:
+    if probe_lock(urdyn_dir).state == LOCK_RUNNING:
         return WatcherAction(ACTION_STOP_TIMEOUT, pid=pid)
     return WatcherAction(ACTION_STOPPED, pid=pid)
 
 
-def _missing_sources_count(cortex: Cortex) -> int:
-    return sum(1 for source in cortex.sources() if not (cortex.path / source.path).is_file())
+def _missing_sources_count(urdyn: Urdyn) -> int:
+    return sum(1 for source in urdyn.sources() if not (urdyn.path / source.path).is_file())
 
 
-def status_lines(cortex: Cortex, *, detailed: bool = False) -> list[str]:
-    """The `Watcher: ...` line(s) for `cortex status` (one line,
-    `detailed=False`) and `cortex watch status` (the fuller dashboard,
+def status_lines(urdyn: Urdyn, *, detailed: bool = False) -> list[str]:
+    """The `Watcher: ...` line(s) for `urdyn status` (one line,
+    `detailed=False`) and `urdyn watch status` (the fuller dashboard,
     `detailed=True`).
 
     Outside the `dev` profile, `detailed=False` returns an empty list --
-    non-dev `cortex status` output is byte-for-byte unchanged by this
-    module's presence -- while `detailed=True` (an explicit `cortex
+    non-dev `urdyn status` output is byte-for-byte unchanged by this
+    module's presence -- while `detailed=True` (an explicit `urdyn
     watch status` call) says
     plainly that the watcher does not apply here, rather than printing
     nothing for a command the user explicitly ran.
     """
-    if cortex.profile != PROFILE_DEV:
+    if urdyn.profile != PROFILE_DEV:
         return [f"Watcher: not available outside the {PROFILE_DEV!r} profile"] if detailed else []
     if fcntl is None:
         return ["Watcher: unavailable (background watching needs Linux in this release)"]
 
-    cortex_dir = cortex.path / CORTEX_DIRNAME
-    config = read_config(cortex_dir)
+    urdyn_dir = urdyn.path / URDYN_DIRNAME
+    config = read_config(urdyn_dir)
     if not config.get("enabled", False):
         return ["Watcher: disabled"]
 
-    probe = probe_lock(cortex_dir)
+    probe = probe_lock(urdyn_dir)
     if probe.state == LOCK_STALE:
         return ["Watcher: stale (enabled but not running; it will restart on the next command)"]
     if probe.state == LOCK_STOPPED:
@@ -943,7 +943,7 @@ def status_lines(cortex: Cortex, *, detailed: bool = False) -> list[str]:
     last_error = metadata.get("last_error")
     if last_error:
         lines.append(f"  last error: {last_error}")
-    missing = _missing_sources_count(cortex)
+    missing = _missing_sources_count(urdyn)
     if missing:
         plural = "s" if missing != 1 else ""
         lines.append(f"  tracked source{plural} missing on disk: {missing}")
@@ -957,15 +957,15 @@ def _child_main(argv: list[str]) -> int:
     global _PROCESS_STARTED_AT
     import argparse
 
-    parser = argparse.ArgumentParser(prog="cortex-memory-watcher")
+    parser = argparse.ArgumentParser(prog="urdyn-memory-watcher")
     parser.add_argument("--workspace", required=True)
     parser.add_argument("--fresh", action="store_true")
     args = parser.parse_args(argv)
 
     workspace = Path(args.workspace)
-    cortex_dir = workspace / CORTEX_DIRNAME
+    urdyn_dir = workspace / URDYN_DIRNAME
 
-    lock = try_acquire_lock(cortex_dir)
+    lock = try_acquire_lock(urdyn_dir)
     if lock is None:
         # Another watcher already owns this workspace. Exit quietly and
         # immediately -- no store is opened, so no second observation
@@ -974,7 +974,7 @@ def _child_main(argv: list[str]) -> int:
 
     _PROCESS_STARTED_AT = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     stats = _RuntimeStats()
-    log_line(cortex_dir, f"start pid={os.getpid()} fresh={args.fresh}")
+    log_line(urdyn_dir, f"start pid={os.getpid()} fresh={args.fresh}")
 
     stop_requested = False
 
@@ -1002,12 +1002,12 @@ def _child_main(argv: list[str]) -> int:
         # also rereads the persistent switch directly, so a disable is
         # always noticed on its own, independent of whether SIGTERM ever
         # reached (or could reach) this pid.
-        return stop_requested or not read_config(cortex_dir).get("enabled", False)
+        return stop_requested or not read_config(urdyn_dir).get("enabled", False)
 
     try:
-        cortex = Cortex.open(workspace)
-    except CortexError as exc:
-        log_line(cortex_dir, f"error: cannot open workspace, exiting: {exc}")
+        urdyn = Urdyn.open(workspace)
+    except UrdynError as exc:
+        log_line(urdyn_dir, f"error: cannot open workspace, exiting: {exc}")
         lock.release()
         return 1
 
@@ -1017,17 +1017,17 @@ def _child_main(argv: list[str]) -> int:
         # be a tracked Source. Any other start (restart, crash recovery,
         # `watch start` after `stop`) reconciles tracked Sources against
         # their canonical latest digest -- see `_reconcile_baseline`.
-        scope = _scan_scope(cortex)
+        scope = _scan_scope(urdyn)
         baseline = _reconcile_baseline(
-            cortex,
+            urdyn,
             scope,
             retro_observe=not args.fresh,
-            cortex_dir=cortex_dir,
+            urdyn_dir=urdyn_dir,
             stats=stats,
             should_stop=_should_stop,
         )
         log_line(
-            cortex_dir,
+            urdyn_dir,
             f"baseline established: {len(baseline)} path(s), "
             f"{stats.observation_count} reconciled observation(s)",
         )
@@ -1040,12 +1040,12 @@ def _child_main(argv: list[str]) -> int:
         # was tried and measurably wrong -- a write landing in that
         # window could be silently absorbed into the baseline instead of
         # being seen as a change.
-        lock.update_metadata(_lock_metadata(cortex, stats))
-        _run_loop(cortex, lock, cortex_dir, stats, _should_stop, baseline)
+        lock.update_metadata(_lock_metadata(urdyn, stats))
+        _run_loop(urdyn, lock, urdyn_dir, stats, _should_stop, baseline)
     except Exception as exc:  # pragma: no cover - defensive top-level guard
-        log_line(cortex_dir, f"error: unhandled exception, exiting: {exc}")
+        log_line(urdyn_dir, f"error: unhandled exception, exiting: {exc}")
     finally:
-        log_line(cortex_dir, f"stop pid={os.getpid()} observations={stats.observation_count}")
+        log_line(urdyn_dir, f"stop pid={os.getpid()} observations={stats.observation_count}")
         lock.clear_metadata()
         lock.release()
 

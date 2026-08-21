@@ -2,7 +2,7 @@
 two current or historical Memories cannot both be treated as a coherent
 description of the same state.
 
-A `Conflict` is not a judgment. Cortex does not understand the content of
+A `Conflict` is not a judgment. Urdyn does not understand the content of
 either Memory well enough to decide which one is right, so it never
 chooses, deletes, downgrades, or invalidates anything on account of a
 conflict being recorded. It only preserves the caller's explicit
@@ -21,9 +21,9 @@ Deliberately excluded from A13.1:
 no `conflict_id` (the ordered pair of Memory ids is itself a sufficient,
 storage-independent identity), no evidence, no status/resolution field, no
 severity/confidence. Whether a conflict is currently "open" is never
-stored -- it is derived by checking `Cortex.state()`/`current_ids()`
+stored -- it is derived by checking `Urdyn.state()`/`current_ids()`
 membership for both `memory_ids` at read time, exactly like every other
-current-state projection in Cortex.
+current-state projection in Urdyn.
 """
 
 from __future__ import annotations
@@ -47,14 +47,14 @@ class Conflict:
 
     `memory_ids` is always the canonically ordered pair (see
     `canonical_pair`) -- it is the relation's entire identity, not just a
-    payload field. `recorded_at` is when Cortex first recorded this
+    payload field. `recorded_at` is when Urdyn first recorded this
     relation; a repeated `record_conflict()` call for the same pair (in
-    either order) never changes it (see `Cortex.record_conflict`'s
+    either order) never changes it (see `Urdyn.record_conflict`'s
     docstring for the idempotency contract).
 
     Deliberately carries nothing else: no `conflict_id`, no evidence, no
     status/resolution. Whether this conflict is currently operative is not
-    a property of this object -- see `Cortex.open_conflicts()`.
+    a property of this object -- see `Urdyn.open_conflicts()`.
     """
 
     memory_ids: tuple[str, str]

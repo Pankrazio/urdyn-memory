@@ -1,9 +1,9 @@
 """A27: the lifecycle of the DERIVED semantic index -- when it is
-current, when it is not, and what Cortex does and says about it.
+current, when it is not, and what Urdyn does and says about it.
 
 WHY THIS FILE EXISTS. A26 ran a full dev loop -- record experience in one
 session, ask for it in the next -- and concluded that semantic retrieval
-did not generalize. A26.1 disproved that: `cortex semantic setup` had
+did not generalize. A26.1 disproved that: `urdyn semantic setup` had
 never been run, `semantic_index.db` did not exist, `_semantic_context()`
 returned None, and every semantic pool returned an empty admission set.
 That is bit-for-bit what a pool returns when it RAN and correctly
@@ -39,10 +39,10 @@ import threading
 
 import pytest
 
-from cortex_memory import Cortex
-from cortex_memory._cli import main
-from cortex_memory._retrieval import ENTITY_ATTEMPT, ENTITY_MEMORY, ENTITY_SKILL
-from cortex_memory._semantic_store import (
+from urdyn import Urdyn
+from urdyn._cli import main
+from urdyn._retrieval import ENTITY_ATTEMPT, ENTITY_MEMORY, ENTITY_SKILL
+from urdyn._semantic_store import (
     DETAIL_BUILD_INCOMPLETE,
     DETAIL_INDEX_UNREADABLE,
     DETAIL_MODEL_MISMATCH,
@@ -108,7 +108,7 @@ def _vector_snapshot(cx):
 
 def _canonical_snapshot(cx):
     """Every canonical row a derived refresh must not touch, read through
-    a separate connection so nothing about Cortex's own store objects can
+    a separate connection so nothing about Urdyn's own store objects can
     make the comparison vacuous."""
     connection = sqlite3.connect(cx._db_path)
     try:
@@ -126,7 +126,7 @@ def _canonical_snapshot(cx):
 
 
 def test_never_enabled_workspace_reports_disabled(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     cx.remember("alpha content", kind="note")
 
     state = cx.semantic_state()
@@ -141,9 +141,9 @@ def test_disabled_state_never_consults_the_semantic_runtime(tmp_path, monkeypatc
     alone -- no ONNX import, no model, no cache probe. Proven by making
     the runtime lookup itself explode: if the answer needed it, this
     would raise instead of returning."""
-    import cortex_memory._workspace as workspace
+    import urdyn._workspace as workspace
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     cx.remember("alpha content", kind="note")
     monkeypatch.setattr(
         workspace, "_load_semantic_module", lambda: pytest.fail("status must not load the semantic runtime")
@@ -153,7 +153,7 @@ def test_disabled_state_never_consults_the_semantic_runtime(tmp_path, monkeypatc
 
 
 def test_never_enabled_preflight_keeps_lexical_value_and_says_it_is_lexical(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     lesson = _verified_lesson(cx, "Migrations run before the deployment starts")
 
     result = cx.preflight("Migrations run before the deployment starts")
@@ -167,11 +167,11 @@ def test_never_enabled_preflight_keeps_lexical_value_and_says_it_is_lexical(tmp_
 
 def test_cli_status_reports_disabled(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
-    Cortex.init(tmp_path, "dev")
+    Urdyn.init(tmp_path, "dev")
 
     assert main(["status"]) == 0
 
-    assert "Semantic: disabled (not set up; run: cortex semantic setup)" in capsys.readouterr().out
+    assert "Semantic: disabled (not set up; run: urdyn semantic setup)" in capsys.readouterr().out
 
 
 def test_cli_init_announces_that_semantic_is_not_enabled(tmp_path, monkeypatch, capsys):
@@ -180,7 +180,7 @@ def test_cli_init_announces_that_semantic_is_not_enabled(tmp_path, monkeypatch, 
     assert main(["init", "dev"]) == 0
 
     out = capsys.readouterr().out
-    assert "cortex semantic setup" in out
+    assert "urdyn semantic setup" in out
 
 
 # ---------------------------------------------------------------------------
@@ -189,7 +189,7 @@ def test_cli_init_announces_that_semantic_is_not_enabled(tmp_path, monkeypatch, 
 
 
 def test_setup_makes_the_index_ready(tmp_path, fake_semantic):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     _record_a26_experience(cx)
 
     cx.semantic_setup()
@@ -218,7 +218,7 @@ def test_setup_makes_the_index_ready(tmp_path, fake_semantic):
     ],
 )
 def test_semantically_relevant_writes_make_the_index_stale(tmp_path, fake_semantic, write):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     cx.remember("alpha seed", kind="note")
     cx.semantic_setup()
 
@@ -233,7 +233,7 @@ def test_supersession_makes_the_index_stale_through_its_new_memory(tmp_path, fak
     """Superseding INSERTS; it never edits the superseded row. That is
     what makes id coverage a sufficient freshness test, so it is asserted
     rather than assumed."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     original = cx.remember("alpha behaviour as first understood", kind="note")
     cx.semantic_setup()
 
@@ -243,7 +243,7 @@ def test_supersession_makes_the_index_stale_through_its_new_memory(tmp_path, fak
 
 
 def test_promoting_a_skill_makes_the_index_stale(tmp_path, fake_semantic):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     lesson = _verified_lesson(cx, "alpha procedure worth keeping")
     cx.semantic_setup()
 
@@ -265,7 +265,7 @@ def test_canonical_writes_that_feed_no_semantic_pool_do_not_make_it_stale(tmp_pa
     must not cost a rebuild -- a freshness signal that fired on every
     canonical write would be correct-but-useless, and would put a model
     load in front of workflows that need none."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     cx.remember("alpha first", kind="note")
     cx.remember("beta second", kind="note")
     cx.semantic_setup()
@@ -278,7 +278,7 @@ def test_canonical_writes_that_feed_no_semantic_pool_do_not_make_it_stale(tmp_pa
 def test_a_deduplicated_remember_does_not_make_the_index_stale(tmp_path, fake_semantic):
     """A17: a repeated `remember()` of a current equivalent writes no row
     and no event. It must therefore cost no rebuild either."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     cx.remember("alpha content", kind="note")
     cx.semantic_setup()
 
@@ -288,11 +288,11 @@ def test_a_deduplicated_remember_does_not_make_the_index_stale(tmp_path, fake_se
 
 
 def test_freshness_is_decided_without_loading_the_model(tmp_path, fake_semantic, monkeypatch):
-    """`cortex status` runs this on every invocation, so staleness must
+    """`urdyn status` runs this on every invocation, so staleness must
     be decidable from stored ids alone."""
-    import cortex_memory._semantic as semantic
+    import urdyn._semantic as semantic
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     cx.remember("alpha seed", kind="note")
     cx.semantic_setup()
     cx.remember("beta added later", kind="note")
@@ -307,7 +307,7 @@ def test_freshness_is_decided_without_loading_the_model(tmp_path, fake_semantic,
 
 def test_cli_status_reports_stale_with_counts(tmp_path, monkeypatch, capsys, fake_semantic):
     monkeypatch.chdir(tmp_path)
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     cx.remember("alpha seed", kind="note")
     cx.semantic_setup()
     cx.remember("beta later", kind="note")
@@ -323,7 +323,7 @@ def test_cli_status_reports_stale_with_counts(tmp_path, monkeypatch, capsys, fak
 
 
 def test_stale_preflight_refreshes_only_what_is_missing(tmp_path, fake_semantic):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     cx.remember("alpha already indexed", kind="note")
     cx.semantic_setup()
     before = _vector_snapshot(cx)
@@ -341,7 +341,7 @@ def test_stale_preflight_refreshes_only_what_is_missing(tmp_path, fake_semantic)
 
 
 def test_multiple_pending_writes_are_refreshed_in_one_pass(tmp_path, fake_semantic):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     cx.semantic_setup()
     _record_a26_experience(cx)
 
@@ -354,7 +354,7 @@ def test_multiple_pending_writes_are_refreshed_in_one_pass(tmp_path, fake_semant
 def test_a_current_index_does_no_write_work_and_loads_no_model_to_decide_that(
     tmp_path, fake_semantic, monkeypatch
 ):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     _record_a26_experience(cx)
     cx.semantic_setup()
     before = _vector_snapshot(cx)
@@ -379,7 +379,7 @@ def test_guard_gets_the_same_lifecycle(tmp_path, fake_semantic):
     """`guard()` consumes the semantic channel directly, so it degrades
     the same silent way and gets the same treatment -- one helper, not a
     second implementation."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     lesson = _verified_lesson(cx, "alpha procedure worth keeping")
     cx.semantic_setup()
     cx.promote(lesson, name="alpha procedure", purpose="handle alpha safely", steps=["do alpha"])
@@ -392,7 +392,7 @@ def test_guard_gets_the_same_lifecycle(tmp_path, fake_semantic):
 
 
 def test_refresh_leaves_canonical_state_byte_identical(tmp_path, fake_semantic):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     cx.semantic_setup()
     _record_a26_experience(cx)
     before = _canonical_snapshot(cx)
@@ -411,9 +411,9 @@ def test_model_missing_offline_is_unavailable_not_stale(tmp_path, fake_semantic,
     """An index whose model cannot be loaded here is not "missing some
     vectors" -- it cannot be queried at all, and topping it up is
     impossible. Different condition, different remedy, different state."""
-    import cortex_memory._semantic as semantic
+    import urdyn._semantic as semantic
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     cx.remember("alpha seed", kind="note")
     cx.semantic_setup()
     cx.remember("beta later", kind="note")
@@ -431,9 +431,9 @@ def test_model_missing_offline_is_unavailable_not_stale(tmp_path, fake_semantic,
 
 
 def test_a_failed_refresh_reports_degraded_and_never_ready(tmp_path, fake_semantic, monkeypatch):
-    import cortex_memory._semantic as semantic
+    import urdyn._semantic as semantic
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     cx.remember("alpha seed", kind="note")
     cx.semantic_setup()
     cx.remember("beta added later", kind="note")
@@ -454,9 +454,9 @@ def test_a_failed_refresh_reports_degraded_and_never_ready(tmp_path, fake_semant
 
 
 def test_canonical_memory_survives_a_failed_refresh(tmp_path, fake_semantic, monkeypatch):
-    import cortex_memory._semantic as semantic
+    import urdyn._semantic as semantic
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     cx.semantic_setup()
     _record_a26_experience(cx)
     before = _canonical_snapshot(cx)
@@ -473,9 +473,9 @@ def test_partial_refresh_progress_is_kept_and_still_reads_as_stale(tmp_path, fak
     that dies between pools has committed real vectors, and must still be
     classified stale afterwards. Coverage is recomputed, so there is no
     moment at which partial progress could be announced as current."""
-    import cortex_memory._semantic as semantic
+    import urdyn._semantic as semantic
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     cx.semantic_setup()
     cx.record_attempt(task="alpha task", approach="alpha approach", outcome="failed")
     cx.remember("alpha memory", kind="note")
@@ -506,7 +506,7 @@ def test_an_incompatible_index_is_never_topped_up(tmp_path, fake_semantic):
     different vectors. Adding this build's vectors to an index built by
     another one would mix vector spaces, so an incompatible index must
     report UNAVAILABLE and be rebuilt explicitly -- never refreshed."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     cx.remember("alpha seed", kind="note")
     cx.semantic_setup()
     with SemanticIndexStore.create_or_open(cx._semantic_db_path) as store:
@@ -525,7 +525,7 @@ def test_an_incompatible_index_is_never_topped_up(tmp_path, fake_semantic):
 
 
 def test_an_interrupted_build_reports_incomplete_not_stale(tmp_path, fake_semantic):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     cx.remember("alpha seed", kind="note")
     cx.semantic_setup()
     with SemanticIndexStore.create_or_open(cx._semantic_db_path) as store:
@@ -539,7 +539,7 @@ def test_an_interrupted_build_reports_incomplete_not_stale(tmp_path, fake_semant
 
 
 def test_a_corrupted_index_degrades_and_is_not_deleted(tmp_path, fake_semantic):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     lesson = _verified_lesson(cx, "Migrations run before the deployment starts")
     cx.semantic_setup()
     cx._semantic_db_path.write_bytes(b"this is not a database at all, not even close")
@@ -554,15 +554,15 @@ def test_a_corrupted_index_degrades_and_is_not_deleted(tmp_path, fake_semantic):
 
 
 def test_setup_repairs_the_unusable_states_it_can_and_says_so_where_it_cannot(tmp_path, fake_semantic):
-    """`cortex semantic setup` is the advertised remedy, so the advert
+    """`urdyn semantic setup` is the advertised remedy, so the advert
     has to be true. It is, for every state reachable by ordinary use --
     and it is NOT for a file that is not a database at all, which setup
-    cannot open in order to rebuild. Cortex does not delete that file for
-    you (derived and rebuildable makes it SAFE to delete, not Cortex's
+    cannot open in order to rebuild. Urdyn does not delete that file for
+    you (derived and rebuildable makes it SAFE to delete, not Urdyn's
     call to make), so the state carries the one remedy that works."""
-    from cortex_memory._errors import CortexStorageError
+    from urdyn._errors import UrdynStorageError
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     cx.remember("alpha seed", kind="note")
     cx.semantic_setup()
 
@@ -585,8 +585,8 @@ def test_setup_repairs_the_unusable_states_it_can_and_says_so_where_it_cannot(tm
     cx._semantic_db_path.write_bytes(b"garbage")
     state = cx.semantic_state()
     assert state.detail == DETAIL_INDEX_UNREADABLE
-    assert "delete .cortex/semantic_index.db" in state.describe()
-    with pytest.raises(CortexStorageError):
+    assert "delete .urdyn/semantic_index.db" in state.describe()
+    with pytest.raises(UrdynStorageError):
         cx.semantic_setup()
 
     cx._semantic_db_path.unlink()
@@ -600,7 +600,7 @@ def test_setup_repairs_the_unusable_states_it_can_and_says_so_where_it_cannot(tm
 
 
 def test_two_concurrent_stale_consumers_both_succeed(tmp_path, fake_semantic):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     cx.semantic_setup()
     _record_a26_experience(cx)
 
@@ -608,7 +608,7 @@ def test_two_concurrent_stale_consumers_both_succeed(tmp_path, fake_semantic):
     barrier = threading.Barrier(2)
 
     def _run():
-        worker = Cortex.discover(tmp_path)
+        worker = Urdyn.discover(tmp_path)
         barrier.wait(timeout=30)
         results.append(worker.preflight(A26_TASK))
 
@@ -631,9 +631,9 @@ def test_a_canonical_write_during_refresh_leaves_a_recomputable_answer(tmp_path,
     freshness can always be recomputed correctly afterwards. A write that
     lands mid-refresh is simply not covered yet, and the next question
     asked says so."""
-    import cortex_memory._semantic as semantic
+    import urdyn._semantic as semantic
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     cx.semantic_setup()
     cx.remember("alpha first", kind="note")
 
@@ -643,7 +643,7 @@ def test_a_canonical_write_during_refresh_leaves_a_recomputable_answer(tmp_path,
     def _embed_then_write(model, texts):
         if not fired["done"]:
             fired["done"] = True
-            Cortex.discover(tmp_path).remember("beta landed mid-refresh", kind="note")
+            Urdyn.discover(tmp_path).remember("beta landed mid-refresh", kind="note")
         return real_embed(model, texts)
 
     monkeypatch.setattr(semantic, "embed", _embed_then_write)
@@ -659,7 +659,7 @@ def test_a_canonical_write_during_refresh_leaves_a_recomputable_answer(tmp_path,
 
 
 def test_explicit_setup_over_a_stale_index_rebuilds_it_completely(tmp_path, fake_semantic):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     cx.remember("alpha first", kind="note")
     cx.semantic_setup()
     cx.remember("beta second", kind="note")
@@ -686,13 +686,13 @@ def test_a26_journey_recovers_experience_with_no_manual_rebuild(tmp_path, fake_s
     anything stored) returned nothing at all.
     """
     # --- Session 1 -------------------------------------------------
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     cx.semantic_setup()  # one-time, explicit opt-in
     _record_a26_experience(cx)
     assert cx.semantic_state().status == SEMANTIC_STALE  # and nobody rebuilds it
 
     # --- Session 2: a fresh handle, one command --------------------
-    session2 = Cortex.discover(tmp_path)
+    session2 = Urdyn.discover(tmp_path)
     result = session2.preflight(A26_TASK)
 
     assert result.retrieval.status == SEMANTIC_READY
@@ -716,7 +716,7 @@ def test_a26_journey_recovers_experience_with_no_manual_rebuild(tmp_path, fake_s
 def test_an_unrelated_task_still_abstains_after_an_automatic_refresh(tmp_path, fake_semantic):
     """Freshness must not become a synonym for permissiveness: the point
     is that relevant experience is reachable, not that everything is."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     cx.semantic_setup()
     _record_a26_experience(cx)
 
@@ -731,7 +731,7 @@ def test_an_unrelated_task_still_abstains_after_an_automatic_refresh(tmp_path, f
 
 def test_cli_a26_journey_reports_semantic_and_lexical(tmp_path, monkeypatch, capsys, fake_semantic):
     monkeypatch.chdir(tmp_path)
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     cx.semantic_setup()
     _record_a26_experience(cx)
 
@@ -748,7 +748,7 @@ def test_an_empty_result_still_reports_how_it_was_produced(tmp_path, monkeypatch
     """A26's actual output was a plausible near-empty answer. "Nothing
     found" must never again be printable without saying what looked."""
     monkeypatch.chdir(tmp_path)
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     cx.semantic_setup()
 
     assert main(["preflight", UNRELATED_TASK]) == 0
@@ -761,12 +761,12 @@ def test_an_empty_result_still_reports_how_it_was_produced(tmp_path, monkeypatch
 
 def test_an_empty_result_on_a_never_enabled_workspace_says_lexical_only(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
-    Cortex.init(tmp_path, "dev")
+    Urdyn.init(tmp_path, "dev")
 
     assert main(["preflight", UNRELATED_TASK]) == 0
 
     assert capsys.readouterr().out.splitlines() == [
-        "Retrieval: lexical only -- semantic retrieval is not set up (run: cortex semantic setup)",
+        "Retrieval: lexical only -- semantic retrieval is not set up (run: urdyn semantic setup)",
         "No relevant experience found.",
     ]
 
@@ -777,7 +777,7 @@ def test_an_empty_result_on_a_never_enabled_workspace_says_lexical_only(tmp_path
 
 
 def test_no_canonical_schema_migration_was_needed(tmp_path):
-    from cortex_memory._store import STORE_SCHEMA_VERSION
+    from urdyn._store import STORE_SCHEMA_VERSION
 
     assert STORE_SCHEMA_VERSION == 7
 
@@ -785,8 +785,8 @@ def test_no_canonical_schema_migration_was_needed(tmp_path):
 def test_the_derived_schema_is_unchanged_too(tmp_path, fake_semantic):
     """Freshness is computed from the primary key `semantic_vectors` has
     carried since A7.4 -- no column, no table, no migration, and nothing
-    for a future `cortex rebuild` to have to re-establish."""
-    cx = Cortex.init(tmp_path, "dev")
+    for a future `urdyn rebuild` to have to re-establish."""
+    cx = Urdyn.init(tmp_path, "dev")
     cx.remember("alpha", kind="note")
     cx.semantic_setup()
 
@@ -808,7 +808,7 @@ def test_the_derived_schema_is_unchanged_too(tmp_path, fake_semantic):
 def test_semantic_policy_is_untouched():
     """A26.1 proved the thresholds were never the problem. A27 must not
     have quietly moved one."""
-    from cortex_memory._semantic import LESSON_SEMANTIC_FLOOR, SEMANTIC_POLICY, SET_ADMISSION_LIMIT
+    from urdyn._semantic import LESSON_SEMANTIC_FLOOR, SEMANTIC_POLICY, SET_ADMISSION_LIMIT
 
     assert SEMANTIC_POLICY[ENTITY_ATTEMPT] == dataclasses.replace(
         SEMANTIC_POLICY[ENTITY_ATTEMPT], absolute_floor=0.50, margin_floor=0.08

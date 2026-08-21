@@ -13,7 +13,7 @@ import uuid
 
 import pytest
 
-from cortex_memory import Cortex, CortexStorageError
+from urdyn import Urdyn, UrdynStorageError
 
 _CREATE_MEMORIES_V2_SQL = """
     CREATE TABLE memories (
@@ -120,7 +120,7 @@ def _build_v1_database(db_path, *, memory_id=None, content="a memory from before
 
 
 def test_v2_database_opens_and_memory_survives(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     memory_id = _build_v2_database(cx._db_path)
 
     results = cx.recall("a decision from A3")
@@ -132,7 +132,7 @@ def test_v2_database_opens_and_memory_survives(tmp_path):
 
 
 def test_v2_migration_preserves_supersession(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     old_id = _build_v2_database(cx._db_path, content="PostgreSQL was selected.")
     new_id = _build_v2_database(cx._db_path, content="SQLite was selected for V1.", supersedes=old_id)
 
@@ -143,14 +143,14 @@ def test_v2_migration_preserves_supersession(tmp_path):
 
 
 def test_v2_migration_preserves_memory_count(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     _build_v2_database(cx._db_path)
 
     assert cx._count_memories() == 1
 
 
 def test_v2_migration_is_safe_to_repeat(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     memory_id = _build_v2_database(cx._db_path)
 
     first = cx.recall("a decision from A3")
@@ -161,7 +161,7 @@ def test_v2_migration_is_safe_to_repeat(tmp_path):
 
 
 def test_v2_migrated_workspace_can_record_new_a4_experience(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     _build_v2_database(cx._db_path, content="SQLite was selected for V1.")
 
     attempt = cx.record_attempt(task="task", approach="approach", outcome="failed")
@@ -174,7 +174,7 @@ def test_v2_migrated_workspace_can_record_new_a4_experience(tmp_path):
 
 
 def test_v2_migration_does_not_destroy_data_on_failure(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     memory_id = _build_v2_database(cx._db_path, content="must survive a failed migration")
 
     # Sabotage the migration: pre-create a colliding 'attempts' table so
@@ -186,7 +186,7 @@ def test_v2_migration_does_not_destroy_data_on_failure(tmp_path):
     finally:
         connection.close()
 
-    with pytest.raises(CortexStorageError):
+    with pytest.raises(UrdynStorageError):
         cx.recall("must survive")
 
     connection = sqlite3.connect(cx._db_path)
@@ -203,7 +203,7 @@ def test_v2_migration_does_not_destroy_data_on_failure(tmp_path):
 
 
 def test_full_chain_v1_database_reaches_v3_and_supports_a4_features(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     old_id = _build_v1_database(cx._db_path, content="a memory from A2")
 
     # migration v1 -> v2 -> v3 -> v4 happens transparently on first open
@@ -234,7 +234,7 @@ def test_full_chain_v1_database_reaches_v3_and_supports_a4_features(tmp_path):
 
 
 def test_future_schema_version_is_rejected_without_data_loss(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     cx.remember("must not be destroyed by an unknown future schema")
 
     connection = sqlite3.connect(cx._db_path)
@@ -244,7 +244,7 @@ def test_future_schema_version_is_rejected_without_data_loss(tmp_path):
     finally:
         connection.close()
 
-    with pytest.raises(CortexStorageError):
+    with pytest.raises(UrdynStorageError):
         cx.recall("must not be destroyed")
 
     connection = sqlite3.connect(cx._db_path)

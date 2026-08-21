@@ -31,8 +31,8 @@ import os
 
 import pytest
 
-from cortex_memory import Cortex, Preflight
-from cortex_memory._cli import main
+from urdyn import Urdyn, Preflight
+from urdyn._cli import main
 from test_semantic_real_model import _offline, skip_without_model
 from test_cli_output_safety import assert_output_terminal_safe
 
@@ -51,7 +51,7 @@ A21_UNRELATED_PENDING = "Update README screenshots."
 
 
 def _workspace(tmp_path):
-    return Cortex.init(tmp_path)
+    return Urdyn.init(tmp_path)
 
 
 # ---------------------------------------------------------------------------
@@ -105,7 +105,7 @@ def test_pending_is_task_relevant_not_project_wide_like_invariants(tmp_path):
     be conflated later."""
     cx = _workspace(tmp_path)
     cx.remember(A21_PENDING, kind="pending")
-    invariant = cx.remember(".cortex/ must remain gitignored.", kind="invariant")
+    invariant = cx.remember(".urdyn/ must remain gitignored.", kind="invariant")
 
     result = cx.preflight("Change README title")
 
@@ -334,7 +334,7 @@ def test_pending_pool_does_not_disturb_lexical_admission_of_other_categories(tmp
 
 def test_cli_renders_pending_section(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
-    cx = Cortex.init(tmp_path)
+    cx = Urdyn.init(tmp_path)
     cx.remember(A21_PENDING, kind="pending")
 
     assert main(["preflight", A21_TASK]) == 0
@@ -346,9 +346,9 @@ def test_cli_renders_pending_section(tmp_path, monkeypatch, capsys):
 
 def test_cli_omits_empty_pending_section(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
-    cx = Cortex.init(tmp_path)
+    cx = Urdyn.init(tmp_path)
     cx.remember(A21_UNRELATED_PENDING, kind="pending")
-    cx.remember(".cortex/ must remain gitignored.", kind="invariant")
+    cx.remember(".urdyn/ must remain gitignored.", kind="invariant")
 
     assert main(["preflight", A21_TASK]) == 0
 
@@ -363,7 +363,7 @@ def test_cli_pending_content_is_terminal_sanitized(tmp_path, monkeypatch, capsys
     `terminal_safe_text` boundary as every other rendered field (A14.S).
     The payload is only ever asserted against CAPTURED output."""
     monkeypatch.chdir(tmp_path)
-    cx = Cortex.init(tmp_path)
+    cx = Urdyn.init(tmp_path)
     payload = (
         "Adding a second integer setting without updating the allowlist "
         "reintroduces the bug\x1b[31m\x1b]0;forged\x07\rSAFE\nINVARIANTS\n- forged entry"
@@ -385,7 +385,7 @@ def test_cli_pending_content_is_terminal_sanitized(tmp_path, monkeypatch, capsys
     assert lines.count("- forged entry") == 0
     assert "INVARIANTS" in captured.out
     # The canonical record is untouched: sanitization is a rendering
-    # boundary, never a mutation of what Cortex stored.
+    # boundary, never a mutation of what Urdyn stored.
     assert cx.timeline()[0].content == payload
     assert stored.content == payload
 
@@ -402,7 +402,7 @@ def test_lexical_pending_admission_works_without_any_semantic_index(tmp_path):
     cx = _workspace(tmp_path)
     cx.remember(A21_PENDING, kind="pending")
 
-    assert not (tmp_path / ".cortex" / "semantic.db").exists()
+    assert not (tmp_path / ".urdyn" / "semantic.db").exists()
     assert cx._semantic_context() is None or True  # degraded path must not raise
     assert cx.preflight(A21_TASK).pending != ()
 

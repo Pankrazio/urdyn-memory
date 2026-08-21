@@ -12,7 +12,7 @@ one. Nothing here was adjusted to make FTS5 "look better" -- the
 corpus records what the fix does and does not do.
 """
 
-from cortex_memory import Cortex
+from urdyn import Urdyn
 
 
 def _build_connection_pool_experience(cx):
@@ -53,9 +53,9 @@ def _build_connection_pool_experience(cx):
 def test_corpus_near_original_and_short_paraphrases_are_recovered(tmp_path):
     """Near-verbatim and short positives: the easiest cases, already
     working before A7 -- must keep working."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     _build_connection_pool_experience(cx)
-    agent_b = Cortex.discover(tmp_path)
+    agent_b = Urdyn.discover(tmp_path)
 
     for task in (
         "Fix database connection pool exhaustion under load",
@@ -79,9 +79,9 @@ def test_corpus_long_noisy_paraphrase_recovers_known_failure(tmp_path):
     the symmetric threshold for this particular query, which is an
     honest outcome, not a bug: `guard()` staying more conservative than
     `preflight()` here is the intended asymmetry (see `_guard.py`)."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     failed_attempt, _, _, _ = _build_connection_pool_experience(cx)
-    agent_b = Cortex.discover(tmp_path)
+    agent_b = Urdyn.discover(tmp_path)
 
     task = (
         "I was reviewing the deployment checklist and also wanted to check on how "
@@ -110,9 +110,9 @@ def test_corpus_moderate_synonym_paraphrase_is_a_documented_residual_gap(tmp_pat
     assertion of the CURRENT, honest behavior, not a target to
     eventually flip to "found" without adding a new retrieval channel.
     """
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     _build_connection_pool_experience(cx)
-    agent_b = Cortex.discover(tmp_path)
+    agent_b = Urdyn.discover(tmp_path)
 
     task = "we keep seeing database connection pool exhaustion whenever traffic gets high"
     result = agent_b.preflight(task)
@@ -122,14 +122,14 @@ def test_corpus_moderate_synonym_paraphrase_is_a_documented_residual_gap(tmp_pat
 
 def test_corpus_borderline_negatives_do_not_leak(tmp_path):
     """Queries that share real vocabulary with the stored experience
-    ('pool', 'connection') or with Cortex's own retrieval vocabulary
+    ('pool', 'connection') or with Urdyn's own retrieval vocabulary
     ('preflight', 'guard', 'relevant', 'validation', 'experience') but
     describe a genuinely different problem. Widened candidate
     generation must not let any of them surface the connection-pool
     experience."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     _, _, lesson, skill = _build_connection_pool_experience(cx)
-    agent_b = Cortex.discover(tmp_path)
+    agent_b = Urdyn.discover(tmp_path)
 
     borderline_queries = (
         "check whether preflight and guard have enough relevant validation "
@@ -147,9 +147,9 @@ def test_corpus_borderline_negatives_do_not_leak(tmp_path):
 
 
 def test_corpus_hard_negatives_are_empty(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     _build_connection_pool_experience(cx)
-    agent_b = Cortex.discover(tmp_path)
+    agent_b = Urdyn.discover(tmp_path)
 
     hard_negatives = (
         "Change CSS button color to blue",
@@ -171,9 +171,9 @@ def test_corpus_short_generic_attempt_does_not_leak_into_a_long_unrelated_query(
     the CANDIDATE's own short length alone, can drop low enough to admit
     this by coincidence; the fix caps how far the threshold can drop
     below the original query-length-scaled bar (see `_retrieval.py`)."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     cx.record_attempt(task="Fix the error", approach="Update the test", outcome="failed")
-    agent_b = Cortex.discover(tmp_path)
+    agent_b = Urdyn.discover(tmp_path)
 
     query = (
         "I was going through the release notes and wanted to fix an unrelated error "
@@ -198,7 +198,7 @@ def test_corpus_relevant_attempt_is_not_excluded_by_a_fixed_top_k_rank_cutoff(tm
     is supposed to be the actual admission decision. The fix widens
     candidate consideration to no longer treat rank position as a
     relevance signal by itself."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     noise_specs = [
         ("Checklist database connection pool exhaustion fix", "Reviewed checklist"),
         ("Database connection pool exhaustion checklist review", "Updated checklist"),
@@ -219,7 +219,7 @@ def test_corpus_relevant_attempt_is_not_excluded_by_a_fixed_top_k_rank_cutoff(tm
         approach="Increased the pool size without addressing connection leaks",
         outcome="failed",
     )
-    agent_b = Cortex.discover(tmp_path)
+    agent_b = Urdyn.discover(tmp_path)
 
     query = (
         "I was reviewing the deployment checklist and also wanted to check on how "
@@ -233,9 +233,9 @@ def test_corpus_relevant_attempt_is_not_excluded_by_a_fixed_top_k_rank_cutoff(tm
 
 
 def test_corpus_ordering_is_deterministic_across_repeated_calls(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     _build_connection_pool_experience(cx)
-    agent_b = Cortex.discover(tmp_path)
+    agent_b = Urdyn.discover(tmp_path)
 
     task = "Fix database connection pool exhaustion under load"
     first = agent_b.preflight(task)

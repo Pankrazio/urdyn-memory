@@ -23,15 +23,15 @@ import uuid
 
 import pytest
 
-from cortex_memory import Cortex
-from cortex_memory._errors import CortexStorageError
-from cortex_memory._event import (
+from urdyn import Urdyn
+from urdyn._errors import UrdynStorageError
+from urdyn._event import (
     EVENT_KIND_MEMORY_RECORDED,
     EVENT_KIND_MEMORY_SUPERSEDED,
     Event,
 )
-from cortex_memory._memory import Memory
-from cortex_memory._store import STORE_SCHEMA_VERSION, MemoryStore, db_path_for
+from urdyn._memory import Memory
+from urdyn._store import STORE_SCHEMA_VERSION, MemoryStore, db_path_for
 
 
 def _events(cx, kind=None):
@@ -79,7 +79,7 @@ def _make_memory(*, content, kind="note", supersedes=None, epistemic_state="user
 
 class TestMediumOneEventRequirement:
     def test_a_direct_add_with_no_events_is_rejected(self, tmp_path):
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         cx.remember("baseline fact", kind="note")
         before_raw = _raw_memory_count(cx)
         before_events = len(_events(cx))
@@ -98,7 +98,7 @@ class TestMediumOneEventRequirement:
         assert again.memory_id
 
     def test_b_event_with_wrong_subject_id_is_rejected(self, tmp_path):
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         cx.remember("baseline fact", kind="note")
         before_raw = _raw_memory_count(cx)
         before_events = len(_events(cx))
@@ -118,7 +118,7 @@ class TestMediumOneEventRequirement:
         assert len(_events(cx)) == before_events
 
     def test_b_event_with_wrong_kind_is_rejected(self, tmp_path):
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         cx.remember("baseline fact", kind="note")
         before_raw = _raw_memory_count(cx)
         before_events = len(_events(cx))
@@ -138,7 +138,7 @@ class TestMediumOneEventRequirement:
         assert len(_events(cx)) == before_events
 
     def test_c_direct_write_with_correct_event_is_visible_everywhere(self, tmp_path):
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         memory = _make_memory(content="a properly recorded direct write", kind="note")
         event = Event(
             event_id=uuid.uuid4().hex,
@@ -153,7 +153,7 @@ class TestMediumOneEventRequirement:
         assert memory.memory_id in {m.memory_id for m in cx.timeline()}
         assert memory.memory_id in {m.memory_id for m in cx.state()}
 
-        reopened = Cortex.open(tmp_path)
+        reopened = Urdyn.open(tmp_path)
         assert memory.memory_id in {m.memory_id for m in reopened.recall("properly recorded")}
         assert memory.memory_id in {m.memory_id for m in reopened.timeline()}
         assert memory.memory_id in {m.memory_id for m in reopened.state()}
@@ -163,7 +163,7 @@ class TestMediumOneEventRequirement:
         retry that resolves to an already-current equivalent writes
         nothing, so it must not be forced to supply an event it will
         never use."""
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         first = cx.remember("duplicate-prone content", kind="note")
 
         duplicate = _make_memory(content="duplicate-prone content", kind="note")
@@ -175,7 +175,7 @@ class TestMediumOneEventRequirement:
         assert len(_events(cx)) == 1
 
     def test_e_supersession_history_unchanged(self, tmp_path):
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         original = cx.remember("root cause A", kind="root_cause")
         updated = cx.remember("root cause B", kind="root_cause", supersedes=original.memory_id)
 
@@ -187,7 +187,7 @@ class TestMediumOneEventRequirement:
         assert cx.state()[0].memory_id == updated.memory_id
 
     def test_f_supersession_retry_is_idempotent(self, tmp_path):
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         original = cx.remember("target of supersession", kind="root_cause")
         first = cx.remember("the replacement fact", kind="root_cause", supersedes=original.memory_id)
         second = cx.remember("the replacement fact", kind="root_cause", supersedes=original.memory_id)
@@ -197,7 +197,7 @@ class TestMediumOneEventRequirement:
         assert len(_events(cx, kind=EVENT_KIND_MEMORY_RECORDED)) == 2
 
     def test_g_injected_event_insert_failure_rolls_back_everything(self, tmp_path):
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         cx.remember("pre-existing baseline", kind="note")
         before_raw = _raw_memory_count(cx)
         before_events = len(_events(cx))
@@ -232,7 +232,7 @@ class TestMediumOneEventRequirement:
             subject_id=memory.memory_id,
             occurred_at=memory.recorded_at,
         )
-        with pytest.raises(CortexStorageError):
+        with pytest.raises(UrdynStorageError):
             store.add(memory, [event])
         store._connection.close()
 
@@ -254,9 +254,9 @@ _PROC_COUNT = 6
 def _pd1_worker_remember(workspace_dir, content, kind, barrier, queue):
     try:
         barrier.wait(timeout=30)
-        from cortex_memory import Cortex as _Cortex
+        from urdyn import Urdyn as _Urdyn
 
-        memory = _Cortex.open(workspace_dir).remember(content, kind=kind)
+        memory = _Urdyn.open(workspace_dir).remember(content, kind=kind)
         queue.put(("ok", memory.memory_id))
     except BaseException as exc:  # noqa: BLE001 - reported to parent, not swallowed
         queue.put(("error", f"{type(exc).__name__}: {exc}"))
@@ -288,8 +288,8 @@ def _integrity_check(db_path) -> str:
 
 class TestPD1FirstCreationRace:
     def test_a_identical_first_write_from_many_processes(self, tmp_path):
-        cx = Cortex.init(tmp_path, "dev")
-        db_path = db_path_for(tmp_path / ".cortex")
+        cx = Urdyn.init(tmp_path, "dev")
+        db_path = db_path_for(tmp_path / ".urdyn")
         assert not db_path.exists()
 
         results = _run_workers(tmp_path, ["the same first fact"] * _PROC_COUNT)
@@ -304,15 +304,15 @@ class TestPD1FirstCreationRace:
         assert integrity == "ok"
         assert user_version == STORE_SCHEMA_VERSION
 
-        reopened = Cortex.open(tmp_path)
+        reopened = Urdyn.open(tmp_path)
         assert reopened._count_memories() == 1
         assert len(reopened.timeline()) == 1
         assert len(reopened.state()) == 1
         assert reopened.state()[0].memory_id == next(iter(memory_ids))
 
     def test_b_distinct_first_writes_from_many_processes(self, tmp_path):
-        cx = Cortex.init(tmp_path, "dev")
-        db_path = db_path_for(tmp_path / ".cortex")
+        cx = Urdyn.init(tmp_path, "dev")
+        db_path = db_path_for(tmp_path / ".urdyn")
         assert not db_path.exists()
 
         contents = [f"distinct first fact number {i}" for i in range(_PROC_COUNT)]
@@ -327,16 +327,16 @@ class TestPD1FirstCreationRace:
         assert integrity == "ok"
         assert user_version == STORE_SCHEMA_VERSION
 
-        reopened = Cortex.open(tmp_path)
+        reopened = Urdyn.open(tmp_path)
         assert reopened._count_memories() == _PROC_COUNT
         assert {m.memory_id for m in reopened.timeline()} == memory_ids
         assert {m.memory_id for m in reopened.state()} == memory_ids
 
     def test_c_reopen_after_contention_is_fully_functional(self, tmp_path):
-        Cortex.init(tmp_path, "dev")
+        Urdyn.init(tmp_path, "dev")
         _run_workers(tmp_path, ["reopen check fact"] * _PROC_COUNT)
 
-        cx = Cortex.open(tmp_path)
+        cx = Urdyn.open(tmp_path)
         cx.state()
         cx.timeline()
         followup = cx.remember("a normal write after contention", kind="note")
@@ -344,9 +344,9 @@ class TestPD1FirstCreationRace:
         assert cx._count_memories() == 2
 
     def test_d_read_only_does_not_materialize_the_database(self, tmp_path):
-        Cortex.init(tmp_path, "dev")
-        db_path = db_path_for(tmp_path / ".cortex")
-        cx = Cortex.open(tmp_path)
+        Urdyn.init(tmp_path, "dev")
+        db_path = db_path_for(tmp_path / ".urdyn")
+        cx = Urdyn.open(tmp_path)
 
         assert cx.state() == []
         assert cx.timeline() == []
@@ -359,7 +359,7 @@ class TestPD1FirstCreationRace:
         store must not regress: seed the store first (so this test is
         purely about the `add()` duplicate/write path, not PD-1), then
         hit it with concurrent identical writes."""
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         cx.remember("seed so memory.db already exists", kind="note")
 
         results = _run_workers(tmp_path, ["existing-db concurrent fact"] * _PROC_COUNT)
@@ -378,8 +378,8 @@ class TestPD1FirstCreationRace:
 
 
 def test_interaction_first_creation_concurrent_identical_remember(tmp_path):
-    Cortex.init(tmp_path, "dev")
-    db_path = db_path_for(tmp_path / ".cortex")
+    Urdyn.init(tmp_path, "dev")
+    db_path = db_path_for(tmp_path / ".urdyn")
     assert not db_path.exists()
 
     results = _run_workers(tmp_path, ["the one true first fact"] * _PROC_COUNT)
@@ -394,7 +394,7 @@ def test_interaction_first_creation_concurrent_identical_remember(tmp_path):
     assert integrity == "ok"
     assert user_version == STORE_SCHEMA_VERSION
 
-    cx = Cortex.open(tmp_path)
+    cx = Urdyn.open(tmp_path)
     recorded_events = _events(cx, kind=EVENT_KIND_MEMORY_RECORDED)
     assert len(recorded_events) == 1
     assert recorded_events[0][1] == canonical_id

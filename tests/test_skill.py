@@ -1,4 +1,4 @@
-"""Tests for the `Skill` primitive and `Cortex.promote()`."""
+"""Tests for the `Skill` primitive and `Urdyn.promote()`."""
 
 import dataclasses
 import datetime as dt
@@ -6,9 +6,9 @@ import sqlite3
 
 import pytest
 
-from cortex_memory import Cortex, CortexStorageError
-from cortex_memory._memory import Memory
-from cortex_memory._store import MemoryStore
+from urdyn import Urdyn, UrdynStorageError
+from urdyn._memory import Memory
+from urdyn._store import MemoryStore
 
 
 def _verified_lesson(cx, content="Use only the newly issued refresh token."):
@@ -17,7 +17,7 @@ def _verified_lesson(cx, content="Use only the newly issued refresh token."):
 
 
 def test_promote_assigns_stable_valid_id(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     lesson = _verified_lesson(cx)
 
     skill = cx.promote(
@@ -32,7 +32,7 @@ def test_promote_assigns_stable_valid_id(tmp_path):
 
 
 def test_promote_from_verified_lesson_yields_verified_skill(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     lesson = _verified_lesson(cx)
 
     skill = cx.promote(lesson, name="n", purpose="p", steps=["s1"])
@@ -41,7 +41,7 @@ def test_promote_from_verified_lesson_yields_verified_skill(tmp_path):
 
 
 def test_promote_from_candidate_lesson_yields_candidate_skill(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     lesson = cx.learn("Refresh tokens might need special handling.")
 
     skill = cx.promote(lesson, name="n", purpose="p", steps=["s1"])
@@ -54,7 +54,7 @@ def test_promote_from_candidate_lesson_with_weak_evidence_yields_candidate_skill
     cited somewhere -- the same weak-evidence rule `remember()` already
     enforces for Memory must hold for Skill too, without a second,
     laxer verification path being introduced for it."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     opinion = cx.add_evidence("I think this works.", kind="user_statement")
     lesson = cx.learn("Refresh tokens might need special handling.", evidence=[opinion])
 
@@ -67,7 +67,7 @@ def test_promote_has_no_verified_override_parameter(tmp_path):
     """Verification is derived from the source lesson's own epistemic
     state, not something the caller can assert directly -- there is no
     `verified=` (or similar) parameter to bypass that."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     lesson = cx.learn("Refresh tokens might need special handling.")
 
     with pytest.raises(TypeError):
@@ -75,7 +75,7 @@ def test_promote_has_no_verified_override_parameter(tmp_path):
 
 
 def test_promote_preserves_steps_ordering(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     lesson = _verified_lesson(cx)
     steps = ["Inspect the rotation flow.", "Persist only the newly issued token.", "Run auth tests."]
 
@@ -85,7 +85,7 @@ def test_promote_preserves_steps_ordering(tmp_path):
 
 
 def test_promote_rejects_empty_steps(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     lesson = _verified_lesson(cx)
 
     with pytest.raises(ValueError):
@@ -93,7 +93,7 @@ def test_promote_rejects_empty_steps(tmp_path):
 
 
 def test_promote_rejects_blank_step(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     lesson = _verified_lesson(cx)
 
     with pytest.raises(ValueError):
@@ -101,7 +101,7 @@ def test_promote_rejects_blank_step(tmp_path):
 
 
 def test_promote_rejects_empty_name(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     lesson = _verified_lesson(cx)
 
     with pytest.raises(ValueError):
@@ -109,7 +109,7 @@ def test_promote_rejects_empty_name(tmp_path):
 
 
 def test_promote_rejects_empty_purpose(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     lesson = _verified_lesson(cx)
 
     with pytest.raises(ValueError):
@@ -117,7 +117,7 @@ def test_promote_rejects_empty_purpose(tmp_path):
 
 
 def test_promote_rejects_non_lesson_memory(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     decision = cx.remember("SQLite was selected.", kind="decision")
 
     with pytest.raises(ValueError):
@@ -128,7 +128,7 @@ def test_promote_rejects_string_as_steps(tmp_path):
     """`str` satisfies `Sequence[str]`, so without an explicit guard
     `steps="pytest"` would silently become `("p", "y", "t", "e", "s",
     "t")` -- five bogus one-character steps instead of a rejected call."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     lesson = _verified_lesson(cx)
 
     with pytest.raises(ValueError):
@@ -136,7 +136,7 @@ def test_promote_rejects_string_as_steps(tmp_path):
 
 
 def test_promote_rejects_bytes_as_steps(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     lesson = _verified_lesson(cx)
 
     with pytest.raises(ValueError):
@@ -144,7 +144,7 @@ def test_promote_rejects_bytes_as_steps(tmp_path):
 
 
 def test_promote_rejects_string_as_conditions(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     lesson = _verified_lesson(cx)
 
     with pytest.raises(ValueError):
@@ -152,7 +152,7 @@ def test_promote_rejects_string_as_conditions(tmp_path):
 
 
 def test_promote_rejects_bytes_as_conditions(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     lesson = _verified_lesson(cx)
 
     with pytest.raises(ValueError):
@@ -162,7 +162,7 @@ def test_promote_rejects_bytes_as_conditions(tmp_path):
 def test_promote_accepts_list_and_tuple_of_steps(tmp_path):
     """Normal `list[str]`/`tuple[str, ...]` input must keep working exactly
     as before -- the str/bytes guard must not be over-broad."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     lesson = _verified_lesson(cx)
 
     from_list = cx.promote(lesson, name="n1", purpose="p", steps=["step one", "step two"])
@@ -174,7 +174,7 @@ def test_promote_accepts_list_and_tuple_of_steps(tmp_path):
 
 
 def test_promote_conditions_default_to_empty(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     lesson = _verified_lesson(cx)
 
     skill = cx.promote(lesson, name="n", purpose="p", steps=["s1"])
@@ -183,7 +183,7 @@ def test_promote_conditions_default_to_empty(tmp_path):
 
 
 def test_promote_preserves_conditions_ordering(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     lesson = _verified_lesson(cx)
     conditions = ["Only applies to authentication refresh flows.", "Not applicable to first-time login."]
 
@@ -193,7 +193,7 @@ def test_promote_preserves_conditions_ordering(tmp_path):
 
 
 def test_promote_rejects_blank_condition(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     lesson = _verified_lesson(cx)
 
     with pytest.raises(ValueError):
@@ -201,7 +201,7 @@ def test_promote_rejects_blank_condition(tmp_path):
 
 
 def test_promote_records_source_lesson_provenance(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     lesson = _verified_lesson(cx)
 
     skill = cx.promote(lesson, name="n", purpose="p", steps=["s1"])
@@ -215,9 +215,9 @@ def test_promote_ignores_forged_verification_state_on_caller_object(tmp_path):
     `Memory` object the caller happens to pass in. Build a second object
     that shares a real, persisted CANDIDATE lesson's `memory_id` but
     claims `epistemic_state="verified"`; the resulting Skill must still
-    be `candidate`, derived from what Cortex actually has on record for
+    be `candidate`, derived from what Urdyn actually has on record for
     that id, not from the forged object's claim."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     candidate = cx.learn("Refresh tokens might need special handling.")
     assert candidate.epistemic_state == "user_asserted"
 
@@ -234,7 +234,7 @@ def test_promote_ignores_forged_evidence_ids_on_caller_object(tmp_path):
     happens to carry. A forged object sharing a real Lesson's memory_id
     but claiming different evidence must not redirect the Skill's
     provenance to that fabricated evidence."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     lesson = _verified_lesson(cx)
     fake_evidence_id = "c" * 32
 
@@ -247,7 +247,7 @@ def test_promote_ignores_forged_evidence_ids_on_caller_object(tmp_path):
 
 
 def test_promote_does_not_mutate_or_supersede_the_lesson(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     lesson = _verified_lesson(cx)
 
     cx.promote(lesson, name="n", purpose="p", steps=["s1"])
@@ -259,10 +259,10 @@ def test_promote_does_not_mutate_or_supersede_the_lesson(tmp_path):
 
 
 def test_promote_rejects_fabricated_lesson_reference(tmp_path):
-    """A `Memory` object that Cortex never actually persisted must not be
+    """A `Memory` object that Urdyn never actually persisted must not be
     promotable, even if it claims kind='lesson' -- otherwise provenance
     could point at nothing."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     fabricated = Memory(
         memory_id="a" * 32,
         content="never actually persisted",
@@ -278,7 +278,7 @@ def test_promote_rejects_fabricated_lesson_reference(tmp_path):
 
 
 def test_failed_promotion_does_not_partially_persist(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     fabricated = Memory(
         memory_id="a" * 32,
         content="never actually persisted",
@@ -314,7 +314,7 @@ def test_failed_promotion_does_not_survive_partial_writes(tmp_path, monkeypatch)
     """
     import uuid as uuid_module
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     lesson = _verified_lesson(cx)
 
     fixed_skill_id = "b" * 32
@@ -330,7 +330,7 @@ def test_failed_promotion_does_not_survive_partial_writes(tmp_path, monkeypatch)
     finally:
         connection.close()
 
-    with pytest.raises(CortexStorageError):
+    with pytest.raises(UrdynStorageError):
         cx.promote(lesson, name="n", purpose="p", steps=["s1"], conditions=["only condition"])
 
     assert cx.skills() == []
@@ -354,7 +354,7 @@ def test_failed_promotion_does_not_survive_partial_writes(tmp_path, monkeypatch)
 
 
 def test_get_skill_resolves_persisted_skill(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     lesson = _verified_lesson(cx)
     original = cx.promote(lesson, name="n", purpose="p", steps=["s1"])
 
@@ -364,14 +364,14 @@ def test_get_skill_resolves_persisted_skill(tmp_path):
 
 
 def test_get_skill_rejects_unknown_id(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
 
     with pytest.raises(ValueError):
         cx.get_skill("0" * 32)
 
 
 def test_skills_lists_in_recorded_order(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     lesson = _verified_lesson(cx)
     first = cx.promote(lesson, name="first", purpose="p", steps=["s1"])
     second_lesson = cx.learn("Another lesson.")
@@ -383,13 +383,13 @@ def test_skills_lists_in_recorded_order(tmp_path):
 
 
 def test_skills_on_empty_workspace_returns_empty_list(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
 
     assert cx.skills() == []
 
 
 def test_skill_persists_across_reopening(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     lesson = _verified_lesson(cx)
     original = cx.promote(
         lesson,
@@ -400,7 +400,7 @@ def test_skill_persists_across_reopening(tmp_path):
     )
     del cx
 
-    reopened = Cortex.open(tmp_path)
+    reopened = Urdyn.open(tmp_path)
     (skill,) = reopened.skills()
 
     assert skill.skill_id == original.skill_id
@@ -413,7 +413,7 @@ def test_skill_persists_across_reopening(tmp_path):
 
 
 def test_skill_object_is_immutable(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     lesson = _verified_lesson(cx)
     skill = cx.promote(lesson, name="n", purpose="p", steps=["s1"])
 
@@ -422,7 +422,7 @@ def test_skill_object_is_immutable(tmp_path):
 
 
 def test_corrupted_verification_state_is_rejected_explicitly(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     lesson = _verified_lesson(cx)
     skill = cx.promote(lesson, name="n", purpose="p", steps=["s1"])
 
@@ -433,12 +433,12 @@ def test_corrupted_verification_state_is_rejected_explicitly(tmp_path):
     finally:
         connection.close()
 
-    with pytest.raises(CortexStorageError):
+    with pytest.raises(UrdynStorageError):
         cx.get_skill(skill.skill_id)
 
 
 def test_corrupted_skill_id_is_rejected_explicitly(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     lesson = _verified_lesson(cx)
     cx.promote(lesson, name="n", purpose="p", steps=["s1"])
 
@@ -449,5 +449,5 @@ def test_corrupted_skill_id_is_rejected_explicitly(tmp_path):
     finally:
         connection.close()
 
-    with pytest.raises(CortexStorageError):
+    with pytest.raises(UrdynStorageError):
         cx.get_skill("not-a-valid-id")

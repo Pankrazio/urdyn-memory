@@ -1,7 +1,7 @@
-"""A29.1: `Cortex.context()` / `CompiledContext`, the first Context
+"""A29.1: `Urdyn.context()` / `CompiledContext`, the first Context
 Compiler tracer.
 
-`preflight()` answers "what does Cortex know that bears on this task",
+`preflight()` answers "what does Urdyn know that bears on this task",
 unbounded. `context()` answers a narrower question -- "what must an
 agent respect right now to start this task" -- under an explicit
 character budget. These tests deliberately assert behaviors `preflight()`
@@ -26,9 +26,9 @@ import datetime as dt
 
 import pytest
 
-from cortex_memory import Cortex
-from cortex_memory._cli import main
-from cortex_memory._context import (
+from urdyn import Urdyn
+from urdyn._cli import main
+from urdyn._context import (
     SECTION_CONSTRAINTS,
     SECTION_DECISIONS,
     SECTION_HISTORY,
@@ -37,7 +37,7 @@ from cortex_memory._context import (
     _render_item,
     compile_context,
 )
-from cortex_memory._memory import Memory
+from urdyn._memory import Memory
 from test_cli_output_safety import assert_output_terminal_safe
 from test_semantic_real_model import _offline, skip_without_model
 
@@ -68,7 +68,7 @@ _UNRELATED_LESSON = "Bake the cake at 180 degrees for 40 minutes"
 
 
 def _workspace(tmp_path):
-    return Cortex.init(tmp_path)
+    return Urdyn.init(tmp_path)
 
 
 def _populate(cx):
@@ -564,7 +564,7 @@ def test_cli_context_budget_flag_shrinks_output(tmp_path, monkeypatch, capsys):
 
 
 def test_cli_context_on_empty_workspace(tmp_path, monkeypatch, capsys):
-    Cortex.init(tmp_path)
+    Urdyn.init(tmp_path)
     monkeypatch.chdir(tmp_path)
 
     exit_code = main(["context", "Do anything at all"])
@@ -794,7 +794,7 @@ def test_one_character_longer_representation_flips_budget_admission():
 @skip_without_model
 def test_semantic_paraphrase_is_admitted_into_context(tmp_path):
     with _offline():
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         cx.semantic_setup()
         evidence = cx.add_evidence("pytest -> 3 passed", kind="test_result")
         lesson = cx.learn(
@@ -816,7 +816,7 @@ def test_semantic_paraphrase_is_admitted_into_context(tmp_path):
 @skip_without_model
 def test_context_reuses_a27_auto_refresh_without_manual_rebuild(tmp_path):
     with _offline():
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         cx.semantic_setup()
 
         evidence = cx.add_evidence("pytest -> 3 passed", kind="test_result")

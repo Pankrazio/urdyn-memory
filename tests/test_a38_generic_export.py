@@ -1,9 +1,9 @@
-"""A38: `cortex export "<task>" [--for generic] [--budget N]`, the first
-task-aware, portable export of Cortex.
+"""A38: `urdyn export "<task>" [--for generic] [--budget N]`, the first
+task-aware, portable export of Urdyn.
 
 `context()` already answers "what must an agent respect right now" under
 a budget (A29.1); `export` does not re-derive that answer -- it reuses
-`Cortex.context()` verbatim and swaps only the renderer, from
+`Urdyn.context()` verbatim and swaps only the renderer, from
 `CompiledContext.render()` (a local-terminal view, `Retrieval:` included)
 to `CompiledContext.render_portable()` (a provider-independent payload:
 `Task:` plus the same shared compiled body, no `Retrieval:`, no run-
@@ -20,8 +20,8 @@ import sys
 
 import pytest
 
-from cortex_memory import Cortex
-from cortex_memory._cli import main
+from urdyn import Urdyn
+from urdyn._cli import main
 from test_a29_context_compiler import (
     _INVARIANT_RELEVANT,
     _TASK,
@@ -81,7 +81,7 @@ def test_portable_payload_has_no_dynamic_metadata(tmp_path):
 
     portable = cx.context(_TASK).render_portable()
 
-    for forbidden in ("Cortex ID", str(tmp_path), "Semantic:", "Export successful", "Done", "Progress"):
+    for forbidden in ("Urdyn ID", str(tmp_path), "Semantic:", "Export successful", "Done", "Progress"):
         assert forbidden not in portable
 
 
@@ -260,7 +260,7 @@ def test_cli_export_invalid_budget_rc1_consistent_with_context(tmp_path, monkeyp
 
 
 def test_cli_export_empty_export_rc0(tmp_path, monkeypatch, capsys):
-    Cortex.init(tmp_path)
+    Urdyn.init(tmp_path)
     monkeypatch.chdir(tmp_path)
 
     exit_code = main(["export", "Do anything at all"])
@@ -272,10 +272,10 @@ def test_cli_export_empty_export_rc0(tmp_path, monkeypatch, capsys):
 
 
 def test_cli_export_pipe_and_redirect_yield_clean_payload(tmp_path):
-    cx = Cortex.init(tmp_path)
+    cx = Urdyn.init(tmp_path)
     cx.remember(_INVARIANT_RELEVANT, kind="invariant")
 
-    script = f"from cortex_memory._cli import main; main(['export', {_TASK!r}])"
+    script = f"from urdyn._cli import main; main(['export', {_TASK!r}])"
     piped = subprocess.run(
         [sys.executable, "-c", script],
         cwd=tmp_path,
@@ -321,7 +321,7 @@ def test_cli_export_never_mutates_canonical_state(tmp_path, monkeypatch, capsys)
 
 
 def test_cli_help_lists_export_command():
-    script = "from cortex_memory._cli import main; main(['--help'])"
+    script = "from urdyn._cli import main; main(['--help'])"
     result = subprocess.run(
         [sys.executable, "-c", script],
         capture_output=True,
@@ -332,12 +332,12 @@ def test_cli_help_lists_export_command():
 
 
 # ---------------------------------------------------------------------------
-# `cortex context` stays exactly as before (A36 golden tests own the byte
+# `urdyn context` stays exactly as before (A36 golden tests own the byte
 # contract; this only checks export did not perturb its sibling command)
 # ---------------------------------------------------------------------------
 
 
-def test_cortex_context_command_still_prints_retrieval(tmp_path, monkeypatch, capsys):
+def test_urdyn_context_command_still_prints_retrieval(tmp_path, monkeypatch, capsys):
     cx = _workspace(tmp_path)
     _populate(cx)
     monkeypatch.chdir(tmp_path)

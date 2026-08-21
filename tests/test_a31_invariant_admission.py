@@ -65,10 +65,10 @@ import math
 import numpy as np
 import pytest
 
-from cortex_memory import Cortex
-from cortex_memory._context import SECTION_CONSTRAINTS
-from cortex_memory._retrieval import ENTITY_MEMORY
-from cortex_memory._semantic import (
+from urdyn import Urdyn
+from urdyn._context import SECTION_CONSTRAINTS
+from urdyn._retrieval import ENTITY_MEMORY
+from urdyn._semantic import (
     INVARIANT_ADMISSION_LIMIT, INVARIANT_SEMANTIC_FLOOR, LESSON_SEMANTIC_FLOOR, SEMANTIC_POLICY,
 )
 from test_semantic_real_model import _offline, skip_without_model
@@ -115,7 +115,7 @@ class _ScoredModel:
 def scored_semantic(monkeypatch):
     """Install a `_ScoredModel` built from a caller-supplied cosine map,
     so each test states the exact score geometry it is about."""
-    import cortex_memory._semantic as semantic
+    import urdyn._semantic as semantic
 
     def install(cosines: dict[str, float]):
         model = _ScoredModel(cosines)
@@ -165,7 +165,7 @@ def test_a_relevant_invariant_is_admitted_when_a_near_tie_previously_silenced_th
     near_tie = "Delivery is at-least-once and every handler must be idempotent."
     scored_semantic({relevant: 0.5664, near_tie: 0.5532})
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     admitted = cx.remember(relevant, kind="invariant")
     cx.remember(near_tie, kind="invariant")
     cx.semantic_setup()
@@ -187,7 +187,7 @@ def test_two_co_relevant_invariants_are_admitted_together(tmp_path, scored_seman
     second = "A state transition is written in the same transaction as the side effect it describes."
     scored_semantic({first: 0.52, second: 0.48})
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     a = cx.remember(first, kind="invariant")
     b = cx.remember(second, kind="invariant")
     cx.semantic_setup()
@@ -218,7 +218,7 @@ def test_semantic_invariant_admission_is_capped_at_the_calibrated_limit(tmp_path
     }
     scored_semantic(texts)
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     recorded = [cx.remember(text, kind="invariant") for text in texts]
     cx.semantic_setup()
 
@@ -246,7 +246,7 @@ def test_an_invariant_below_the_calibrated_floor_is_not_admitted(tmp_path, score
     weak = "Scheduled times are stored and compared as UTC instants."
     scored_semantic({strong: 0.55, weak: 0.32})
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     admitted = cx.remember(strong, kind="invariant")
     rejected = cx.remember(weak, kind="invariant")
     cx.semantic_setup()
@@ -278,7 +278,7 @@ def test_an_invariant_sharing_the_task_topic_without_binding_it_stays_out(tmp_pa
     topical = "The CLI writes its machine-readable report to stdout and diagnostics to stderr."
     scored_semantic({binding: 0.51, topical: 0.29})
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     admitted = cx.remember(binding, kind="invariant")
     noise = cx.remember(topical, kind="invariant")
     cx.semantic_setup()
@@ -302,7 +302,7 @@ def test_an_unrelated_task_admits_no_invariant_at_all(tmp_path, scored_semantic)
     }
     scored_semantic(texts)
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     for text in texts:
         cx.remember(text, kind="invariant")
     cx.semantic_setup()
@@ -328,7 +328,7 @@ def test_a_superseded_invariant_is_not_admitted_by_a_high_score(tmp_path, scored
     new_text = "Every destination lies STRICTLY below the extraction root; the root is not a legal destination."
     scored_semantic({old_text: 0.99, new_text: 0.40})
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     old = cx.remember(old_text, kind="invariant")
     new = cx.remember(new_text, kind="invariant", supersedes=old.memory_id)
     cx.semantic_setup()
@@ -359,7 +359,7 @@ def test_lexical_admission_is_unchanged_without_a_semantic_index(tmp_path):
     relevant = "Retry handling for failed background jobs must never reorder the queue"
     unrelated = "All commit messages must be written in English"
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     admitted = cx.remember(relevant, kind="invariant")
     excluded = cx.remember(unrelated, kind="invariant")
 
@@ -378,7 +378,7 @@ def test_a_lexically_relevant_invariant_below_the_floor_is_still_admitted(tmp_pa
     lexical = "Retry handling for failed background jobs must never reorder the queue"
     scored_semantic({lexical: 0.05})
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     invariant = cx.remember(lexical, kind="invariant")
     cx.semantic_setup()
 
@@ -402,7 +402,7 @@ def test_the_semantic_cap_does_not_truncate_lexically_relevant_invariants(tmp_pa
     ]
     scored_semantic({})  # nothing scores at all: the lexical channel alone must carry this
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     recorded = [cx.remember(text, kind="invariant") for text in texts]
     cx.semantic_setup()
 
@@ -424,7 +424,7 @@ def test_preflight_still_projects_every_current_invariant(tmp_path, scored_seman
     unrelated = "The CLI exit code is 0 on success and 2 on a usage error."
     scored_semantic({admitted_text: 0.55, below_floor: 0.31, unrelated: 0.02})
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     recorded = [cx.remember(text, kind="invariant") for text in (admitted_text, below_floor, unrelated)]
     cx.semantic_setup()
 
@@ -448,7 +448,7 @@ def test_the_decision_pool_keeps_the_single_winner_policy(tmp_path, scored_seman
     decision_b = "Background retries use a fixed delay of thirty seconds."
     scored_semantic({invariant_a: 0.55, invariant_b: 0.52, decision_a: 0.55, decision_b: 0.52})
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     a = cx.remember(invariant_a, kind="invariant")
     b = cx.remember(invariant_b, kind="invariant")
     cx.remember(decision_a, kind="decision")
@@ -478,7 +478,7 @@ def test_lesson_and_pending_admission_are_untouched(tmp_path, scored_semantic):
     invariant_text = "Scheduled times are stored and compared as UTC instants."
     scored_semantic({lesson_text: 0.32, pending_text: 0.32, invariant_text: 0.32})
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     evidence = cx.add_evidence("pytest -> 3 passed", kind="test_result")
     lesson = cx.learn(lesson_text, verified=True, supporting_evidence=[evidence])
     pending = cx.remember(pending_text, kind="pending")
@@ -509,7 +509,7 @@ def test_an_admitted_invariant_still_competes_for_budget(tmp_path, scored_semant
     second = "Cancellation is advisory and never interrupts a handler that is already running to completion."
     scored_semantic({first: 0.60, second: 0.55})
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     a = cx.remember(first, kind="invariant")
     b = cx.remember(second, kind="invariant")
     cx.semantic_setup()
@@ -541,7 +541,7 @@ def test_invariant_admission_is_deterministic(tmp_path, scored_semantic):
     }
     scored_semantic(texts)
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     for text in texts:
         cx.remember(text, kind="invariant")
     cx.semantic_setup()
@@ -560,7 +560,7 @@ def test_context_never_mutates_canonical_state(tmp_path, scored_semantic):
     }
     scored_semantic(texts)
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     for text in texts:
         cx.remember(text, kind="invariant")
     cx.semantic_setup()
@@ -629,7 +629,7 @@ def test_real_model_margin_collapse_scene_now_delivers_its_constraint(tmp_path):
     is a separate problem from admission policy.
     """
     with _offline():
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         recorded, superseded = _p3_workspace(cx)
         cx.semantic_setup()
 
@@ -650,7 +650,7 @@ def test_real_model_italian_task_recovers_an_english_invariant(tmp_path):
     constraint is also a critical one -- an implementation that reads
     cancellation as "kill the running handler" violates it."""
     with _offline():
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         recorded, _ = _p3_workspace(cx)
         cx.semantic_setup()
 
@@ -667,7 +667,7 @@ def test_real_model_unrelated_task_in_a_full_pool_still_abstains(tmp_path):
     describe a queue. The floor must still be able to say nothing
     applies."""
     with _offline():
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         _p3_workspace(cx)
         cx.semantic_setup()
 
@@ -725,7 +725,7 @@ def test_real_model_long_task_delivers_its_critical_constraint(tmp_path):
     improvement in ranking is free to fix it.
     """
     with _offline():
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         containment = cx.remember(_P1_I02, kind="invariant")
         cx.remember(_P1_I01, kind="invariant")
         for text in _P1_OTHERS:
@@ -746,7 +746,7 @@ def test_real_model_context_still_reuses_a27_auto_refresh(tmp_path):
     consumer-boundary path -- this tracer added no second preparation
     step, no second encoding pass and no second index."""
     with _offline():
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         cx.semantic_setup()
         invariant = cx.remember(_P3["P3-I07"], kind="invariant")
 

@@ -7,7 +7,7 @@ takes no lock until its first write. Two processes opening a store whose
 index does not exist yet could therefore both pass that check and both
 reach `CREATE VIRTUAL TABLE search_index`; the loser failed with
 "table search_index already exists", surfaced as
-`CortexStorageError: ... is corrupted` -- an open failing on a store with
+`UrdynStorageError: ... is corrupted` -- an open failing on a store with
 nothing wrong with it, and a message inviting the user to discard a
 perfectly intact database.
 
@@ -43,9 +43,9 @@ import uuid
 
 import pytest
 
-from cortex_memory import Cortex, CortexStorageError
-from cortex_memory._retrieval import ENTITY_MEMORY
-from cortex_memory._store import SEARCH_INDEX_TABLE, STORE_SCHEMA_VERSION, MemoryStore, db_path_for
+from urdyn import Urdyn, UrdynStorageError
+from urdyn._retrieval import ENTITY_MEMORY
+from urdyn._store import SEARCH_INDEX_TABLE, STORE_SCHEMA_VERSION, MemoryStore, db_path_for
 
 _PROC_COUNT = 6
 
@@ -55,16 +55,16 @@ _PROC_COUNT = 6
 # boundary being tested is SQLite's inter-PROCESS write lock, and a
 # Python-level lock would mask exactly the defect under test. `spawn` is
 # used so each worker builds its own interpreter state and its own
-# connections, as separate `cortex` invocations really do.
+# connections, as separate `urdyn` invocations really do.
 # ---------------------------------------------------------------------------
 
 
 def _worker_remember(workspace_dir, content, barrier, queue):
     try:
         barrier.wait(timeout=30)
-        from cortex_memory import Cortex as _Cortex
+        from urdyn import Urdyn as _Urdyn
 
-        memory = _Cortex.open(workspace_dir).remember(content, kind="note")
+        memory = _Urdyn.open(workspace_dir).remember(content, kind="note")
         queue.put(("ok", memory.memory_id))
     except BaseException as exc:  # noqa: BLE001 - reported to the parent, not swallowed
         queue.put(("error", f"{type(exc).__name__}: {exc}"))
@@ -139,9 +139,9 @@ def _drop_search_index(db_path):
 
 class TestExistingStoreIndexAbsent:
     def test_a_six_concurrent_openers_initialize_the_index_exactly_once(self, tmp_path):
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         cx.remember("canonical fact that predates the derived index", kind="note")
-        db_path = db_path_for(tmp_path / ".cortex")
+        db_path = db_path_for(tmp_path / ".urdyn")
         _drop_search_index(db_path)
 
         contents = [f"post-upgrade fact number {i}" for i in range(_PROC_COUNT)]
@@ -165,15 +165,15 @@ class TestExistingStoreIndexAbsent:
         """The race is open-time, so it never needed a write to trigger:
         `open_if_exists` reaches the same `_ensure_schema`. Reads must
         not fail because another process is building the projection."""
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         cx.remember("a fact to recall after the index is rebuilt", kind="note")
-        db_path = db_path_for(tmp_path / ".cortex")
+        db_path = db_path_for(tmp_path / ".urdyn")
         _drop_search_index(db_path)
 
         results = _run_workers(tmp_path, ["a concurrent write alongside the readers"] * _PROC_COUNT)
         _assert_no_worker_failed(results)
 
-        reopened = Cortex.open(tmp_path)
+        reopened = Urdyn.open(tmp_path)
         assert len(reopened.state()) == 2
         assert len(reopened.timeline()) == 2
         assert [m.content for m in reopened.recall("recall")] == [
@@ -189,8 +189,8 @@ class TestExistingStoreIndexAbsent:
 
 class TestFreshDatabase:
     def test_a_identical_first_writes_from_six_processes(self, tmp_path):
-        Cortex.init(tmp_path, "dev")
-        db_path = db_path_for(tmp_path / ".cortex")
+        Urdyn.init(tmp_path, "dev")
+        db_path = db_path_for(tmp_path / ".urdyn")
         assert not db_path.exists()
 
         results = _run_workers(tmp_path, ["the same first fact"] * _PROC_COUNT)
@@ -215,8 +215,8 @@ class TestFreshDatabase:
     def test_b_distinct_first_writes_from_six_processes(self, tmp_path):
         """Pressure-tests schema init, derived init, canonical writes and
         search indexing at once: every process both creates and writes."""
-        Cortex.init(tmp_path, "dev")
-        db_path = db_path_for(tmp_path / ".cortex")
+        Urdyn.init(tmp_path, "dev")
+        db_path = db_path_for(tmp_path / ".urdyn")
         assert not db_path.exists()
 
         contents = [f"distinct first fact number {i}" for i in range(_PROC_COUNT)]
@@ -254,9 +254,9 @@ class TestLockingProtocol:
         `_try_create_search_index` is replaced with a fuse: reaching it
         at all means the re-check did not happen, which is the defect.
         """
-        import cortex_memory._store as store_module
+        import urdyn._store as store_module
 
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         cx.remember("index already built by the winner", kind="note")
 
         calls = {"exists": 0}
@@ -294,9 +294,9 @@ class TestLockingProtocol:
             other.close()
 
     def test_b_winner_leaves_no_open_transaction_either(self, tmp_path):
-        import cortex_memory._store as store_module
+        import urdyn._store as store_module
 
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         cx.remember("a fact", kind="note")
         _drop_search_index(cx._db_path)
 
@@ -313,11 +313,11 @@ class TestLockingProtocol:
         transaction now, so it must still commit out of it cleanly
         instead of leaving the store's write lock held with no index to
         show for it."""
-        import cortex_memory._store as store_module
+        import urdyn._store as store_module
 
         monkeypatch.setattr(store_module, "_try_create_search_index", lambda connection: False)
 
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         cx.remember("recorded without any FTS5 support", kind="note")
 
         store = MemoryStore.open_if_exists(cx._db_path)
@@ -347,9 +347,9 @@ class TestWinnerFailureRollsBack:
         data is untouched, and the next open simply builds it again.
         No retry machinery is involved.
         """
-        import cortex_memory._store as store_module
+        import urdyn._store as store_module
 
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         cx.remember("canonical content that must survive intact", kind="note")
         _drop_search_index(cx._db_path)
 
@@ -358,7 +358,7 @@ class TestWinnerFailureRollsBack:
 
         monkeypatch.setattr(store_module, "_rebuild_search_index", explode)
 
-        with pytest.raises(CortexStorageError):
+        with pytest.raises(UrdynStorageError):
             MemoryStore.create_or_open(cx._db_path)
 
         connection = sqlite3.connect(cx._db_path)
@@ -391,14 +391,14 @@ class TestWinnerFailureRollsBack:
 class TestExistingObjectIsNotValidated:
     def test_a_an_incompatible_search_index_is_not_treated_as_usable(self, tmp_path):
         """Re-checking existence under a lock answers "does an object
-        with this name exist", never "is it the projection Cortex
+        with this name exist", never "is it the projection Urdyn
         expects". Deliberately unchanged by this repair, and the reason
         `CREATE ... IF NOT EXISTS` was NOT adopted: it would suppress
         the collision silently at the DDL level too. A structurally
         wrong `search_index` must still fail loudly when queried, not
         quietly return no candidates.
         """
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         cx.remember("a real canonical fact", kind="note")
 
         connection = sqlite3.connect(cx._db_path)
@@ -411,11 +411,11 @@ class TestExistingObjectIsNotValidated:
 
         store = MemoryStore.open_if_exists(cx._db_path)
         with store:
-            with pytest.raises(CortexStorageError):
+            with pytest.raises(UrdynStorageError):
                 store.search_candidates(frozenset({"canonical"}), ENTITY_MEMORY)
 
         # canonical reads are unaffected by a broken derived projection
-        assert len(Cortex.open(tmp_path).state()) == 1
+        assert len(Urdyn.open(tmp_path).state()) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -534,11 +534,11 @@ def test_migrated_store_with_absent_index_initializes_it_once_under_concurrency(
     at a different critical section (covered separately)
     and is deliberately not what is asserted here.
     """
-    Cortex.init(tmp_path, "dev")
-    db_path = db_path_for(tmp_path / ".cortex")
+    Urdyn.init(tmp_path, "dev")
+    db_path = db_path_for(tmp_path / ".urdyn")
     legacy_id = _build_standalone_v4_database(db_path, content="a pre-A7 lesson worth finding")
 
-    migrated = Cortex.open(tmp_path)
+    migrated = Urdyn.open(tmp_path)
     assert len(migrated.state()) == 1
     _drop_search_index(db_path)
 

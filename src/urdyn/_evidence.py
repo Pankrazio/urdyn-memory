@@ -42,8 +42,8 @@ DEFAULT_EVIDENCE_KIND = "user_statement"
 # out of it. Seeding does read it -- it opens the file, decodes its
 # bytes, rejects binaries and oversized documents, and keeps the text it
 # actually saw. Reusing `file_reference` for that would collapse two
-# different epistemic facts ("Cortex has a pointer to this file" and
-# "Cortex read this document, and this is what it said") onto one kind,
+# different epistemic facts ("Urdyn has a pointer to this file" and
+# "Urdyn read this document, and this is what it said") onto one kind,
 # permanently, since pre-A19.1 rows already carry the old meaning.
 EVIDENCE_KIND_DOCUMENT_OBSERVATION = "document_observation"
 
@@ -65,7 +65,7 @@ VALID_EVIDENCE_KINDS = frozenset(
 # tool produced output, the user explicitly confirmed a specific fact).
 # Excluded: `user_statement` (an assertion, not a check), `file_reference`
 # (points at a file without confirming anything about it was inspected),
-# `document_observation` (Cortex genuinely read the document, but reading
+# `document_observation` (Urdyn genuinely read the document, but reading
 # a README does not check that what it claims is true -- the observation
 # is faithful, the claims inside it are not thereby verified), and
 # `error_observation` (documents a failure, not a confirmation that
@@ -89,7 +89,7 @@ RECOMMENDED_VALIDATION_EVIDENCE_KINDS = frozenset({"test_result", "command_outpu
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class Evidence:
-    """A single piece of evidence persisted by Cortex."""
+    """A single piece of evidence persisted by Urdyn."""
 
     evidence_id: str
     content: str

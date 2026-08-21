@@ -1,12 +1,12 @@
-"""Tests for `Cortex.recall()`."""
+"""Tests for `Urdyn.recall()`."""
 
 import pytest
 
-from cortex_memory import Cortex
+from urdyn import Urdyn
 
 
 def test_recall_finds_exact_match(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     cx.remember("SQLite was selected for the first storage implementation.")
 
     results = cx.recall("SQLite")
@@ -16,7 +16,7 @@ def test_recall_finds_exact_match(tmp_path):
 
 
 def test_recall_finds_partial_match(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     cx.remember("The public API must not expose raw SQL.")
 
     results = cx.recall("public API")
@@ -25,7 +25,7 @@ def test_recall_finds_partial_match(tmp_path):
 
 
 def test_recall_is_case_insensitive(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     cx.remember("SQLite was selected for the first storage implementation.")
 
     results = cx.recall("sqlite")
@@ -34,7 +34,7 @@ def test_recall_is_case_insensitive(tmp_path):
 
 
 def test_recall_with_no_matches_returns_empty_list(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     cx.remember("unrelated content")
 
     results = cx.recall("nonexistent-term-xyz")
@@ -43,7 +43,7 @@ def test_recall_with_no_matches_returns_empty_list(tmp_path):
 
 
 def test_recall_on_empty_workspace_returns_empty_list(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
 
     results = cx.recall("anything")
 
@@ -51,21 +51,21 @@ def test_recall_on_empty_workspace_returns_empty_list(tmp_path):
 
 
 def test_recall_rejects_empty_query(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
 
     with pytest.raises(ValueError):
         cx.recall("")
 
 
 def test_recall_rejects_whitespace_only_query(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
 
     with pytest.raises(ValueError):
         cx.recall("   ")
 
 
 def test_recall_respects_limit(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     for i in range(5):
         cx.remember(f"repeated memory number {i}")
 
@@ -75,7 +75,7 @@ def test_recall_respects_limit(tmp_path):
 
 
 def test_recall_rejects_non_positive_limit(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     cx.remember("something")
 
     with pytest.raises(ValueError):
@@ -83,7 +83,7 @@ def test_recall_rejects_non_positive_limit(tmp_path):
 
 
 def test_recall_ranks_more_occurrences_higher(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     cx.remember("apple")
     cx.remember("apple apple apple")
     cx.remember("apple apple")
@@ -98,7 +98,7 @@ def test_recall_ranks_more_occurrences_higher(tmp_path):
 
 
 def test_recall_tie_breaks_by_most_recent_first(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     first = cx.remember("banana one")
     second = cx.remember("banana two")
 
@@ -108,7 +108,7 @@ def test_recall_tie_breaks_by_most_recent_first(tmp_path):
 
 
 def test_recall_ordering_is_deterministic_across_calls(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     cx.remember("orange fruit")
     cx.remember("orange orange fruit")
     cx.remember("plain orange")
@@ -120,7 +120,7 @@ def test_recall_ordering_is_deterministic_across_calls(tmp_path):
 
 
 def test_recall_returns_multiple_relevant_results(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     cx.remember("SQLite was selected for the first storage implementation.")
     cx.remember("The public API must not expose raw SQL.")
 

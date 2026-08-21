@@ -17,7 +17,7 @@ designated but topically unrelated Evidence is still accepted). See the
 
 import pytest
 
-from cortex_memory import Cortex
+from urdyn import Urdyn
 
 
 # ---------------------------------------------------------------------------
@@ -26,7 +26,7 @@ from cortex_memory import Cortex
 
 
 def test_memory_supporting_evidence_ids_defaults_to_empty(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
 
     memory = cx.remember("a plain memory with no provenance")
 
@@ -36,7 +36,7 @@ def test_memory_supporting_evidence_ids_defaults_to_empty(tmp_path):
 def test_supporting_evidence_is_automatically_folded_into_evidence_ids(tmp_path):
     """Supporting implies related: the caller never has to cite the same
     Evidence in both `evidence` and `supporting_evidence`."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     validation = cx.add_evidence("Authentication tests passed.", kind="test_result")
 
     memory = cx.learn(
@@ -48,7 +48,7 @@ def test_supporting_evidence_is_automatically_folded_into_evidence_ids(tmp_path)
 
 
 def test_supporting_evidence_ids_is_always_a_subset_of_evidence_ids(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     context = cx.add_evidence("some contextual note", kind="user_statement")
     validation = cx.add_evidence("Authentication tests passed.", kind="test_result")
 
@@ -73,7 +73,7 @@ def test_supporting_and_generic_evidence_ordering_is_deterministic(tmp_path):
     order WITHIN `evidence_ids` instead, so this in-process result is
     identical, ordering included, to a fresh reload of the same row
     (see `test_supporting_evidence_ordering_survives_reopen` below)."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     a = cx.add_evidence("a", kind="user_statement")
     b = cx.add_evidence("b", kind="test_result")
     c = cx.add_evidence("c", kind="test_result")
@@ -100,7 +100,7 @@ def test_supporting_evidence_ordering_survives_reopen(tmp_path):
     reconstructs order via the single shared `position` column, i.e.
     relative order within `evidence_ids`), an accidental,
     algorithm-dependent divergence rather than a deliberate contract."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     a = cx.add_evidence("a", kind="user_statement")
     b = cx.add_evidence("b", kind="test_result")
     c = cx.add_evidence("c", kind="test_result")
@@ -113,7 +113,7 @@ def test_supporting_evidence_ordering_survives_reopen(tmp_path):
     )
     del cx
 
-    reopened = Cortex.open(tmp_path)
+    reopened = Urdyn.open(tmp_path)
     (reloaded,) = [m for m in reopened.state() if m.memory_id == original.memory_id]
 
     assert reloaded.evidence_ids == original.evidence_ids
@@ -121,7 +121,7 @@ def test_supporting_evidence_ordering_survives_reopen(tmp_path):
 
 
 def test_duplicate_supporting_evidence_reference_is_deduplicated(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     validation = cx.add_evidence("checked", kind="test_result")
 
     memory = cx.learn("a lesson", supporting_evidence=[validation, validation], verified=True)
@@ -148,7 +148,7 @@ def test_overlap_evidence_a_b_supporting_b(tmp_path):
     B must appear exactly once in `evidence_ids` (not duplicated because
     it is cited in both pools) and exactly once as a `memory_evidence`
     row, with `role='supporting'` winning over `related` for that id."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     a = cx.add_evidence("a", kind="user_statement")
     b = cx.add_evidence("b", kind="test_result")
 
@@ -162,7 +162,7 @@ def test_overlap_evidence_a_b_supporting_b(tmp_path):
     rows = _memory_evidence_rows(cx._db_path, memory.memory_id)
     assert rows == [(a.evidence_id, "related"), (b.evidence_id, "supporting")]
 
-    reopened = Cortex.open(tmp_path)
+    reopened = Urdyn.open(tmp_path)
     (reloaded,) = [m for m in reopened.state() if m.memory_id == memory.memory_id]
     assert reloaded.evidence_ids == memory.evidence_ids
     assert reloaded.supporting_evidence_ids == memory.supporting_evidence_ids
@@ -172,7 +172,7 @@ def test_overlap_evidence_b_supporting_b_b(tmp_path):
     """`evidence=[B], supporting_evidence=[B, B]`:
     duplicated both within `supporting_evidence` itself and against
     `evidence` -- B must still appear exactly once everywhere."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     b = cx.add_evidence("b", kind="test_result")
 
     memory = cx.remember(
@@ -185,7 +185,7 @@ def test_overlap_evidence_b_supporting_b_b(tmp_path):
     rows = _memory_evidence_rows(cx._db_path, memory.memory_id)
     assert rows == [(b.evidence_id, "supporting")]
 
-    reopened = Cortex.open(tmp_path)
+    reopened = Urdyn.open(tmp_path)
     (reloaded,) = [m for m in reopened.state() if m.memory_id == memory.memory_id]
     assert reloaded.evidence_ids == memory.evidence_ids
     assert reloaded.supporting_evidence_ids == memory.supporting_evidence_ids
@@ -196,7 +196,7 @@ def test_overlap_evidence_a_c_supporting_b_c(tmp_path):
     B is supporting-only (folded in via supporting-implies-related), C
     overlaps both pools, A is generic-only. No duplicate rows; master
     order (evidence_ids) determines `supporting_evidence_ids`'s order."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     a = cx.add_evidence("a", kind="user_statement")
     b = cx.add_evidence("b", kind="test_result")
     c = cx.add_evidence("c", kind="test_result")
@@ -215,7 +215,7 @@ def test_overlap_evidence_a_c_supporting_b_c(tmp_path):
         (b.evidence_id, "supporting"),
     ]
 
-    reopened = Cortex.open(tmp_path)
+    reopened = Urdyn.open(tmp_path)
     (reloaded,) = [m for m in reopened.state() if m.memory_id == memory.memory_id]
     assert reloaded.evidence_ids == memory.evidence_ids
     assert reloaded.supporting_evidence_ids == memory.supporting_evidence_ids
@@ -227,9 +227,9 @@ def test_remember_rejects_unknown_supporting_evidence_reference(tmp_path):
     partially."""
     import datetime as dt
 
-    from cortex_memory._evidence import Evidence
+    from urdyn._evidence import Evidence
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     fabricated = Evidence(
         evidence_id="b" * 32,
         content="never actually persisted",
@@ -248,7 +248,7 @@ def test_remember_rejects_unknown_supporting_evidence_reference(tmp_path):
 
 
 def test_supporting_evidence_survives_reopen(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     context = cx.add_evidence("context note", kind="user_statement")
     validation = cx.add_evidence("Authentication tests passed.", kind="test_result")
     original = cx.learn(
@@ -259,7 +259,7 @@ def test_supporting_evidence_survives_reopen(tmp_path):
     )
     del cx
 
-    reopened = Cortex.open(tmp_path)
+    reopened = Urdyn.open(tmp_path)
     (lesson,) = reopened.state(kind="lesson")
 
     assert lesson.memory_id == original.memory_id
@@ -272,7 +272,7 @@ def test_supporting_evidence_survives_copied_workspace(tmp_path):
 
     original_root = tmp_path / "original"
     original_root.mkdir()
-    cx = Cortex.init(original_root, "dev")
+    cx = Urdyn.init(original_root, "dev")
     validation = cx.add_evidence("Authentication tests passed.", kind="test_result")
     original = cx.learn(
         "Use only the newly issued refresh token.", supporting_evidence=[validation], verified=True
@@ -282,7 +282,7 @@ def test_supporting_evidence_survives_copied_workspace(tmp_path):
     copy_root = tmp_path / "copy"
     shutil.copytree(original_root, copy_root)
 
-    copied = Cortex.open(copy_root)
+    copied = Urdyn.open(copy_root)
     (lesson,) = copied.state(kind="lesson")
 
     assert lesson.memory_id == original.memory_id
@@ -299,7 +299,7 @@ def test_generic_qualifying_evidence_alone_no_longer_verifies(tmp_path):
     cited only as generic `evidence` -- never explicitly designated
     supporting -- must not verify a new memory, even though the exact
     same call would have succeeded before A12.1."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     validation = cx.add_evidence("Authentication tests passed.", kind="test_result")
 
     with pytest.raises(ValueError):
@@ -312,7 +312,7 @@ def test_generic_qualifying_evidence_alone_no_longer_verifies(tmp_path):
 
 
 def test_supporting_qualifying_evidence_verifies(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     validation = cx.add_evidence("Authentication tests passed.", kind="test_result")
 
     memory = cx.remember(
@@ -329,7 +329,7 @@ def test_verified_requires_supporting_evidence_even_if_generic_evidence_exists(t
     """(dogfood case) `evidence_ids=(test_id,),
     supporting_evidence_ids=()` must be REJECTED for `verified`, even
     though `evidence_ids` alone contains a qualifying kind."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     validation = cx.add_evidence("Authentication tests passed.", kind="test_result")
 
     with pytest.raises(ValueError):
@@ -345,7 +345,7 @@ def test_non_qualifying_supporting_evidence_does_not_verify(tmp_path):
     """The qualifying-kind check applies to the
     SUPPORTING pool specifically -- a generic qualifying Evidence cannot
     substitute for a non-qualifying supporting one."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     validation = cx.add_evidence("Authentication tests passed.", kind="test_result")
     opinion = cx.add_evidence("I think this works.", kind="user_statement")
 
@@ -364,7 +364,7 @@ def test_non_qualifying_supporting_evidence_is_still_allowed_on_non_verified_mem
     as supporting a candidate (non-verified) memory -- 'supporting'
     means 'the caller asserts this backs the claim', not 'this
     Evidence, alone, would satisfy the verified gate'."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     opinion = cx.add_evidence("I think this works.", kind="user_statement")
 
     memory = cx.remember(
@@ -379,7 +379,7 @@ def test_non_qualifying_supporting_evidence_is_still_allowed_on_non_verified_mem
 def test_qualifying_generic_and_non_qualifying_supporting_does_not_verify(tmp_path):
     """The inverse of the accepted case: a qualifying Evidence sitting in
     generic `evidence` cannot rescue a non-qualifying `supporting_evidence`."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     reference = cx.add_evidence("src/auth/refresh.py", kind="file_reference")
     validation = cx.add_evidence("Authentication tests passed.", kind="test_result")
 
@@ -394,7 +394,7 @@ def test_qualifying_generic_and_non_qualifying_supporting_does_not_verify(tmp_pa
 
 def test_learn_verified_uses_the_same_gate_as_remember(tmp_path):
     """`learn()` delegates to `remember()`; no second verification gate."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     validation = cx.add_evidence("Authentication tests passed.", kind="test_result")
 
     with pytest.raises(ValueError):
@@ -411,7 +411,7 @@ def test_preflight_no_longer_surfaces_a_generically_related_false_verification(t
     scenario A12.0 demonstrated empirically can no longer be constructed
     at all: the `remember()` call itself is rejected, so there is no
     falsely-verified lesson left for `preflight()` to surface."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     css_test = cx.add_evidence("CSS mobile layout tests passed.", kind="test_result")
 
     with pytest.raises(ValueError):
@@ -427,7 +427,7 @@ def test_preflight_no_longer_surfaces_a_generically_related_false_verification(t
 
 
 def test_skill_promoted_from_properly_supported_lesson_is_verified(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     validation = cx.add_evidence("Authentication tests passed.", kind="test_result")
     lesson = cx.learn(
         "Use only the newly issued refresh token.", supporting_evidence=[validation], verified=True
@@ -448,7 +448,7 @@ def test_skill_authority_is_fully_traceable_to_the_supporting_evidence(tmp_path)
     landing exactly on the Evidence that justified the verification in
     the first place. If this chain were broken, a Skill's `verified`
     label would be authority with no traceable provenance."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     validation = cx.add_evidence("Authentication tests passed.", kind="test_result")
     lesson = cx.learn(
         "Use only the newly issued refresh token.", supporting_evidence=[validation], verified=True
@@ -466,7 +466,7 @@ def test_skill_cannot_inherit_false_authority_via_generic_evidence_path(tmp_path
     A12.0 flagged as the highest-severity path is closed at the source:
     a Lesson can no longer become falsely `verified` from generically
     related qualifying Evidence, so no Skill promoted from it can either."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     unrelated_test = cx.add_evidence("CSS mobile layout tests passed.", kind="test_result")
 
     with pytest.raises(ValueError):
@@ -486,11 +486,11 @@ def test_skill_cannot_inherit_false_authority_via_generic_evidence_path(tmp_path
 
 
 def test_current_limitation_directionality_failed_test_can_still_be_designated_supporting(tmp_path):
-    """Documented, not hidden: Cortex does not parse Evidence content for PASS/FAIL or any other
+    """Documented, not hidden: Urdyn does not parse Evidence content for PASS/FAIL or any other
     keyword. A FAILED test explicitly designated as supporting a
     positive claim is still accepted: A12.1 requires an explicit
     assertion, it does not validate that assertion's truth."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     failed_test = cx.add_evidence("Migration atomicity test FAILED.", kind="test_result")
 
     memory = cx.remember(
@@ -506,7 +506,7 @@ def test_current_limitation_directionality_failed_test_can_still_be_designated_s
 def test_current_limitation_negative_user_confirmation_can_still_verify_a_positive_claim(tmp_path):
     """Same principle for `user_confirmation`: content
     negativity is not interpreted."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     denial = cx.add_evidence("I confirm this is NOT correct.", kind="user_confirmation")
 
     memory = cx.remember(
@@ -522,9 +522,9 @@ def test_current_limitation_negative_user_confirmation_can_still_verify_a_positi
 def test_current_limitation_topically_irrelevant_evidence_can_still_be_designated_supporting(tmp_path):
     """Explicit support is not
     semantic relevance: once the caller deliberately designates Evidence
-    as supporting, Cortex does not judge whether it is actually about
+    as supporting, Urdyn does not judge whether it is actually about
     the same topic as the claim."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     css_test = cx.add_evidence("CSS mobile layout tests passed.", kind="test_result")
 
     memory = cx.remember(
@@ -540,7 +540,7 @@ def test_current_limitation_topically_irrelevant_evidence_can_still_be_designate
 def test_current_limitation_same_evidence_can_support_contradictory_claims(tmp_path):
     """Conflict/non-contradiction detection is explicitly out of scope
     for A12 and not part of this tracer."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     validation = cx.add_evidence("tests passed: 12/12", kind="test_result")
 
     safe = cx.remember(
@@ -559,7 +559,7 @@ def test_current_limitation_same_evidence_can_support_contradictory_claims(tmp_p
 
 # ---------------------------------------------------------------------------
 # A12.1.1: write-boundary hardening -- the verified contract must not
-# depend solely on Cortex.remember() being the only call path that ever
+# depend solely on Urdyn.remember() being the only call path that ever
 # reaches MemoryStore.add()
 # ---------------------------------------------------------------------------
 
@@ -568,7 +568,7 @@ def test_store_add_rejects_verified_memory_with_no_supporting_evidence(tmp_path)
     """[A12.1.1] A `Memory` constructed directly with
     `epistemic_state="verified"` and no supporting evidence at all, then
     persisted via `MemoryStore.add()` directly (bypassing
-    `Cortex.remember()`'s gate entirely), must still be rejected. The
+    `Urdyn.remember()`'s gate entirely), must still be rejected. The
     canonical write boundary is the backstop, not just the orchestrator
     method -- a future internal call path (a batch importer, a repair
     tool) that constructs a `Memory` and calls `add()` directly must not
@@ -576,11 +576,11 @@ def test_store_add_rejects_verified_memory_with_no_supporting_evidence(tmp_path)
     import datetime as dt
     import uuid
 
-    from cortex_memory._event import EVENT_KIND_MEMORY_RECORDED, Event
-    from cortex_memory._memory import Memory
-    from cortex_memory._store import MemoryStore
+    from urdyn._event import EVENT_KIND_MEMORY_RECORDED, Event
+    from urdyn._memory import Memory
+    from urdyn._store import MemoryStore
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     memory_id = uuid.uuid4().hex
     now = dt.datetime.now(dt.timezone.utc)
     forged = Memory(
@@ -609,11 +609,11 @@ def test_store_add_rejects_verified_memory_with_only_non_qualifying_supporting_e
     import datetime as dt
     import uuid
 
-    from cortex_memory._event import EVENT_KIND_MEMORY_RECORDED, Event
-    from cortex_memory._memory import Memory
-    from cortex_memory._store import MemoryStore
+    from urdyn._event import EVENT_KIND_MEMORY_RECORDED, Event
+    from urdyn._memory import Memory
+    from urdyn._store import MemoryStore
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     opinion = cx.add_evidence("I think this works.", kind="user_statement")
     memory_id = uuid.uuid4().hex
     now = dt.datetime.now(dt.timezone.utc)
@@ -641,11 +641,11 @@ def test_store_add_still_accepts_legitimate_verified_memory_built_by_hand(tmp_pa
     import datetime as dt
     import uuid
 
-    from cortex_memory._event import EVENT_KIND_MEMORY_RECORDED, Event
-    from cortex_memory._memory import Memory
-    from cortex_memory._store import MemoryStore
+    from urdyn._event import EVENT_KIND_MEMORY_RECORDED, Event
+    from urdyn._memory import Memory
+    from urdyn._store import MemoryStore
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     validation = cx.add_evidence("Authentication tests passed.", kind="test_result")
     memory_id = uuid.uuid4().hex
     now = dt.datetime.now(dt.timezone.utc)
@@ -674,7 +674,7 @@ def test_store_add_write_check_does_not_apply_to_reads_of_legacy_data(tmp_path):
     grandfathering) would break on every read. This is exercised more
     thoroughly in `test_migration_v5.py`; this test only pins the
     principle at the unit level using the public API."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     validation = cx.add_evidence("checked", kind="test_result")
     lesson = cx.learn("a lesson", supporting_evidence=[validation], verified=True)
 

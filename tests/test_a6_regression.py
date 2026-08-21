@@ -1,8 +1,8 @@
-"""A6 regression: recovering experience about Cortex's own retrieval
+"""A6 regression: recovering experience about Urdyn's own retrieval
 limitation, through natural paraphrases, via the public API only.
 
 A6 (real-world validation) observed that `preflight()`/`guard()` could
-return empty for a naturally-phrased task even though Cortex had
+return empty for a naturally-phrased task even though Urdyn had
 directly relevant experience on record -- a failed Attempt, a Root
 Cause, a verified Lesson, and a verified Skill -- because the lexical
 matcher required a strict majority of the QUERY's own vocabulary to be
@@ -11,7 +11,7 @@ ratio. A7.0 diagnosed this and A7 fixes it with FTS5/BM25 candidate
 widening (see `_retrieval.py`).
 
 This test builds a workspace's worth of experience *about that exact
-problem* -- Cortex's own retrieval sensitivity to task wording -- the
+problem* -- Urdyn's own retrieval sensitivity to task wording -- the
 same way A4/A5's own tests build the refresh-token scenario: entirely
 through the public API, never touching `_relevance.py`, `is_relevant`,
 or any formula/threshold. The content recorded here is reusable
@@ -25,9 +25,9 @@ brief -- and then verified to succeed through `cx.preflight()`/
 `cx.guard()`, the real public API a consuming agent actually calls.
 """
 
-from cortex_memory import Cortex
-from cortex_memory._relevance import is_relevant
-from cortex_memory._relevance import tokens as _tokens
+from urdyn import Urdyn
+from urdyn._relevance import is_relevant
+from urdyn._relevance import tokens as _tokens
 
 
 def _build_retrieval_sensitivity_experience(cx):
@@ -74,7 +74,7 @@ def test_a6_lesson_and_skill_are_genuine_misses_for_the_old_lexical_channel_alon
     picked because they happen to already work. This is the "baseline
     demonstrates a real miss" requirement -- proof the fix is doing
     something, not just proof the new code runs."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     _, _, _, lesson, skill = _build_retrieval_sensitivity_experience(cx)
 
     natural_task = (
@@ -94,12 +94,12 @@ def test_a6_lesson_and_skill_are_genuine_misses_for_the_old_lexical_channel_alon
 
 
 def test_a6_natural_paraphrase_recovers_known_failure_and_root_cause_via_preflight(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     failed_attempt, root_cause, _, _, _ = _build_retrieval_sensitivity_experience(cx)
 
     # a second, independent handle stands in for a fresh agent/session, exactly
     # as the A4/A5 real-utility scenarios do
-    agent_b = Cortex.discover(tmp_path)
+    agent_b = Urdyn.discover(tmp_path)
     result = agent_b.preflight(
         "why do preflight and guard find nothing relevant when a task is rephrased"
     )
@@ -110,10 +110,10 @@ def test_a6_natural_paraphrase_recovers_known_failure_and_root_cause_via_preflig
 
 
 def test_a6_natural_paraphrase_recovers_verified_lesson_and_validation_via_preflight(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     _, _, validation, lesson, _ = _build_retrieval_sensitivity_experience(cx)
 
-    agent_b = Cortex.discover(tmp_path)
+    agent_b = Urdyn.discover(tmp_path)
     result = agent_b.preflight(
         "it feels like preflight and guard aren't surfacing relevant experience, is "
         "that a known limitation when a task ends up worded differently compared to "
@@ -126,10 +126,10 @@ def test_a6_natural_paraphrase_recovers_verified_lesson_and_validation_via_prefl
 
 
 def test_a6_natural_paraphrase_recovers_applicable_skill_and_validation_via_guard(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     _, _, validation, _, skill = _build_retrieval_sensitivity_experience(cx)
 
-    agent_b = Cortex.discover(tmp_path)
+    agent_b = Urdyn.discover(tmp_path)
     result = agent_b.guard(
         "guard hasn't been warning me about anything even though I feel like it "
         "should already know this could miss relevant experience before I end up "
@@ -145,10 +145,10 @@ def test_a6_natural_paraphrase_recovers_applicable_skill_and_validation_via_guar
 def test_a6_unrelated_task_stays_empty(tmp_path):
     """Hard negative: a completely unrelated task must not be affected
     by the wider candidate net FTS5 casts."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     _build_retrieval_sensitivity_experience(cx)
 
-    agent_b = Cortex.discover(tmp_path)
+    agent_b = Urdyn.discover(tmp_path)
     preflight_result = agent_b.preflight("Change CSS button color to blue")
     guard_result = agent_b.guard("Change CSS button color to blue")
 
@@ -162,7 +162,7 @@ def test_a6_borderline_negative_does_not_leak_unrelated_guard_clause_experience(
     'validation') with the retrieval-sensitivity experience but is
     genuinely unrelated. Widened candidate generation must not let it
     leak in just because both mention 'guard'."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     _, _, _, lesson, skill = _build_retrieval_sensitivity_experience(cx)
 
     payment_evidence = cx.add_evidence(
@@ -186,7 +186,7 @@ def test_a6_borderline_negative_does_not_leak_unrelated_guard_clause_experience(
         conditions=["Submitting a payment form"],
     )
 
-    agent_b = Cortex.discover(tmp_path)
+    agent_b = Urdyn.discover(tmp_path)
     borderline = "add validation to the guard clause in the payment form before we deploy"
     preflight_result = agent_b.preflight(borderline)
     guard_result = agent_b.guard(borderline)

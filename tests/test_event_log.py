@@ -1,13 +1,13 @@
 """White-box tests for the internal append-only event log backing `timeline()`.
 
-`Event` is not part of the public API (see `cortex_memory.__init__`), but it
+`Event` is not part of the public API (see `urdyn.__init__`), but it
 is a real, persisted primitive with its own identity and ordering
 guarantees, so it is tested directly against its owning module.
 """
 
-from cortex_memory import Cortex
-from cortex_memory._event import EVENT_ID_PATTERN, EVENT_KIND_MEMORY_RECORDED, EVENT_KIND_MEMORY_SUPERSEDED
-from cortex_memory._store import MemoryStore
+from urdyn import Urdyn
+from urdyn._event import EVENT_ID_PATTERN, EVENT_KIND_MEMORY_RECORDED, EVENT_KIND_MEMORY_SUPERSEDED
+from urdyn._store import MemoryStore
 
 
 def _events(cx):
@@ -19,7 +19,7 @@ def _events(cx):
 
 
 def test_remember_appends_one_event(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     memory = cx.remember("first")
 
     rows = _events(cx)
@@ -32,7 +32,7 @@ def test_remember_appends_one_event(tmp_path):
 
 
 def test_supersession_appends_two_events(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     old = cx.remember("PostgreSQL was selected.", kind="decision")
     new = cx.remember("SQLite was selected for V1.", kind="decision", supersedes=old.memory_id)
 
@@ -48,7 +48,7 @@ def test_supersession_appends_two_events(tmp_path):
 
 
 def test_event_ids_are_distinct(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     cx.remember("first")
     cx.remember("second")
 
@@ -59,12 +59,12 @@ def test_event_ids_are_distinct(tmp_path):
 
 
 def test_events_are_append_only_across_restart(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     cx.remember("first")
     before_restart = _events(cx)
     del cx
 
-    reopened = Cortex.open(tmp_path)
+    reopened = Urdyn.open(tmp_path)
     reopened.remember("second")
     after_restart = _events(reopened)
 
@@ -75,7 +75,7 @@ def test_events_are_append_only_across_restart(tmp_path):
 def test_failed_remember_does_not_append_a_dangling_event(tmp_path):
     import pytest
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
 
     with pytest.raises(ValueError):
         cx.remember("orphaned", kind="decision", supersedes="0" * 32)

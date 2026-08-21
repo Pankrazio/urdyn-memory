@@ -12,7 +12,7 @@ reproduced against a real detached child (the same style
 failure, and transient-I/O-classification cases are in-process,
 single-file causality bugs in `_run_loop`'s settle/observe step; the
 first two are reproduced deterministically by driving `_run_loop`
-directly against a real `Cortex` with a narrowly monkeypatched `seed`,
+directly against a real `Urdyn` with a narrowly monkeypatched `seed`,
 rather than racing real wall-clock timing against a subprocess for an
 outcome that does not actually depend on cross-process scheduling. The
 transient-I/O cases use a real `os.chmod` permission failure instead of
@@ -28,9 +28,9 @@ import signal
 import threading
 import time
 
-from cortex_memory import Cortex
-from cortex_memory import _watcher
-from cortex_memory._errors import CortexSourceError, CortexStorageError
+from urdyn import Urdyn
+from urdyn import _watcher
+from urdyn._errors import UrdynSourceError, UrdynStorageError
 
 
 def _wait_for(predicate, timeout=8.0, interval=0.1):
@@ -42,23 +42,23 @@ def _wait_for(predicate, timeout=8.0, interval=0.1):
     return bool(predicate())
 
 
-def _observation_count(cx: Cortex, path: str) -> int:
+def _observation_count(cx: Urdyn, path: str) -> int:
     for source in cx.sources():
         if source.path == path:
             return len(source.observations)
     return 0
 
 
-def _init_dev(tmp_path, **files) -> Cortex:
+def _init_dev(tmp_path, **files) -> Urdyn:
     for name, content in files.items():
         target = tmp_path / name
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
-    return Cortex.init(tmp_path, "dev")
+    return Urdyn.init(tmp_path, "dev")
 
 
-def _running_pid(cx: Cortex) -> int | None:
-    probe = _watcher.probe_lock(cx.path / ".cortex")
+def _running_pid(cx: Urdyn) -> int | None:
+    probe = _watcher.probe_lock(cx.path / ".urdyn")
     if probe.state != _watcher.LOCK_RUNNING:
         return None
     pid = (probe.metadata or {}).get("pid")
@@ -67,7 +67,7 @@ def _running_pid(cx: Cortex) -> int | None:
 
 def _run_loop_in_thread(cx, lock, stats, baseline, stop_event):
     """Drive `_run_loop` in a background thread, in-process, against a
-    real `Cortex` and a real held lock -- no subprocess, so a
+    real `Urdyn` and a real held lock -- no subprocess, so a
     monkeypatched `cx.seed` can inject a deterministic race. The caller
     MUST release/clear `lock` itself once the thread has stopped: this
     module reuses `os.getpid()` (the TEST process) as the "holder" pid in
@@ -77,7 +77,7 @@ def _run_loop_in_thread(cx, lock, stats, baseline, stop_event):
     """
     thread = threading.Thread(
         target=_watcher._run_loop,
-        args=(cx, lock, cx.path / ".cortex", stats, stop_event.is_set, baseline),
+        args=(cx, lock, cx.path / ".urdyn", stats, stop_event.is_set, baseline),
         daemon=True,
     )
     thread.start()
@@ -117,7 +117,7 @@ def test_stop_during_slow_restart_reconciliation_actually_stops(tmp_path):
     # count, comfortably longer than `_wait_until_running`'s 2s confirm
     # timeout below.
     os.kill(first_pid, signal.SIGKILL)
-    assert _wait_for(lambda: _watcher.probe_lock(cx.path / ".cortex").state == _watcher.LOCK_STALE)
+    assert _wait_for(lambda: _watcher.probe_lock(cx.path / ".urdyn").state == _watcher.LOCK_STALE)
     for name in files:
         (tmp_path / name).write_text("changed\n", encoding="utf-8")
 
@@ -132,13 +132,13 @@ def test_stop_during_slow_restart_reconciliation_actually_stops(tmp_path):
     # in flight right now -- exactly the pre-publish window this test
     # targets.
     _watcher.stop_watcher(cx)
-    assert _watcher.read_config(cx.path / ".cortex")["enabled"] is False
+    assert _watcher.read_config(cx.path / ".urdyn")["enabled"] is False
 
     # Whatever `stop_watcher` itself reported (its own outcome depends on
     # exactly when the race lands and is not what this test pins down),
     # the child must actually go away -- and stay away.
     assert _wait_for(
-        lambda: _watcher.probe_lock(cx.path / ".cortex").state != _watcher.LOCK_RUNNING, timeout=15.0
+        lambda: _watcher.probe_lock(cx.path / ".urdyn").state != _watcher.LOCK_RUNNING, timeout=15.0
     )
     assert _running_pid(cx) is None
 
@@ -191,7 +191,7 @@ def test_write_during_observation_is_not_silently_lost(tmp_path, monkeypatch):
 
     monkeypatch.setattr(cx, "seed", _racy_seed)
 
-    lock = _watcher.try_acquire_lock(cx.path / ".cortex")
+    lock = _watcher.try_acquire_lock(cx.path / ".urdyn")
     assert lock is not None
     stats = _watcher._RuntimeStats()
     baseline = {"README.md": _watcher._stat_fingerprint(target)}
@@ -222,10 +222,10 @@ def test_retryable_failure_does_not_advance_baseline(tmp_path, monkeypatch):
     advance: the next scan has to retry the same change instead of
     treating it as already handled and losing it forever.
 
-    `cx.seed` is wrapped to raise `CortexStorageError` on its first call
+    `cx.seed` is wrapped to raise `UrdynStorageError` on its first call
     for this path and succeed on every call after -- deterministic fault
     injection, not a real SQLite lock contended from another connection
-    (reachable in practice, e.g. a concurrent `cortex` command; this test
+    (reachable in practice, e.g. a concurrent `urdyn` command; this test
     isolates the WATCHER's reaction to that class of failure).
     """
     cx = _init_dev(tmp_path, **{"README.md": "A\n"})
@@ -241,12 +241,12 @@ def test_retryable_failure_does_not_advance_baseline(tmp_path, monkeypatch):
         attempts.append(paths)
         if should_fail.is_set():
             should_fail.clear()
-            raise CortexStorageError("Failed to observe source 'README.md': database is locked")
+            raise UrdynStorageError("Failed to observe source 'README.md': database is locked")
         return real_seed(paths)
 
     monkeypatch.setattr(cx, "seed", _flaky_seed)
 
-    lock = _watcher.try_acquire_lock(cx.path / ".cortex")
+    lock = _watcher.try_acquire_lock(cx.path / ".urdyn")
     assert lock is not None
     stats = _watcher._RuntimeStats()
     baseline = {"README.md": _watcher._stat_fingerprint(target)}
@@ -281,7 +281,7 @@ def test_self_referential_symlink_in_discovery_does_not_crash_loop(tmp_path):
     """A self-referential symlink matching the `docs/` discovery
     allowlist makes `Path.resolve()` raise `RuntimeError` deep inside
     `discover_candidate_paths` -- a path `_scan_scope` reaches on EVERY
-    scan (via `Cortex.watcher_scope()`), not only through an
+    scan (via `Urdyn.watcher_scope()`), not only through an
     already-tracked Source's `_seed_one` call (see
     `test_symlink_loop_does_not_hang_and_is_refused` in
     `test_a43_dev_watcher.py`, which only exercises the latter and would
@@ -290,7 +290,7 @@ def test_self_referential_symlink_in_discovery_does_not_crash_loop(tmp_path):
     Without it, this propagated uncaught out of `_child_main`'s very
     first `_scan_scope()` call, exiting the child before it ever
     published its lock metadata -- every subsequent `supervise()` (i.e.
-    every normal Cortex command) would see a free lock and respawn a
+    every normal Urdyn command) would see a free lock and respawn a
     doomed child again, each attempt costing `_wait_until_running`'s ~2s
     confirm timeout.
     """
@@ -304,7 +304,7 @@ def test_self_referential_symlink_in_discovery_does_not_crash_loop(tmp_path):
     pid = _running_pid(cx)
     assert pid is not None
 
-    # Several "normal Cortex commands" worth of supervision: a healthy
+    # Several "normal Urdyn commands" worth of supervision: a healthy
     # watcher must never be restarted, and none of this may cost anywhere
     # near the ~2s a doomed respawn attempt would.
     for _ in range(3):
@@ -324,19 +324,19 @@ def test_self_referential_symlink_in_discovery_does_not_crash_loop(tmp_path):
     assert _wait_for(lambda: _observation_count(cx, "README.md") == 1)
 
 
-def _log_text(cx: Cortex) -> str:
-    log_path = cx.path / ".cortex" / _watcher.WATCHER_LOG_FILENAME
+def _log_text(cx: Urdyn) -> str:
+    log_path = cx.path / ".urdyn" / _watcher.WATCHER_LOG_FILENAME
     return log_path.read_text(encoding="utf-8") if log_path.exists() else ""
 
 
 # -- a transient I/O failure must not be mistaken for a permanent,
 #    content-dependent refusal ------------------------------------------------
 #
-# `_source.py` raises the same `CortexSourceError` both for content the
+# `_source.py` raises the same `UrdynSourceError` both for content the
 # watcher must never retry (oversize, binary, invalid UTF-8, an escaping or
 # looping symlink) and for an `OSError` it hit while trying to resolve/stat/
 # read a path (EACCES, EMFILE, EIO, ESTALE, the file vanishing between
-# discovery and read). Treating every `CortexSourceError` as the former and
+# discovery and read). Treating every `UrdynSourceError` as the former and
 # advancing the baseline anyway would silently lose the in-flight change.
 
 
@@ -428,7 +428,7 @@ def test_multiple_consecutive_transient_failures_then_success(tmp_path, monkeypa
     def _flaky_seed(paths):
         attempts.append(paths)
         if len(attempts) <= fail_count:
-            raise CortexSourceError(f"Cannot read {paths[0]!r}: [Errno 13] Permission denied") from PermissionError(
+            raise UrdynSourceError(f"Cannot read {paths[0]!r}: [Errno 13] Permission denied") from PermissionError(
                 13, "Permission denied"
             )
         calls_before_success.set()
@@ -436,7 +436,7 @@ def test_multiple_consecutive_transient_failures_then_success(tmp_path, monkeypa
 
     monkeypatch.setattr(cx, "seed", _flaky_seed)
 
-    lock = _watcher.try_acquire_lock(cx.path / ".cortex")
+    lock = _watcher.try_acquire_lock(cx.path / ".urdyn")
     assert lock is not None
     stats = _watcher._RuntimeStats()
     baseline = {"README.md": _watcher._stat_fingerprint(target)}
@@ -479,7 +479,7 @@ def test_permanent_content_rejection_still_advances_baseline_no_retry_loop(tmp_p
 
     monkeypatch.setattr(cx, "seed", _counting_seed)
 
-    lock = _watcher.try_acquire_lock(cx.path / ".cortex")
+    lock = _watcher.try_acquire_lock(cx.path / ".urdyn")
     assert lock is not None
     stats = _watcher._RuntimeStats()
     baseline = {"README.md": _watcher._stat_fingerprint(target)}
@@ -519,7 +519,7 @@ def test_reconcile_baseline_transient_failure_excluded_from_baseline(tmp_path):
             cx,
             ["README.md"],
             retro_observe=True,
-            cortex_dir=cx.path / ".cortex",
+            urdyn_dir=cx.path / ".urdyn",
             stats=stats,
             should_stop=lambda: False,
         )

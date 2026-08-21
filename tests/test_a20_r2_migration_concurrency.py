@@ -16,7 +16,7 @@ DDL -- by which point the winner had committed -- and collided:
     table memory_conflicts already exists  (v5->v6)
     table sources already exists           (v6->v7)
 
-reported to the caller as `CortexStorageError: ... is corrupted` -- an
+reported to the caller as `UrdynStorageError: ... is corrupted` -- an
 open failing on a store with nothing wrong with it, and a message
 inviting the user to discard an intact database. Every step of the chain
 had this shape; against the pre-repair baseline 10 rounds out of 10 (six
@@ -54,8 +54,8 @@ import uuid
 
 import pytest
 
-from cortex_memory import Cortex, CortexStorageError
-from cortex_memory._store import (
+from urdyn import Urdyn, UrdynStorageError
+from urdyn._store import (
     _CREATE_ATTEMPT_EVIDENCE_SQL,
     _CREATE_ATTEMPTS_SQL,
     _CREATE_EVENTS_SQL,
@@ -199,9 +199,9 @@ def _build_store_at_version(db_path, version, *, count=3):
 
 
 def _prepare_workspace(tmp_path, version, *, count=3):
-    Cortex.init(tmp_path, "dev")
-    db_path = db_path_for(tmp_path / ".cortex")
-    assert not db_path.exists(), "Cortex.init must not materialize the store this test builds by hand"
+    Urdyn.init(tmp_path, "dev")
+    db_path = db_path_for(tmp_path / ".urdyn")
+    assert not db_path.exists(), "Urdyn.init must not materialize the store this test builds by hand"
     return db_path, _build_store_at_version(db_path, version, count=count)
 
 
@@ -252,7 +252,7 @@ def _assert_healthy_v7(db_path, expected_ids, *, extra_memories=0, expected_link
 # Real-process helpers. Threads would not reproduce this: the boundary
 # under test is SQLite's inter-PROCESS write lock, and a Python-level
 # lock would mask exactly the defect. `spawn` gives each worker its own
-# interpreter state and its own connections, as separate `cortex`
+# interpreter state and its own connections, as separate `urdyn`
 # invocations really have.
 # ---------------------------------------------------------------------------
 
@@ -260,10 +260,10 @@ def _assert_healthy_v7(db_path, expected_ids, *, extra_memories=0, expected_link
 def _worker_read(workspace_dir, _payload, barrier, queue):
     try:
         barrier.wait(timeout=60)
-        from cortex_memory import Cortex as _Cortex
+        from urdyn import Urdyn as _Urdyn
 
-        cortex = _Cortex.open(workspace_dir)
-        queue.put(("ok", f"state={len(cortex.state())} timeline={len(cortex.timeline())}"))
+        urdyn = _Urdyn.open(workspace_dir)
+        queue.put(("ok", f"state={len(urdyn.state())} timeline={len(urdyn.timeline())}"))
     except BaseException as exc:  # noqa: BLE001 - reported to the parent, not swallowed
         queue.put(("error", f"{type(exc).__name__}: {exc}"))
 
@@ -271,9 +271,9 @@ def _worker_read(workspace_dir, _payload, barrier, queue):
 def _worker_remember(workspace_dir, content, barrier, queue):
     try:
         barrier.wait(timeout=60)
-        from cortex_memory import Cortex as _Cortex
+        from urdyn import Urdyn as _Urdyn
 
-        queue.put(("ok", _Cortex.open(workspace_dir).remember(content, kind="note").memory_id))
+        queue.put(("ok", _Urdyn.open(workspace_dir).remember(content, kind="note").memory_id))
     except BaseException as exc:  # noqa: BLE001
         queue.put(("error", f"{type(exc).__name__}: {exc}"))
 
@@ -281,9 +281,9 @@ def _worker_remember(workspace_dir, content, barrier, queue):
 def _worker_recall(workspace_dir, _payload, barrier, queue):
     try:
         barrier.wait(timeout=60)
-        from cortex_memory import Cortex as _Cortex
+        from urdyn import Urdyn as _Urdyn
 
-        queue.put(("ok", f"recall={len(_Cortex.open(workspace_dir).recall('canonical'))}"))
+        queue.put(("ok", f"recall={len(_Urdyn.open(workspace_dir).recall('canonical'))}"))
     except BaseException as exc:  # noqa: BLE001
         queue.put(("error", f"{type(exc).__name__}: {exc}"))
 
@@ -327,7 +327,7 @@ class TestConcurrentV4Migration:
         # Pre-existing links are backfilled to 'related', never invented
         # as 'supporting' -- the migration's own contract, which must
         # survive being executed under contention.
-        reopened = Cortex.open(tmp_path)
+        reopened = Urdyn.open(tmp_path)
         for memory in reopened.state():
             assert memory.supporting_evidence_ids == ()
             assert len(memory.evidence_ids) == 1
@@ -360,7 +360,7 @@ class TestConcurrentV4Migration:
         store = MemoryStore.open_if_exists(db_path)
         with store:
             assert store.fts_enabled is True
-        assert len(Cortex.open(tmp_path).recall("canonical")) == len(memory_ids)
+        assert len(Urdyn.open(tmp_path).recall("canonical")) == len(memory_ids)
 
 
 # ---------------------------------------------------------------------------
@@ -382,7 +382,7 @@ class TestConcurrentV1FullChain:
         # v1 held no evidence links at all, and the chain must not invent any.
         _assert_healthy_v7(db_path, memory_ids, expected_links=0)
 
-        reopened = Cortex.open(tmp_path)
+        reopened = Urdyn.open(tmp_path)
         assert sorted(m.memory_id for m in reopened.timeline()) == sorted(memory_ids)
 
     def test_b_the_event_backfill_happens_exactly_once(self, tmp_path):
@@ -490,7 +490,7 @@ class TestMigrationProtocol:
         _StaleVersionConnection.fired = False
         connection = sqlite3.connect(db_path, factory=_StaleVersionConnection)
         try:
-            from cortex_memory._store import _ensure_schema
+            from urdyn._store import _ensure_schema
 
             _ensure_schema(connection)  # must not raise: the store is intact
             assert _StaleVersionConnection.fired, "the unlocked read never happened; test is vacuous"
@@ -516,7 +516,7 @@ class TestMigrationProtocol:
         _RecordingConnection.log = []
         connection = sqlite3.connect(db_path, factory=_RecordingConnection)
         try:
-            from cortex_memory._store import _ensure_schema
+            from urdyn._store import _ensure_schema
 
             _ensure_schema(connection)
         finally:
@@ -547,15 +547,15 @@ class TestMigrationProtocol:
         """The common case must stay cheap: an up-to-date store must not
         serialize every opener behind a write lock it has no use for,
         and must not be touched."""
-        cortex = Cortex.init(tmp_path, "dev")
-        cortex.remember("a fact recorded at the current schema version", kind="note")
-        db_path = db_path_for(tmp_path / ".cortex")
+        urdyn = Urdyn.init(tmp_path, "dev")
+        urdyn.remember("a fact recorded at the current schema version", kind="note")
+        db_path = db_path_for(tmp_path / ".urdyn")
         before = _db_facts(db_path)
 
         _RecordingConnection.log = []
         connection = sqlite3.connect(db_path, factory=_RecordingConnection)
         try:
-            from cortex_memory._store import _ensure_schema
+            from urdyn._store import _ensure_schema
 
             _ensure_schema(connection)
             assert connection.in_transaction is False
@@ -582,8 +582,8 @@ class TestEveryStartingVersionStillMigrates:
     def test_a_serial_open_migrates_and_preserves_data(self, tmp_path, version):
         db_path, memory_ids = _prepare_workspace(tmp_path, version)
 
-        cortex = Cortex.open(tmp_path)
-        assert sorted(m.memory_id for m in cortex.state()) == sorted(memory_ids)
+        urdyn = Urdyn.open(tmp_path)
+        assert sorted(m.memory_id for m in urdyn.state()) == sorted(memory_ids)
 
         _assert_healthy_v7(db_path, memory_ids, expected_links=0 if version == 1 else len(memory_ids))
 
@@ -592,17 +592,17 @@ class TestEveryStartingVersionStillMigrates:
         """Migration must be a one-time transition, not something the
         open path redoes or re-stamps on every use."""
         db_path, _ = _prepare_workspace(tmp_path, version)
-        Cortex.open(tmp_path).state()
+        Urdyn.open(tmp_path).state()
         after_first = _db_facts(db_path)
 
-        Cortex.open(tmp_path).state()
+        Urdyn.open(tmp_path).state()
 
         assert _db_facts(db_path) == after_first
 
 
 # ---------------------------------------------------------------------------
 # Fail-closed: concurrency safety must not have been bought by making
-# Cortex more permissive about stores that really are malformed.
+# Urdyn more permissive about stores that really are malformed.
 # ---------------------------------------------------------------------------
 
 
@@ -625,8 +625,8 @@ class TestMalformedStoreStillFailsClosed:
         finally:
             connection.close()
 
-        with pytest.raises(CortexStorageError) as excinfo:
-            Cortex.open(tmp_path).state()
+        with pytest.raises(UrdynStorageError) as excinfo:
+            Urdyn.open(tmp_path).state()
         assert "duplicate column name: role" in str(excinfo.value)
 
     def test_b_a_store_missing_the_tables_its_version_claims_is_rejected(self, tmp_path):
@@ -638,13 +638,13 @@ class TestMalformedStoreStillFailsClosed:
         finally:
             connection.close()
 
-        with pytest.raises(CortexStorageError) as excinfo:
-            Cortex.open(tmp_path).state()
+        with pytest.raises(UrdynStorageError) as excinfo:
+            Urdyn.open(tmp_path).state()
         assert "possibly corrupted store" in str(excinfo.value)
 
     def test_c_a_version_this_build_knows_no_step_for_is_rejected(self, tmp_path):
         """The loop must not spin, and must not silently accept, a store
-        stamped by a future Cortex."""
+        stamped by a future Urdyn."""
         db_path, _ = _prepare_workspace(tmp_path, 4)
         connection = sqlite3.connect(db_path)
         try:
@@ -653,9 +653,9 @@ class TestMalformedStoreStillFailsClosed:
         finally:
             connection.close()
 
-        with pytest.raises(CortexStorageError) as excinfo:
-            Cortex.open(tmp_path).state()
-        assert "not supported by this version of Cortex" in str(excinfo.value)
+        with pytest.raises(UrdynStorageError) as excinfo:
+            Urdyn.open(tmp_path).state()
+        assert "not supported by this version of Urdyn" in str(excinfo.value)
 
 
 # ---------------------------------------------------------------------------
@@ -681,7 +681,7 @@ class TestCrashMidMigration:
 
         connection = sqlite3.connect(db_path, factory=_FailBeforeStampConnection)
         try:
-            from cortex_memory._store import _ensure_schema
+            from urdyn._store import _ensure_schema
 
             with pytest.raises(sqlite3.OperationalError):
                 _ensure_schema(connection)
@@ -701,12 +701,12 @@ class TestCrashMidMigration:
 
         connection = sqlite3.connect(db_path, factory=_FailBeforeStampConnection)
         try:
-            from cortex_memory._store import _ensure_schema
+            from urdyn._store import _ensure_schema
 
             with pytest.raises(sqlite3.OperationalError):
                 _ensure_schema(connection)
         finally:
             connection.close()
 
-        assert sorted(m.memory_id for m in Cortex.open(tmp_path).state()) == sorted(memory_ids)
+        assert sorted(m.memory_id for m in Urdyn.open(tmp_path).state()) == sorted(memory_ids)
         _assert_healthy_v7(db_path, memory_ids, expected_links=len(memory_ids))

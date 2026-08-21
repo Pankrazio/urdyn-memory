@@ -1,7 +1,7 @@
 """The canonical `Source` model: the stable identity of an external thing
-Cortex has observed, plus the individual observations made of it.
+Urdyn has observed, plus the individual observations made of it.
 
-A Source is NOT knowledge. Seeding a project file records that Cortex saw
+A Source is NOT knowledge. Seeding a project file records that Urdyn saw
 that file, in that state, at that moment -- nothing more. It creates no
 Memory, asserts no belief, and grants no authority: the
 `document_observation` Evidence each observation carries is deliberately
@@ -12,7 +12,7 @@ through `remember()`/`learn()`, with the observation cited as provenance.
 
 The three levels this keeps apart:
 
-  Source     -- "this file exists in this project and Cortex tracks it"
+  Source     -- "this file exists in this project and Urdyn tracks it"
                 (identity: a workspace-relative path)
   Observation -- "at this moment the file said this, and its bytes hashed
                 to this digest" (a fact about one point in time,
@@ -20,7 +20,7 @@ The three levels this keeps apart:
   Memory     -- "this is what we believe" (never produced here)
 
 IDENTITY. A Source is identified by its `source_id` (a canonical 32-hex
-Cortex identity, like every other primitive) and addressed by `path`,
+Urdyn identity, like every other primitive) and addressed by `path`,
 which is always RELATIVE to the workspace root and always POSIX-style.
 Absolute paths are never persisted: a workspace copied or moved to a
 different absolute location must keep resolving its own Sources, so the
@@ -51,7 +51,7 @@ produced it.
 The cost is deliberate and bounded: only files a caller explicitly named
 (or explicitly chose from discovery) are read, only UTF-8 text, only up
 to `MAX_SEED_FILE_BYTES`, and only when the content actually changed --
-a re-seed of an unchanged file writes nothing at all. `.cortex/` does
+a re-seed of an unchanged file writes nothing at all. `.urdyn/` does
 therefore hold a local copy of the documents it was asked to observe,
 which the CLI states plainly at seed time rather than leaving implied.
 
@@ -61,13 +61,13 @@ via an absolute path, or via a symlink pointing elsewhere -- and against
 seeding something that is not ordinary text (a device, a FIFO, a binary,
 a file too large to be a project document), plus a minimal denylist of
 names that habitually hold secrets. They do NOT defend against a local
-attacker who can modify the filesystem between the moment Cortex resolves
+attacker who can modify the filesystem between the moment Urdyn resolves
 a path and the moment it reads the bytes (a TOCTOU swap): such an
 attacker already has write access to the repository being seeded, and
 closing that window would require holding an open file descriptor across
 every check for a threat that is not the one this feature has. The
-denylist is a safety net against an accidental `cortex seed .env`, never
-a claim to detect secrets: Cortex does not scan file content for them.
+denylist is a safety net against an accidental `urdyn seed .env`, never
+a claim to detect secrets: Urdyn does not scan file content for them.
 """
 
 from __future__ import annotations
@@ -80,7 +80,7 @@ import re
 import stat
 from pathlib import Path
 
-from ._errors import CortexSourceError
+from ._errors import UrdynSourceError
 from ._evidence import Evidence
 
 SOURCE_ID_PATTERN = re.compile(r"[0-9a-f]{32}")
@@ -94,7 +94,7 @@ _DIGEST_ALGORITHM = "sha256"
 
 # The three outcomes a single `seed()` of one path can have. `unchanged`
 # is not a failure and not a no-op the caller should ignore: it means the
-# file is still exactly as Cortex last observed it.
+# file is still exactly as Urdyn last observed it.
 SEED_ADDED = "added"
 SEED_UNCHANGED = "unchanged"
 SEED_CHANGED = "changed"
@@ -102,7 +102,7 @@ VALID_SEED_STATUSES = frozenset({SEED_ADDED, SEED_UNCHANGED, SEED_CHANGED})
 
 # A project document that does not fit in 1 MiB is not the kind of thing
 # this feature exists to track: it is a dataset, a generated artifact, or
-# a vendored blob. Refusing it keeps a stray `cortex seed` from reading a
+# a vendored blob. Refusing it keeps a stray `urdyn seed` from reading a
 # huge file into memory just to hash it.
 MAX_SEED_FILE_BYTES = 1_048_576
 
@@ -118,7 +118,7 @@ _SECRET_NAME_PATTERNS = (
     "id_rsa*",
 )
 
-# (A19.1) Conservative allowlist for `cortex seed` with no arguments, in
+# (A19.1) Conservative allowlist for `urdyn seed` with no arguments, in
 # the `dev` profile only. Deliberately NOT a recursive crawl: these are
 # the files that describe a project to a newcomer, at the two locations
 # where projects conventionally put them (the root, and a flat `docs/`).
@@ -140,7 +140,7 @@ _DISCOVERY_DOCS_PATTERN = ("docs", "*.md")
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class SourceObservation:
-    """One observation of a `Source`: what Cortex saw, and when.
+    """One observation of a `Source`: what Urdyn saw, and when.
 
     Identified by `evidence_id` -- the Evidence recorded alongside it (see
     the module docstring on why there is no separate observation id).
@@ -157,7 +157,7 @@ class SourceObservation:
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class Source:
-    """A project file Cortex tracks, with its full observation history.
+    """A project file Urdyn tracks, with its full observation history.
 
     `observations` is ordered oldest-first and is never empty: a Source is
     only ever created together with its first observation, in one
@@ -166,7 +166,7 @@ class Source:
     and `Skill.steps` -- the canonical record loads whole, and no second
     call is needed to see history.
 
-    `first_observed_at` is the `sources` row's own column: when Cortex
+    `first_observed_at` is the `sources` row's own column: when Urdyn
     first recorded this identity. It is not recomputed from
     `observations`.
     """
@@ -239,11 +239,11 @@ def _is_secret_name(name: str) -> bool:
     return any(fnmatch.fnmatch(name, pattern) for pattern in _SECRET_NAME_PATTERNS)
 
 
-def resolve_seed_path(workspace: Path, cortex_dirname: str, raw: str | Path) -> str:
+def resolve_seed_path(workspace: Path, urdyn_dirname: str, raw: str | Path) -> str:
     """Validate one path a caller asked to seed and return it as a
     workspace-relative POSIX path.
 
-    Raises `CortexSourceError` -- never a bare `OSError` or `ValueError`
+    Raises `UrdynSourceError` -- never a bare `OSError` or `ValueError`
     -- for every way a path can be unacceptable, so a batch caller can
     skip one rejected file without also swallowing programming errors.
 
@@ -265,37 +265,37 @@ def resolve_seed_path(workspace: Path, cortex_dirname: str, raw: str | Path) -> 
         # `OSError` -- caught here alongside it so such a path is refused
         # like any other unresolvable one, never left to propagate as an
         # unhandled exception out of a caller that only expects
-        # `CortexSourceError` (e.g. the watcher's discovery scan).
+        # `UrdynSourceError` (e.g. the watcher's discovery scan).
         resolved = candidate.resolve()
     except (OSError, RuntimeError) as exc:
-        raise CortexSourceError(f"Cannot resolve path {str(raw)!r}: {exc}") from exc
+        raise UrdynSourceError(f"Cannot resolve path {str(raw)!r}: {exc}") from exc
 
     if not resolved.is_relative_to(workspace_root):
-        raise CortexSourceError(
-            f"Refusing to seed {str(raw)!r}: it resolves outside the Cortex workspace"
+        raise UrdynSourceError(
+            f"Refusing to seed {str(raw)!r}: it resolves outside the Urdyn workspace"
         )
 
     relative = resolved.relative_to(workspace_root)
     if not relative.parts:
-        raise CortexSourceError(f"Refusing to seed {str(raw)!r}: it is the workspace root itself")
-    if relative.parts[0] == cortex_dirname:
-        raise CortexSourceError(
-            f"Refusing to seed {str(raw)!r}: it is inside Cortex's own {cortex_dirname}/ directory"
+        raise UrdynSourceError(f"Refusing to seed {str(raw)!r}: it is the workspace root itself")
+    if relative.parts[0] == urdyn_dirname:
+        raise UrdynSourceError(
+            f"Refusing to seed {str(raw)!r}: it is inside Urdyn's own {urdyn_dirname}/ directory"
         )
     if _is_secret_name(resolved.name):
-        raise CortexSourceError(
+        raise UrdynSourceError(
             f"Refusing to seed {str(raw)!r}: its name matches a credential pattern "
-            "Cortex will not record"
+            "Urdyn will not record"
         )
 
     try:
         info = resolved.stat()
     except OSError as exc:
-        raise CortexSourceError(f"Cannot read {str(raw)!r}: {exc}") from exc
+        raise UrdynSourceError(f"Cannot read {str(raw)!r}: {exc}") from exc
     if not stat.S_ISREG(info.st_mode):
-        raise CortexSourceError(f"Refusing to seed {str(raw)!r}: it is not a regular file")
+        raise UrdynSourceError(f"Refusing to seed {str(raw)!r}: it is not a regular file")
     if info.st_size > MAX_SEED_FILE_BYTES:
-        raise CortexSourceError(
+        raise UrdynSourceError(
             f"Refusing to seed {str(raw)!r}: it is {info.st_size} bytes, over the "
             f"{MAX_SEED_FILE_BYTES}-byte limit for a project document"
         )
@@ -307,8 +307,8 @@ def read_seed_candidate(workspace: Path, relative_path: str) -> SeedCandidate:
     """Read an already-validated workspace-relative path ONCE, and return
     its digest, its size on disk, and the text decoded from it.
 
-    Raises `CortexSourceError` if the file is binary or is not valid
-    UTF-8 text: Cortex tracks project documents, and a digest of a blob
+    Raises `UrdynSourceError` if the file is binary or is not valid
+    UTF-8 text: Urdyn tracks project documents, and a digest of a blob
     it could not have read as text would be a provenance claim about
     something it does not understand.
 
@@ -324,27 +324,27 @@ def read_seed_candidate(workspace: Path, relative_path: str) -> SeedCandidate:
     try:
         data = target.read_bytes()
     except OSError as exc:
-        raise CortexSourceError(f"Cannot read {relative_path!r}: {exc}") from exc
+        raise UrdynSourceError(f"Cannot read {relative_path!r}: {exc}") from exc
 
     if len(data) > MAX_SEED_FILE_BYTES:
         # The file grew between `resolve_seed_path`'s stat and this read.
-        raise CortexSourceError(
+        raise UrdynSourceError(
             f"Refusing to seed {relative_path!r}: it is {len(data)} bytes, over the "
             f"{MAX_SEED_FILE_BYTES}-byte limit for a project document"
         )
     if b"\x00" in data:
-        raise CortexSourceError(f"Refusing to seed {relative_path!r}: it looks like a binary file")
+        raise UrdynSourceError(f"Refusing to seed {relative_path!r}: it looks like a binary file")
     try:
         text = data.decode("utf-8")
     except UnicodeDecodeError as exc:
-        raise CortexSourceError(
+        raise UrdynSourceError(
             f"Refusing to seed {relative_path!r}: it is not valid UTF-8 text"
         ) from exc
     if not text.strip():
         # Checked on the DECODED text, not on `len(data)`: a file holding
         # only whitespace has bytes but still records nothing observed,
         # and `add_evidence`'s own blank-content rule is a `strip()` too.
-        raise CortexSourceError(
+        raise UrdynSourceError(
             f"Refusing to seed {relative_path!r}: it is empty, so there is no observation to record"
         )
 
@@ -356,7 +356,7 @@ def read_seed_candidate(workspace: Path, relative_path: str) -> SeedCandidate:
     )
 
 
-def discover_candidate_paths(workspace: Path, cortex_dirname: str) -> list[str]:
+def discover_candidate_paths(workspace: Path, urdyn_dirname: str) -> list[str]:
     """The `dev` profile's conservative project-context allowlist, as
     workspace-relative POSIX paths, sorted for determinism.
 
@@ -378,7 +378,7 @@ def discover_candidate_paths(workspace: Path, cortex_dirname: str) -> list[str]:
     candidates = []
     for match in matches:
         try:
-            candidates.append(resolve_seed_path(workspace_root, cortex_dirname, match))
-        except CortexSourceError:
+            candidates.append(resolve_seed_path(workspace_root, urdyn_dirname, match))
+        except UrdynSourceError:
             continue
     return sorted(set(candidates))

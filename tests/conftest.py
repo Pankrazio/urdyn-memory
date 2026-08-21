@@ -1,6 +1,6 @@
 """Shared test fixtures.
 
-`cortex init dev` (A43) starts a real detached background watcher
+`urdyn init dev` (A43) starts a real detached background watcher
 process. Any test anywhere in this suite that runs it -- directly, or
 via `cli_main(["init", "dev"])` -- must not be allowed to leak that
 process past its own teardown. This is enforced once, globally, rather
@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from cortex_memory import _watcher
+from urdyn import _watcher
 
 
 def _wait_until(predicate, timeout: float = 5.0, interval: float = 0.05) -> bool:
@@ -34,8 +34,8 @@ def _kill_watchers_under(root: Path) -> None:
     if not root.exists():
         return
     for lock_path in root.rglob(_watcher.WATCHER_LOCK_FILENAME):
-        cortex_dir = lock_path.parent
-        probe = _watcher.probe_lock(cortex_dir)
+        urdyn_dir = lock_path.parent
+        probe = _watcher.probe_lock(urdyn_dir)
         if probe.state != _watcher.LOCK_RUNNING:
             continue
         pid = (probe.metadata or {}).get("pid")
@@ -45,7 +45,7 @@ def _kill_watchers_under(root: Path) -> None:
             os.kill(pid, signal.SIGKILL)
         except ProcessLookupError:
             continue
-        _wait_until(lambda cd=cortex_dir: _watcher.probe_lock(cd).state != _watcher.LOCK_RUNNING)
+        _wait_until(lambda cd=urdyn_dir: _watcher.probe_lock(cd).state != _watcher.LOCK_RUNNING)
 
 
 @pytest.fixture(autouse=True)

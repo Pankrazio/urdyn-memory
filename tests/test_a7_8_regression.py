@@ -27,7 +27,7 @@ pool's absolute floor (0.50) was calibrated defensively, never against
 a real positive case reachable by ordinary, conversationally-phrased
 task wording.
 
-The fix (`Cortex._preflight_memory_semantic_widen`, in `_workspace.py`)
+The fix (`Urdyn._preflight_memory_semantic_widen`, in `_workspace.py`)
 extends the SAME shared-Evidence trust `build_preflight` already grants
 attempt-to-memory rescue to memory-to-memory: candidates are clustered
 by shared `evidence_ids`, a cluster competes on margin as a single unit
@@ -49,7 +49,7 @@ import os
 import numpy as np
 import pytest
 
-from cortex_memory import Cortex
+from urdyn import Urdyn
 
 # ---------------------------------------------------------------------------
 # Fast, deterministic tests: the clustering mechanism itself, isolated with
@@ -76,7 +76,7 @@ class _FakeStaticModel:
 
 @pytest.fixture
 def fake_semantic(monkeypatch):
-    import cortex_memory._semantic as semantic
+    import urdyn._semantic as semantic
 
     fake_model = _FakeStaticModel()
     monkeypatch.setattr(semantic, "load_model_for_setup", lambda model_id=None: fake_model)
@@ -101,7 +101,7 @@ def test_preflight_admits_sibling_root_cause_and_lesson_tied_on_score(tmp_path, 
     when the two candidates share Evidence: they are the same
     experience (cause + prescription), not two candidates competing for
     the pool's one admission slot."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     ev = cx.add_evidence("observed failure", kind="error_observation")
     root_cause = cx.remember("alpha", kind="root_cause", epistemic_state="inferred", evidence=[ev])
     validation = cx.add_evidence("checked", kind="test_result")
@@ -128,7 +128,7 @@ def test_preflight_does_not_cluster_memories_that_do_not_share_evidence(tmp_path
     floor without a margin -- so its presence says nothing about
     clustering either way, and asserting its absence would be asserting
     the A23 defect."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     root_cause = cx.remember("alpha", kind="root_cause", epistemic_state="inferred")
     _verified_lesson(cx, "alpha")  # its own, unrelated evidence
     cx.semantic_setup()
@@ -147,7 +147,7 @@ def test_preflight_admits_low_scoring_sibling_via_cluster_membership(tmp_path, f
     shared-provenance rule already grants with no independent score
     check on the rescued side, applied symmetrically to memory-to-
     memory."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     ev = cx.add_evidence("observed failure", kind="error_observation")
     # "alpha beta" scores ~0.707 against a pure "alpha" query -- clears the 0.20 floor comfortably
     root_cause = cx.remember("alpha beta", kind="root_cause", epistemic_state="inferred", evidence=[ev])
@@ -176,7 +176,7 @@ def test_preflight_cluster_still_loses_to_a_stronger_unrelated_competitor(tmp_pa
     have their own bounded set admission channel, and it admits every
     lesson above the absolute floor independently of what the MEMORY
     pool decided about the cluster."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     ev = cx.add_evidence("observed failure", kind="error_observation")
     validation = cx.add_evidence("checked", kind="test_result")
     clustered_root_cause = cx.remember(
@@ -211,7 +211,7 @@ def _real_model_available() -> bool:
         import numpy  # noqa: F401
         import onnxruntime  # noqa: F401
 
-        from cortex_memory import _semantic
+        from urdyn import _semantic
     except ImportError:
         return False
     for artifact in (_semantic.preferred_artifact(), _semantic.ARTIFACT_PORTABLE):
@@ -232,7 +232,7 @@ def _real_model_available() -> bool:
 pytestmark = pytest.mark.real_model
 _SKIP_REASON = (
     "the real ONNX semantic model is not cached locally (and/or the 'semantic' "
-    "extra is not installed) -- run 'cortex semantic setup' in a scratch "
+    "extra is not installed) -- run 'urdyn semantic setup' in a scratch "
     "workspace once to populate the Hugging Face cache, then re-run this file; "
     "never downloaded automatically by the test suite itself"
 )
@@ -257,7 +257,7 @@ def _offline():
 
 def _build_database_migration_experience(cx):
     """Verbatim content from the real acceptance-testing workspace
-    (verified via Cortex's own public API during A7.8 diagnosis), not
+    (verified via Urdyn's own public API during A7.8 diagnosis), not
     reworded or simplified for this test."""
     failure_evidence = cx.add_evidence(
         "A database schema upgrade failed halfway through and left part of the new "
@@ -311,7 +311,7 @@ def test_human_spontaneous_database_migration_query_now_recovers_useful_experien
     one of the two -- since they are the same experience and the fix
     exists precisely so neither is left out arbitrarily."""
     with _offline():
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         root_cause, lesson = _build_database_migration_experience(cx)
         cx.semantic_setup()
 
@@ -335,7 +335,7 @@ def test_human_spontaneous_query_control_still_recovers_known_failure_too(tmp_pa
     full HIT after the fix -- the fix only ever widens the memory pool,
     it does not change attempt-pool admission."""
     with _offline():
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         root_cause, lesson = _build_database_migration_experience(cx)
         cx.semantic_setup()
 

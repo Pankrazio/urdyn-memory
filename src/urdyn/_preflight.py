@@ -36,12 +36,12 @@ and deliberately does not know how many ids any pool decided to admit
 or why. This module never
 computes or sees a similarity score itself: it only checks id membership,
 exactly like the FTS channel above. Defaults to empty, so a workspace
-without the `[semantic]` extra installed (or without `cortex semantic
+without the `[semantic]` extra installed (or without `urdyn semantic
 setup` having been run) behaves exactly as it did before A7.4.
 
 `open_conflicts` (A14.1) is a fourth, orthogonal signal, not a fourth
 relevance channel: it never decides whether a Memory is shown, only
-whether Cortex additionally discloses that a shown Memory is party to an
+whether Urdyn additionally discloses that a shown Memory is party to an
 open canonical `Conflict` (see `_conflict.py`). See `PreflightConflict`
 and `Preflight.open_conflicts` for the relevance rule and why it
 deliberately reuses this module's existing machinery instead of adding a
@@ -55,7 +55,7 @@ from collections.abc import Callable, Mapping
 
 from ._attempt import OUTCOME_FAILED, OUTCOME_SUCCEEDED, Attempt
 from ._conflict import Conflict
-from ._errors import CortexStorageError
+from ._errors import UrdynStorageError
 from ._evidence import RECOMMENDED_VALIDATION_EVIDENCE_KINDS, Evidence
 from ._memory import Memory
 from ._relevance import attempt_search_text as _attempt_search_text
@@ -79,7 +79,7 @@ def attempt_is_relevant(
     relevance channels described in the module docstring: lexical
     majority overlap, FTS5/BM25 widening, or semantic admission.
 
-    Extracted from `build_preflight` (A29.1) so `Cortex.context()` can
+    Extracted from `build_preflight` (A29.1) so `Urdyn.context()` can
     apply the identical admission decision to standalone attempt
     candidates without re-deriving it -- there is exactly one definition
     of "is this attempt relevant to this task", used by both consumers.
@@ -105,7 +105,7 @@ def memory_is_relevant(
     evidence-provenance rescue.
 
     Extracted from `build_preflight` (A29.1) for the same reason as
-    `attempt_is_relevant`: `Cortex.context()` needs the identical
+    `attempt_is_relevant`: `Urdyn.context()` needs the identical
     decision for Memory kinds `build_preflight` itself never receives
     (`invariant`, `decision`), and must not re-implement the four-channel
     rule to get it.
@@ -122,7 +122,7 @@ def memory_is_relevant(
 @dataclasses.dataclass(frozen=True, slots=True)
 class RelevanceContext:
     """Precomputed relevance-admission inputs shared by every candidate
-    category `build_preflight` and `Cortex.context()` both filter over:
+    category `build_preflight` and `Urdyn.context()` both filter over:
     the FTS-admitted id sets for each entity type, and which attempts are
     already judged relevant to `task` -- the basis
     `relevant_attempt_evidence_ids` (evidence-provenance rescue) needs.
@@ -148,7 +148,7 @@ def build_relevance_context(
 ) -> RelevanceContext:
     """The one place `task` is tokenized and attempts are sorted into
     known-failure/relevant-success pools. Both `build_preflight` and
-    `Cortex.context()` call this rather than re-deriving it, so the two
+    `Urdyn.context()` call this rather than re-deriving it, so the two
     consumers can never silently disagree about which attempts are
     relevant to `task` or which Evidence a provenance rescue may cite.
     """
@@ -192,8 +192,8 @@ class PreflightConflict:
     `timeline()`, or a new `get_memory()`) just to read what the two
     participants actually say. This type closes exactly that gap, for
     THIS result only: it is never persisted, never returned by any other
-    API, and changes nothing about what `Cortex.conflicts()`/
-    `Cortex.open_conflicts()` return.
+    API, and changes nothing about what `Urdyn.conflicts()`/
+    `Urdyn.open_conflicts()` return.
 
     `memories` holds the SAME `Memory` objects admitted elsewhere in this
     `Preflight` when a participant also qualifies for `root_causes`/
@@ -212,7 +212,7 @@ class PreflightConflict:
 class Preflight:
     """Prior experience relevant to a task, grouped by what it means for
     an agent about to start work. A category is empty, not absent, when
-    Cortex has nothing relevant on record for it.
+    Urdyn has nothing relevant on record for it.
 
     `invariants` (A9.1) is the one exception to "relevant to a task": it
     is every CURRENT project-wide operational invariant (`Memory` of kind
@@ -234,8 +234,8 @@ class Preflight:
     can: not "what do we currently know" but "what prior knowledge had
     its current authority explicitly withdrawn without a replacement".
     An agent must not confuse an empty `root_causes`/`verified_lessons`/
-    `invariants` (Cortex has nothing on record) with a non-empty
-    `open_invalidations` (Cortex had something on record and explicitly
+    `invariants` (Urdyn has nothing on record) with a non-empty
+    `open_invalidations` (Urdyn had something on record and explicitly
     stopped trusting it). Never contains the Memory that was invalidated
     -- only the invalidation itself. Deliberately placed last and
     defaulted to `()` for the same backward-compatibility reason as
@@ -263,7 +263,7 @@ class Preflight:
     `open_conflicts`.
 
     `open_conflicts` (A14.1) is every OPEN canonical `Conflict` (see
-    `Cortex.open_conflicts()` -- both participants current) relevant to
+    `Urdyn.open_conflicts()` -- both participants current) relevant to
     `task`, paired with the two Memories it names as a `PreflightConflict`
     (see that class for why). A participant is relevant under the SAME
     rule used for `root_causes`/`verified_lessons`/`open_invalidations`
@@ -272,9 +272,9 @@ class Preflight:
     NOT `invariants`, whose always-include rule would otherwise make
     every conflict touching an invariant appear regardless of `task`. A
     conflict is included if EITHER participant is relevant -- one-sided
-    sufficiency, not both: a Memory Cortex is about to show as
+    sufficiency, not both: a Memory Urdyn is about to show as
     individually authoritative must never be shown without also
-    surfacing that Cortex knows it is contradicted, even if the other
+    surfacing that Urdyn knows it is contradicted, even if the other
     side of that contradiction says nothing the task's own wording
     matches. This never changes `verified`/epistemic status, never
     resolves which side is correct, and never removes anything from
@@ -292,7 +292,7 @@ class Preflight:
     what a pool that RAN and abstained returns, so an incomplete answer
     was indistinguishable from a complete one. `None` only when a caller
     built this object directly instead of going through
-    `Cortex.preflight()`. Excluded from `is_empty()` on purpose: it
+    `Urdyn.preflight()`. Excluded from `is_empty()` on purpose: it
     describes HOW the answer was produced, never WHAT was found -- an
     empty result with a healthy substrate and an empty result with no
     substrate are both empty, and that is the point of reporting it
@@ -365,7 +365,7 @@ def build_preflight(
 
     `invariant_memories` (A9.1) bypasses relevance matching entirely: the
     caller is expected to have already filtered it to current, kind
-    `invariant` memories (see `Cortex.preflight`), and every one of them
+    `invariant` memories (see `Urdyn.preflight`), and every one of them
     is included in the result regardless of `task`. No lexical/FTS/
     semantic channel is consulted for this field.
 
@@ -389,15 +389,15 @@ def build_preflight(
     pending and rejects the unrelated one for the same task, so the only
     thing missing was this parameter. The caller is expected to have
     computed whatever semantic admission it wants for pending in its OWN
-    disjoint pool (see `Cortex.preflight`); this function only checks id
+    disjoint pool (see `Urdyn.preflight`); this function only checks id
     membership in `memory_semantic_admitted` and therefore cannot itself
     create competition between pending and any other category.
 
     `open_conflicts` (A14.1) is expected to already be filtered to OPEN
-    conflicts (see `Cortex.open_conflicts()`) -- this function has no
+    conflicts (see `Urdyn.open_conflicts()`) -- this function has no
     concept of "current" and does not re-derive it. `conflict_participants`
     must map every id named by every conflict in `open_conflicts` to its
-    (current) `Memory`; a miss raises `CortexStorageError` rather than
+    (current) `Memory`; a miss raises `UrdynStorageError` rather than
     silently dropping the conflict (see the fail-closed check below).
     Deliberately takes NO new semantic admission set for conflicts: a
     participant inherits relevance from `root_causes`/`verified_lessons`/
@@ -453,14 +453,14 @@ def build_preflight(
     # isn't relevant", it is `conflict_participants`/`open_conflicts`
     # disagreeing about what is current, an internal inconsistency.
     # Silently dropping such a conflict would make storage corruption
-    # indistinguishable from "Cortex checked and found nothing wrong",
+    # indistinguishable from "Urdyn checked and found nothing wrong",
     # which is exactly the false certainty A14 exists to prevent -- so
     # this raises instead of skipping, checked BEFORE relevance so a
     # corrupted-but-irrelevant conflict cannot slip through unexamined.
     for conflict in open_conflicts:
         for memory_id in conflict.memory_ids:
             if memory_id not in conflict_participants:
-                raise CortexStorageError(
+                raise UrdynStorageError(
                     f"Open conflict {conflict.memory_ids!r} references memory {memory_id!r} "
                     "that is missing from the current participant map"
                 )
@@ -486,7 +486,7 @@ def build_preflight(
             return True
         return _memory_matches(conflict_participants[memory_id])
 
-    # One-sided sufficiency (A14.0.1): a Memory Cortex is about to show
+    # One-sided sufficiency (A14.0.1): a Memory Urdyn is about to show
     # as individually authoritative must not be shown without also
     # surfacing that it is contradicted, even when the other side of that
     # contradiction says nothing the task's own wording matches.

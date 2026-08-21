@@ -1,6 +1,6 @@
-"""Terminal-safe rendering of untrusted text for the `cortex` CLI.
+"""Terminal-safe rendering of untrusted text for the `urdyn` CLI.
 
-Everything Cortex stores is data the caller supplied: a memory's content,
+Everything Urdyn stores is data the caller supplied: a memory's content,
 an attempt's task/approach, a skill's name, an evidence's text. The CLI
 prints that data inside a structure it emits itself -- section headers
 (`VERIFIED LESSONS`), list prefixes (`- `), bracketed ids. Printing
@@ -9,7 +9,7 @@ stored text verbatim lets the DATA forge the STRUCTURE: a content of
 of which are indistinguishable from output the program itself emitted,
 and a content carrying `ESC [ 2 A` can erase lines the program already
 printed. Neither is code execution -- nothing is ever interpreted as a
-command -- but both let stored data lie about what Cortex found, which is
+command -- but both let stored data lie about what Urdyn found, which is
 exactly the certainty the CLI exists to report on.
 
 The fix belongs here and only here: SANITIZE ON OUTPUT, NOT ON STORAGE.
@@ -19,7 +19,7 @@ returned by the public API is never touched -- see
 representation handed to a terminal is made safe.
 
 The escaping is deliberately Python-style and VISIBLE rather than a
-silent strip: Cortex must not hide that stored text contained a control
+silent strip: Urdyn must not hide that stored text contained a control
 character, since "this memory contains an escape sequence" is itself
 information the reader needs. Backslash is escaped too, which is what
 makes the rendering unambiguous: `\\n` in the output always means the data

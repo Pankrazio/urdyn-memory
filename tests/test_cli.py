@@ -1,8 +1,8 @@
-"""Tests for the `cortex` command-line interface."""
+"""Tests for the `urdyn` command-line interface."""
 
 import pytest
 
-from cortex_memory._cli import main
+from urdyn._cli import main
 
 
 def test_cli_init_dev(tmp_path, monkeypatch, capsys):
@@ -13,7 +13,7 @@ def test_cli_init_dev(tmp_path, monkeypatch, capsys):
     captured = capsys.readouterr()
     assert exit_code == 0
     assert "dev" in captured.out
-    assert (tmp_path / ".cortex").is_dir()
+    assert (tmp_path / ".urdyn").is_dir()
 
 
 def test_cli_status_reports_workspace(tmp_path, monkeypatch, capsys):
@@ -294,7 +294,7 @@ def test_cli_guard_reports_no_warnings_on_empty_workspace(tmp_path, monkeypatch,
     captured = capsys.readouterr()
 
     assert exit_code == 0
-    assert "No known Cortex warnings for this action." in captured.out
+    assert "No known Urdyn warnings for this action." in captured.out
 
 
 def test_cli_guard_rejects_empty_action(tmp_path, monkeypatch, capsys):
@@ -311,14 +311,14 @@ def test_cli_guard_rejects_empty_action(tmp_path, monkeypatch, capsys):
 def test_cli_skills_and_guard_end_to_end(tmp_path, monkeypatch, capsys):
     """The A5 end-to-end workflow surfaced through the CLI: an experience
     is turned into a skill through the Python API (promotion stays
-    Python-API-only), and `cortex guard`/`cortex skills` can see it from
+    Python-API-only), and `urdyn guard`/`urdyn skills` can see it from
     a fresh CLI invocation with no shared process state."""
     monkeypatch.chdir(tmp_path)
     main(["init", "dev"])
 
-    from cortex_memory import Cortex
+    from urdyn import Urdyn
 
-    cx = Cortex.discover()
+    cx = Urdyn.discover()
     error_evidence = cx.add_evidence(
         "Refresh token was invalidated during rotation.", kind="error_observation"
     )
@@ -361,7 +361,7 @@ def test_cli_skills_and_guard_end_to_end(tmp_path, monkeypatch, capsys):
     exit_code = main(["guard", "Modify refresh-token persistence logic"])
     guard_out = capsys.readouterr().out
     assert exit_code == 0
-    assert "CORTEX WARNING" in guard_out
+    assert "URDYN WARNING" in guard_out
     assert "Reuse the previous refresh token after rotation." in guard_out
     assert "Safely modify refresh-token rotation" in guard_out
     assert "Authentication tests passed." in guard_out
@@ -369,4 +369,4 @@ def test_cli_skills_and_guard_end_to_end(tmp_path, monkeypatch, capsys):
     exit_code = main(["guard", "Change CSS button color"])
     unrelated_out = capsys.readouterr().out
     assert exit_code == 0
-    assert "No known Cortex warnings for this action." in unrelated_out
+    assert "No known Urdyn warnings for this action." in unrelated_out

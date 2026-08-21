@@ -13,8 +13,8 @@ import os
 
 import pytest
 
-from cortex_memory import Cortex
-from cortex_memory._cli import main
+from urdyn import Urdyn
+from urdyn._cli import main
 from test_terminal_safety import assert_terminal_safe
 
 # One payload per presentation-spoofing technique found in A14.0.1.
@@ -37,7 +37,7 @@ STRUCTURAL_HEADERS = (
     "RECOMMENDED VALIDATION",
     "INVARIANTS",
     "OPEN INVALIDATIONS",
-    "CORTEX WARNING",
+    "URDYN WARNING",
 )
 
 TASK = "Migrations run before the release deployment"
@@ -47,7 +47,7 @@ def _seed(tmp_path, contents):
     """A verified lesson per content. `user_confirmation` verifies without
     also qualifying as recommended validation, so the rendered output stays
     to the single section these tests reason about."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     memories = []
     for content in contents:
         evidence = cx.add_evidence(f"confirmed by the operator {len(memories)}", kind="user_confirmation")
@@ -115,7 +115,7 @@ def test_preflight_renders_every_untrusted_field_safely(tmp_path, monkeypatch, c
     attempt task/approach, evidence content, invariant and invalidation
     content."""
     monkeypatch.chdir(tmp_path)
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     evidence = cx.add_evidence(f"pytest -k release {PAYLOADS['ansi_sgr']}", kind="test_result")
     cx.record_attempt(
         task=f"Migrations run before the release deployment{PAYLOADS['header_spoof']}",
@@ -157,7 +157,7 @@ def test_preflight_renders_every_untrusted_field_safely(tmp_path, monkeypatch, c
 
 def test_guard_output_is_terminal_safe(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     evidence = cx.add_evidence("pytest run", kind="test_result")
     action = "Run the database migration against production"
     cx.record_attempt(
@@ -184,12 +184,12 @@ def test_guard_output_is_terminal_safe(tmp_path, monkeypatch, capsys):
     captured = capsys.readouterr()
     assert exit_code == 0
     assert_output_terminal_safe(captured.out)
-    assert captured.out.count("CORTEX WARNING") == 1
+    assert captured.out.count("URDYN WARNING") == 1
 
 
 def test_skills_output_is_terminal_safe(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     evidence = cx.add_evidence("pytest run", kind="test_result")
     lesson = cx.learn("Take the lock before migrating", verified=True, supporting_evidence=[evidence])
     cx.promote(
@@ -210,7 +210,7 @@ def test_status_output_is_terminal_safe_for_a_hostile_workspace_path(tmp_path, m
     hostile_dir = tmp_path / "project\x1b[31mred"
     hostile_dir.mkdir()
     monkeypatch.chdir(hostile_dir)
-    Cortex.init(hostile_dir, "dev")
+    Urdyn.init(hostile_dir, "dev")
 
     exit_code = main(["status"])
 
@@ -239,7 +239,7 @@ def test_status_output_is_safe_for_a_path_with_non_utf8_bytes(tmp_path, monkeypa
     hostile_dir = tmp_path / os.fsdecode(b"proj\x9bect")
     hostile_dir.mkdir()
     monkeypatch.chdir(hostile_dir)
-    Cortex.init(hostile_dir, "dev")
+    Urdyn.init(hostile_dir, "dev")
 
     exit_code = main(["status"])
 
@@ -255,7 +255,7 @@ def test_write_command_confirmations_are_terminal_safe(tmp_path, monkeypatch, ca
     the payload is what was just stored -- assert nothing leaks through
     the confirmation line either."""
     monkeypatch.chdir(tmp_path)
-    Cortex.init(tmp_path, "dev")
+    Urdyn.init(tmp_path, "dev")
 
     remember_exit = main(["remember", PAYLOADS["header_spoof"], "--kind", "environment"])
     remember_out = capsys.readouterr().out
@@ -276,7 +276,7 @@ def test_write_command_confirmations_are_terminal_safe(tmp_path, monkeypatch, ca
 
 def test_error_output_is_terminal_safe(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
-    Cortex.init(tmp_path, "dev")
+    Urdyn.init(tmp_path, "dev")
 
     exit_code = main(["remember", "some text", "--supersedes", "\x1b[2Jdeadbeef" * 3])
 
@@ -287,7 +287,7 @@ def test_error_output_is_terminal_safe(tmp_path, monkeypatch, capsys):
 
 def test_argparse_error_output_is_terminal_safe(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
-    Cortex.init(tmp_path, "dev")
+    Urdyn.init(tmp_path, "dev")
 
     with pytest.raises(SystemExit):
         main(["remember", "some text", "--kind", "\x1b[31mbogus\x07"])
@@ -359,7 +359,7 @@ def test_public_api_still_returns_the_original_content(tmp_path):
 
 
 def test_guard_and_skill_api_still_return_the_original_content(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     evidence = cx.add_evidence("pytest run", kind="test_result")
     action = "Run the database migration against production"
     cx.record_attempt(
@@ -389,7 +389,7 @@ def test_content_survives_a_restart_byte_for_byte(tmp_path):
     payload = "".join(PAYLOADS.values())
     _seed(tmp_path, [payload])
 
-    reopened = Cortex.open(tmp_path)
+    reopened = Urdyn.open(tmp_path)
 
     assert reopened.timeline()[0].content == payload
 
@@ -402,7 +402,7 @@ def test_cli_rendering_does_not_rewrite_stored_content(tmp_path, monkeypatch, ca
     main(["preflight", TASK])
     capsys.readouterr()
 
-    assert Cortex.open(tmp_path).timeline()[0].content == payload
+    assert Urdyn.open(tmp_path).timeline()[0].content == payload
     assert cx.timeline()[0].content == payload
 
 
@@ -420,14 +420,14 @@ def test_benign_content_renders_exactly_as_before(tmp_path, monkeypatch, capsys)
 
     captured = capsys.readouterr()
     # [A27] The `Retrieval:` line is new and unconditional: this
-    # workspace never ran `cortex semantic setup`, and saying so is the
+    # workspace never ran `urdyn semantic setup`, and saying so is the
     # A26 fix (an answer produced without the semantic channel must not
     # print identically to one produced with it). It is CLI structure,
     # not caller data, so it is not passed through the safety boundary --
     # which is exactly what the rest of this file checks about the line
     # below it.
     assert captured.out.splitlines() == [
-        "Retrieval: lexical only -- semantic retrieval is not set up (run: cortex semantic setup)",
+        "Retrieval: lexical only -- semantic retrieval is not set up (run: urdyn semantic setup)",
         "VERIFIED LESSONS",
         f"- [{memories[0].memory_id}] {content}",
     ]

@@ -2,12 +2,12 @@
 model metadata they were generated with.
 
 This is deliberately a SEPARATE SQLite file from `memory.db`
-(`semantic_index.db`, next to it under `.cortex/`), not a table inside
+(`semantic_index.db`, next to it under `.urdyn/`), not a table inside
 the canonical store managed by `_store.py`. The semantic index is
 DERIVED, OPTIONAL, REBUILDABLE, and REPLACEABLE (see `_semantic.py`'s
 module docstring): it holds no canonical truth,
 nothing here is ever required for a canonical write to succeed, and
-deleting this entire file is always safe -- Cortex degrades to
+deleting this entire file is always safe -- Urdyn degrades to
 lexical/FTS-only, exactly as if the semantic extra were never installed.
 Keeping it in its own file (rather than a table in `memory.db`) makes
 that guarantee trivial to reason about and trivial to test: "the
@@ -17,7 +17,7 @@ about the canonical schema version chain in `_store.py` is touched.
 This module holds no dependency on `model2vec` or `numpy`: vectors are
 opaque `bytes` blobs here, encoded/decoded by `_semantic.py`. That keeps
 `_semantic_store.py` importable without the `[semantic]` extra installed
--- it is not imported at all from the normal `import cortex_memory` path
+-- it is not imported at all from the normal `import urdyn` path
 today, but nothing about its own implementation would force that if a
 future caller needed to inspect index metadata without loading a model.
 
@@ -67,7 +67,7 @@ import dataclasses
 import sqlite3
 from pathlib import Path
 
-from ._errors import CortexStorageError
+from ._errors import UrdynStorageError
 
 SEMANTIC_DB_FILENAME = "semantic_index.db"
 
@@ -88,7 +88,7 @@ SEMANTIC_UNAVAILABLE = "unavailable"
 
 # Reasons attached to a state. Constants rather than inline literals so
 # the CLI, the API and the tests all name the same condition, and plain
-# ASCII because Cortex targets Windows consoles as a first-class case
+# ASCII because Urdyn targets Windows consoles as a first-class case
 # (a cp1252 terminal must never be the reason a state line fails to
 # print).
 DETAIL_NOT_SET_UP = "not set up"
@@ -99,16 +99,16 @@ DETAIL_MODEL_UNCACHED = "the model files are not in the local cache"
 DETAIL_INDEX_UNREADABLE = "the index is unreadable"
 DETAIL_REFRESH_FAILED = "the automatic refresh could not run"
 
-_SETUP_HINT = "run: cortex semantic setup"
+_SETUP_HINT = "run: urdyn semantic setup"
 # One state needs a different remedy, and saying otherwise would send the
 # user into a command that fails: `semantic_setup()` opens the existing
 # index file before rebuilding it, so a file that is not a database at
-# all raises instead of being repaired. Cortex will not delete it on the
+# all raises instead of being repaired. Urdyn will not delete it on the
 # user's behalf -- derived and rebuildable is a reason it is SAFE to
-# delete, not a licence for Cortex to do it unasked -- so the state says
+# delete, not a licence for Urdyn to do it unasked -- so the state says
 # exactly what to do instead.
 _REMEDY_BY_DETAIL = {
-    DETAIL_INDEX_UNREADABLE: f"delete .cortex/{SEMANTIC_DB_FILENAME}, then {_SETUP_HINT}",
+    DETAIL_INDEX_UNREADABLE: f"delete .urdyn/{SEMANTIC_DB_FILENAME}, then {_SETUP_HINT}",
 }
 
 _CREATE_META_SQL = """
@@ -134,8 +134,8 @@ _CREATE_VECTORS_SQL = """
 """
 
 
-def semantic_db_path_for(cortex_dir: Path) -> Path:
-    return cortex_dir / SEMANTIC_DB_FILENAME
+def semantic_db_path_for(urdyn_dir: Path) -> Path:
+    return urdyn_dir / SEMANTIC_DB_FILENAME
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -176,7 +176,7 @@ class SemanticState:
     docstring), never read back from storage.
 
     Carried on `Preflight`/`GuardResult` as well as reported by
-    `cortex status`, so a consumer can always tell an ABSENT retrieval
+    `urdyn status`, so a consumer can always tell an ABSENT retrieval
     substrate from an ABSTAINING one. That distinction is the whole point:
     A26 produced an incomplete result that was indistinguishable from a
     complete one because both looked like "the semantic channel admitted
@@ -185,7 +185,7 @@ class SemanticState:
     `missing` is how many canonical records the index does not cover;
     `indexed` how many vectors it holds; `refreshed` how many vectors the
     call that produced this state just added (0 for a purely observational
-    state, e.g. `cortex status`, which never refreshes anything).
+    state, e.g. `urdyn status`, which never refreshes anything).
     """
 
     status: str
@@ -206,7 +206,7 @@ class SemanticState:
         return _REMEDY_BY_DETAIL.get(self.detail or "", _SETUP_HINT)
 
     def describe(self) -> str:
-        """One line for `cortex status`. Reports observed state only --
+        """One line for `urdyn status`. Reports observed state only --
         computing it never loads a model, never touches the network and
         never mutates anything."""
         if self.status == SEMANTIC_READY:
@@ -254,7 +254,7 @@ class SemanticIndexStore:
             _ensure_schema(connection)
         except sqlite3.DatabaseError as exc:
             connection.close()
-            raise CortexStorageError(f"Cortex semantic index at {db_path} is corrupted: {exc}") from exc
+            raise UrdynStorageError(f"Urdyn semantic index at {db_path} is corrupted: {exc}") from exc
         except Exception:
             connection.close()
             raise
@@ -282,7 +282,7 @@ class SemanticIndexStore:
                 "FROM semantic_meta WHERE id = 1"
             ).fetchone()
         except sqlite3.DatabaseError as exc:
-            raise CortexStorageError(f"Failed to read Cortex semantic index metadata: {exc}") from exc
+            raise UrdynStorageError(f"Failed to read Urdyn semantic index metadata: {exc}") from exc
         if row is None:
             return None
         return SemanticMeta(*row)
@@ -314,7 +314,7 @@ class SemanticIndexStore:
                     (provider, model_id, model_revision, dimensions, normalization, created_at, STATUS_BUILDING),
                 )
         except sqlite3.DatabaseError as exc:
-            raise CortexStorageError(f"Failed to begin Cortex semantic index rebuild: {exc}") from exc
+            raise UrdynStorageError(f"Failed to begin Urdyn semantic index rebuild: {exc}") from exc
 
     def add_vectors(self, entity_type: str, rows: list[tuple[str, bytes]]) -> None:
         """Persist a batch of `(entity_id, vector_blob)` pairs for
@@ -348,7 +348,7 @@ class SemanticIndexStore:
                     [(entity_type, entity_id, blob) for entity_id, blob in rows],
                 )
         except sqlite3.DatabaseError as exc:
-            raise CortexStorageError(f"Failed to persist Cortex semantic vectors: {exc}") from exc
+            raise UrdynStorageError(f"Failed to persist Urdyn semantic vectors: {exc}") from exc
 
     def finish_rebuild(self) -> None:
         try:
@@ -357,7 +357,7 @@ class SemanticIndexStore:
                     "UPDATE semantic_meta SET status = ? WHERE id = 1", (STATUS_READY,)
                 )
         except sqlite3.DatabaseError as exc:
-            raise CortexStorageError(f"Failed to finalize Cortex semantic index rebuild: {exc}") from exc
+            raise UrdynStorageError(f"Failed to finalize Urdyn semantic index rebuild: {exc}") from exc
 
     def all_vectors(self, entity_type: str) -> list[tuple[str, bytes]]:
         try:
@@ -366,7 +366,7 @@ class SemanticIndexStore:
                 (entity_type,),
             ).fetchall()
         except sqlite3.DatabaseError as exc:
-            raise CortexStorageError(f"Failed to read Cortex semantic vectors: {exc}") from exc
+            raise UrdynStorageError(f"Failed to read Urdyn semantic vectors: {exc}") from exc
         return [(row[0], row[1]) for row in rows]
 
     def indexed_ids(self, entity_type: str) -> set[str]:
@@ -382,14 +382,14 @@ class SemanticIndexStore:
                 "SELECT entity_id FROM semantic_vectors WHERE entity_type = ?", (entity_type,)
             ).fetchall()
         except sqlite3.DatabaseError as exc:
-            raise CortexStorageError(f"Failed to read Cortex semantic index: {exc}") from exc
+            raise UrdynStorageError(f"Failed to read Urdyn semantic index: {exc}") from exc
         return {row[0] for row in rows}
 
     def vector_count(self) -> int:
         try:
             (count,) = self._connection.execute("SELECT COUNT(*) FROM semantic_vectors").fetchone()
         except sqlite3.DatabaseError as exc:
-            raise CortexStorageError(f"Failed to read Cortex semantic index: {exc}") from exc
+            raise UrdynStorageError(f"Failed to read Urdyn semantic index: {exc}") from exc
         return count
 
 

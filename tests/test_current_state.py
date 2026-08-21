@@ -1,16 +1,16 @@
-"""Tests for `Cortex.state()`: the current-state projection over history."""
+"""Tests for `Urdyn.state()`: the current-state projection over history."""
 
-from cortex_memory import Cortex
+from urdyn import Urdyn
 
 
 def test_state_on_empty_workspace_returns_empty_list(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
 
     assert cx.state() == []
 
 
 def test_state_returns_all_memories_when_nothing_superseded(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     first = cx.remember("first")
     second = cx.remember("second")
 
@@ -20,7 +20,7 @@ def test_state_returns_all_memories_when_nothing_superseded(tmp_path):
 
 
 def test_state_excludes_superseded_memory(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     old = cx.remember("PostgreSQL was selected.", kind="decision")
     new = cx.remember("SQLite was selected for V1.", kind="decision", supersedes=old.memory_id)
 
@@ -30,7 +30,7 @@ def test_state_excludes_superseded_memory(tmp_path):
 
 
 def test_state_filters_by_kind(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     note = cx.remember("a note", kind="note")
     decision = cx.remember("a decision", kind="decision")
 
@@ -39,11 +39,11 @@ def test_state_filters_by_kind(tmp_path):
 
 
 def test_state_survives_reopening(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     old = cx.remember("PostgreSQL was selected.", kind="decision")
     new = cx.remember("SQLite was selected for V1.", kind="decision", supersedes=old.memory_id)
     del cx
 
-    reopened = Cortex.open(tmp_path)
+    reopened = Urdyn.open(tmp_path)
 
     assert [m.memory_id for m in reopened.state(kind="decision")] == [new.memory_id]

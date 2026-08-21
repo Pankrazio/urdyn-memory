@@ -2,7 +2,7 @@
 
 Recording the same canonical memory twice must not leave two CURRENT
 records of it. The defect this closes was found during A16's Human
-Acceptance: the same `cortex remember` command run twice produced two
+Acceptance: the same `urdyn remember` command run twice produced two
 current memories with identical content, which semantic retrieval then
 treated as two competing candidates -- identical scores, zero margin,
 abstention -- suppressing a target that would otherwise have been
@@ -25,8 +25,8 @@ import unicodedata
 
 import pytest
 
-from cortex_memory import Cortex
-from cortex_memory._cli import main
+from urdyn import Urdyn
+from urdyn._cli import main
 from test_cli_output_safety import assert_output_terminal_safe
 from test_semantic import fake_semantic  # noqa: F401  (pytest fixture)
 
@@ -40,7 +40,7 @@ def _events(cx, kind=None):
     """Read the append-only event log directly, bypassing every
     projection: `timeline()` alone could not distinguish "no second event
     was written" from "a second event was written but filtered out"."""
-    connection = sqlite3.connect(cx.path / ".cortex" / "memory.db")
+    connection = sqlite3.connect(cx.path / ".urdyn" / "memory.db")
     try:
         if kind is None:
             rows = connection.execute("SELECT kind, subject_id FROM events ORDER BY sequence").fetchall()
@@ -60,7 +60,7 @@ def _events(cx, kind=None):
 
 class TestExactDuplicateIsIdempotent:
     def test_second_remember_returns_the_same_stable_id(self, tmp_path):
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
 
         first = cx.remember(DUPLICATE_CONTENT, kind="root_cause")
         second = cx.remember(DUPLICATE_CONTENT, kind="root_cause")
@@ -71,7 +71,7 @@ class TestExactDuplicateIsIdempotent:
         """The duplicate call must not appear to re-date the memory: it is
         a retry, not a re-recording, exactly like `record_conflict`'s
         repeat declaration keeping its original `recorded_at`."""
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
 
         first = cx.remember(DUPLICATE_CONTENT, kind="root_cause")
         time.sleep(0.01)
@@ -81,7 +81,7 @@ class TestExactDuplicateIsIdempotent:
         assert second == first
 
     def test_no_second_canonical_record_is_written(self, tmp_path):
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
 
         cx.remember(DUPLICATE_CONTENT, kind="root_cause")
         cx.remember(DUPLICATE_CONTENT, kind="root_cause")
@@ -91,7 +91,7 @@ class TestExactDuplicateIsIdempotent:
         assert len(cx.state()) == 1
 
     def test_no_second_event_is_appended(self, tmp_path):
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
 
         memory = cx.remember(DUPLICATE_CONTENT, kind="root_cause")
         cx.remember(DUPLICATE_CONTENT, kind="root_cause")
@@ -104,11 +104,11 @@ class TestExactDuplicateIsIdempotent:
         index row either, or the index would drift ahead of canonical
         data -- the precise inconsistency `_index_entity` exists to
         prevent."""
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         cx.remember(DUPLICATE_CONTENT, kind="root_cause")
         cx.remember(DUPLICATE_CONTENT, kind="root_cause")
 
-        connection = sqlite3.connect(cx.path / ".cortex" / "memory.db")
+        connection = sqlite3.connect(cx.path / ".urdyn" / "memory.db")
         try:
             (rows,) = connection.execute(
                 "SELECT COUNT(*) FROM search_index WHERE entity_type = 'memory'"
@@ -118,7 +118,7 @@ class TestExactDuplicateIsIdempotent:
         assert rows == 1
 
     def test_many_repeated_duplicates_stay_safe(self, tmp_path):
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
 
         ids = {cx.remember(DUPLICATE_CONTENT, kind="root_cause").memory_id for _ in range(10)}
 
@@ -126,22 +126,22 @@ class TestExactDuplicateIsIdempotent:
         assert cx._count_memories() == 1
 
     def test_duplicate_is_recognized_after_reopening_the_workspace(self, tmp_path):
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         first = cx.remember(DUPLICATE_CONTENT, kind="root_cause")
 
-        reopened = Cortex.open(tmp_path)
+        reopened = Urdyn.open(tmp_path)
         second = reopened.remember(DUPLICATE_CONTENT, kind="root_cause")
 
         assert second.memory_id == first.memory_id
         assert reopened._count_memories() == 1
 
     def test_duplicate_is_recognized_after_discovery_from_a_subdirectory(self, tmp_path):
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         first = cx.remember(DUPLICATE_CONTENT, kind="root_cause")
         nested = tmp_path / "src" / "deep"
         nested.mkdir(parents=True)
 
-        discovered = Cortex.discover(nested)
+        discovered = Urdyn.discover(nested)
         second = discovered.remember(DUPLICATE_CONTENT, kind="root_cause")
 
         assert second.memory_id == first.memory_id
@@ -150,12 +150,12 @@ class TestExactDuplicateIsIdempotent:
         """Proof that recognition lives in the persisted store, not in any
         per-process or per-object cache: the second write happens in a
         fresh interpreter that has never seen the first one."""
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         first = cx.remember(DUPLICATE_CONTENT, kind="root_cause")
 
         script = (
-            "from cortex_memory import Cortex;"
-            f"cx = Cortex.open({str(tmp_path)!r});"
+            "from urdyn import Urdyn;"
+            f"cx = Urdyn.open({str(tmp_path)!r});"
             f"print(cx.remember({DUPLICATE_CONTENT!r}, kind='root_cause').memory_id)"
         )
         completed = subprocess.run(
@@ -166,7 +166,7 @@ class TestExactDuplicateIsIdempotent:
         assert cx._count_memories() == 1
 
     def test_learn_inherits_the_same_idempotency(self, tmp_path):
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
 
         first = cx.learn("Retries must reuse the original idempotency token.")
         second = cx.learn("Retries must reuse the original idempotency token.")
@@ -182,7 +182,7 @@ class TestExactDuplicateIsIdempotent:
 
 class TestDistinctCanonicalMemoriesAreNotCollapsed:
     def test_same_content_different_kind(self, tmp_path):
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         text = "Retries must reuse the original token"
 
         a = cx.remember(text, kind="root_cause")
@@ -194,7 +194,7 @@ class TestDistinctCanonicalMemoriesAreNotCollapsed:
     def test_same_content_different_epistemic_state(self, tmp_path):
         """An epistemic upgrade is a change of authority, not a retry --
         and similarity must never be what confers authority."""
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         text = "The retry storm was caused by an unbounded backoff."
 
         asserted = cx.remember(text, kind="root_cause", epistemic_state="user_asserted")
@@ -204,7 +204,7 @@ class TestDistinctCanonicalMemoriesAreNotCollapsed:
         assert {m.epistemic_state for m in cx.state()} == {"user_asserted", "inferred"}
 
     def test_same_content_verified_does_not_collapse_onto_user_asserted(self, tmp_path):
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         text = "The connection pool leak is fixed."
         asserted = cx.remember(text, kind="lesson")
         proof = cx.add_evidence("suite green", kind="test_result")
@@ -217,7 +217,7 @@ class TestDistinctCanonicalMemoriesAreNotCollapsed:
         assert verified.epistemic_state == "verified"
 
     def test_same_content_different_supersedes_target(self, tmp_path):
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         old_a = cx.remember("Python 3.11 is required.", kind="environment")
         old_b = cx.remember("Node 18 is required.", kind="environment")
         text = "The toolchain baseline was raised."
@@ -232,7 +232,7 @@ class TestDistinctCanonicalMemoriesAreNotCollapsed:
         assert current == {first.memory_id, second.memory_id}
 
     def test_supersession_history_is_not_rewritten_by_a_later_duplicate(self, tmp_path):
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         old = cx.remember("Python 3.11 is required.", kind="environment")
         new = cx.remember("Python 3.12 is required.", kind="environment", supersedes=old.memory_id)
 
@@ -247,7 +247,7 @@ class TestDistinctCanonicalMemoriesAreNotCollapsed:
         """Idempotency must absorb only an identical retry. A DIFFERENT
         memory superseding an already-superseded target is still the
         error it always was."""
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         old = cx.remember("PostgreSQL was selected.", kind="decision")
         cx.remember("SQLite was selected for V1.", kind="decision", supersedes=old.memory_id)
 
@@ -255,10 +255,10 @@ class TestDistinctCanonicalMemoriesAreNotCollapsed:
             cx.remember("MySQL was selected for V1.", kind="decision", supersedes=old.memory_id)
 
     def test_same_content_different_evidence(self, tmp_path):
-        """New Evidence for the same conclusion is not a retry: Cortex has
+        """New Evidence for the same conclusion is not a retry: Urdyn has
         no evidence-merging concept, so collapsing here would silently
         DISCARD provenance the caller supplied."""
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         text = "Database migration requires a backup."
         ev_a = cx.add_evidence("runbook section 4", kind="file_reference")
         ev_b = cx.add_evidence("incident 2026-03 postmortem", kind="file_reference")
@@ -271,7 +271,7 @@ class TestDistinctCanonicalMemoriesAreNotCollapsed:
         assert second.evidence_ids == (ev_b.evidence_id,)
 
     def test_same_content_additional_evidence_is_not_a_duplicate(self, tmp_path):
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         text = "Database migration requires a backup."
         ev_a = cx.add_evidence("runbook section 4", kind="file_reference")
         ev_b = cx.add_evidence("incident 2026-03 postmortem", kind="file_reference")
@@ -285,7 +285,7 @@ class TestDistinctCanonicalMemoriesAreNotCollapsed:
         """Same content, same Evidence ids, but one call explicitly
         designates that Evidence as SUPPORTING this memory. That
         designation is a canonical assertion (A12.1), not packaging."""
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         text = "The nightly job now completes within the window."
         ev = cx.add_evidence("timing run", kind="command_output")
 
@@ -297,7 +297,7 @@ class TestDistinctCanonicalMemoriesAreNotCollapsed:
         assert supporting.supporting_evidence_ids == (ev.evidence_id,)
 
     def test_same_evidence_in_a_different_order_is_not_a_duplicate(self, tmp_path):
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         text = "Two independent sources agree on the timeout value."
         ev_a = cx.add_evidence("source A", kind="file_reference")
         ev_b = cx.add_evidence("source B", kind="file_reference")
@@ -311,7 +311,7 @@ class TestDistinctCanonicalMemoriesAreNotCollapsed:
         """A17 is exact-equivalence only: no fuzzy matching, no semantic
         deduplication. Two differently-worded memories coexist until some
         future, explicit mechanism says otherwise."""
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
 
         cx.remember("Retries must reuse the same token.", kind="lesson")
         cx.remember("Retry operations should preserve the original idempotency token.", kind="lesson")
@@ -322,7 +322,7 @@ class TestDistinctCanonicalMemoriesAreNotCollapsed:
         """Only CURRENT equivalents collapse. Re-asserting something that
         was superseded is a genuine new claim about now, and gets its own
         record -- without ever resurrecting or rewriting the old one."""
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         original = cx.remember("The staging queue runs a single consumer.", kind="environment")
         cx.remember("The staging queue runs three consumers.", kind="environment", supersedes=original.memory_id)
 
@@ -343,7 +343,7 @@ class TestDistinctCanonicalMemoriesAreNotCollapsed:
 
 
 class TestExactTextEdgeCases:
-    """Cortex records `content` verbatim and normalizes nothing, anywhere.
+    """Urdyn records `content` verbatim and normalizes nothing, anywhere.
     Duplicate detection inherits exactly that: these pairs differ by at
     least one byte, so they are two memories -- documented behaviour, not
     an oversight."""
@@ -363,7 +363,7 @@ class TestExactTextEdgeCases:
         ],
     )
     def test_byte_different_content_stays_distinct(self, tmp_path, first, second):
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
 
         a = cx.remember(first, kind="note")
         b = cx.remember(second, kind="note")
@@ -372,7 +372,7 @@ class TestExactTextEdgeCases:
         assert cx._count_memories() == 2
 
     def test_identical_unicode_content_is_a_duplicate(self, tmp_path):
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         text = "Perché la migrazione è fallita: l'endpoint è già dismesso — 日本語 🎯"
 
         first = cx.remember(text, kind="root_cause")
@@ -382,7 +382,7 @@ class TestExactTextEdgeCases:
         assert cx.state()[0].content == text
 
     def test_identical_multiline_content_is_a_duplicate(self, tmp_path):
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         text = "step one\nstep two\n\tindented\n"
 
         first = cx.remember(text, kind="note")
@@ -391,7 +391,7 @@ class TestExactTextEdgeCases:
         assert second.memory_id == first.memory_id
 
     def test_identical_very_long_content_is_a_duplicate(self, tmp_path):
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         text = "the deployment pipeline stalls on the shared lock " * 2000
 
         first = cx.remember(text, kind="note")
@@ -401,7 +401,7 @@ class TestExactTextEdgeCases:
         assert cx._count_memories() == 1
 
     def test_long_contents_differing_only_at_the_very_end_stay_distinct(self, tmp_path):
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         base = "the deployment pipeline stalls on the shared lock " * 2000
 
         a = cx.remember(base + "A", kind="note")
@@ -410,7 +410,7 @@ class TestExactTextEdgeCases:
         assert a.memory_id != b.memory_id
 
     def test_empty_content_is_still_rejected_not_deduplicated(self, tmp_path):
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
 
         with pytest.raises(ValueError):
             cx.remember("")
@@ -418,7 +418,7 @@ class TestExactTextEdgeCases:
             cx.remember("   \n\t ")
 
     def test_identical_control_character_content_is_a_duplicate(self, tmp_path):
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         text = "Migrations run \x1b[31mbefore\x1b[0m the release\x00\x7f"
 
         first = cx.remember(text, kind="note")
@@ -468,7 +468,7 @@ class TestCli:
         assert "(current)" in timeline_out
 
     def test_duplicate_output_is_terminal_safe_for_hostile_content(self, tmp_path, monkeypatch, capsys):
-        """The duplicate branch prints ids and kinds Cortex validates, not
+        """The duplicate branch prints ids and kinds Urdyn validates, not
         caller text -- but the caller's text is what reached it, so the
         rendering boundary is asserted here too (A14.S)."""
         monkeypatch.chdir(tmp_path)
@@ -505,7 +505,7 @@ def test_concurrent_identical_remembers_produce_one_memory(tmp_path):
     memory write anywhere in sight), untouched by A17 and out of its
     scope. Seeding here keeps this test about the duplicate check rather
     than about that."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     cx.remember("an unrelated pre-existing fact", kind="note")
     barrier = threading.Barrier(4)
     results: list[str] = []
@@ -515,7 +515,7 @@ def test_concurrent_identical_remembers_produce_one_memory(tmp_path):
     def worker():
         try:
             barrier.wait(timeout=10)
-            memory = Cortex.open(tmp_path).remember(DUPLICATE_CONTENT, kind="root_cause")
+            memory = Urdyn.open(tmp_path).remember(DUPLICATE_CONTENT, kind="root_cause")
             with lock:
                 results.append(memory.memory_id)
         except BaseException as exc:  # noqa: BLE001 - reported, not swallowed
@@ -538,7 +538,7 @@ def test_a_rejected_duplicate_leaves_no_partial_state(tmp_path):
     """A recognized duplicate must be all-or-nothing in the other
     direction too: nothing written anywhere, not a memory without an
     event or an event without a memory."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     ev = cx.add_evidence("suite green", kind="test_result")
     first = cx.remember(
         "The pool leak is fixed.", kind="lesson", epistemic_state="verified", supporting_evidence=[ev]
@@ -549,7 +549,7 @@ def test_a_rejected_duplicate_leaves_no_partial_state(tmp_path):
     )
 
     assert second == first
-    connection = sqlite3.connect(cx.path / ".cortex" / "memory.db")
+    connection = sqlite3.connect(cx.path / ".urdyn" / "memory.db")
     try:
         (memories,) = connection.execute("SELECT COUNT(*) FROM memories").fetchone()
         (events,) = connection.execute("SELECT COUNT(*) FROM events").fetchone()
@@ -564,10 +564,10 @@ def test_duplicate_lookup_does_not_scan_linearly_in_python(tmp_path):
     holding ~1k memories must not cost dramatically more than one against
     an almost empty store. A Python-side scan of every memory (each with
     its evidence links materialized) would not survive this bound."""
-    small = Cortex.init(tmp_path / "small", "dev")
+    small = Urdyn.init(tmp_path / "small", "dev")
     small.remember(DUPLICATE_CONTENT, kind="root_cause")
 
-    big = Cortex.init(tmp_path / "big", "dev")
+    big = Urdyn.init(tmp_path / "big", "dev")
     big.remember(DUPLICATE_CONTENT, kind="root_cause")
     for i in range(1000):
         big.remember(f"unrelated operational fact number {i}", kind="environment")
@@ -601,7 +601,7 @@ class TestSemanticFalseAmbiguityRegression:
     """
 
     def test_duplicate_no_longer_creates_a_false_ambiguity(self, tmp_path, fake_semantic):  # noqa: F811
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         cx.remember("alpha topic explained in the original wording", kind="root_cause")
         cx.remember("alpha topic explained in the original wording", kind="root_cause")
         cx.semantic_setup()
@@ -618,7 +618,7 @@ class TestSemanticFalseAmbiguityRegression:
         policy working as designed -- the A17 fix is that identical
         CONTENT no longer produces that situation, not that the policy
         changed."""
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         # same "alpha" concept for the fake encoder, different canonical text
         cx.remember("alpha topic explained in the original wording", kind="root_cause")
         cx.remember("alpha topic explained in slightly other wording", kind="root_cause")
@@ -630,7 +630,7 @@ class TestSemanticFalseAmbiguityRegression:
         assert result.root_causes == ()
 
     def test_semantic_index_receives_one_vector_per_canonical_memory(self, tmp_path, fake_semantic):  # noqa: F811
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         cx.remember(DUPLICATE_CONTENT, kind="root_cause")
         cx.remember(DUPLICATE_CONTENT, kind="root_cause")
 
@@ -658,7 +658,7 @@ class TestDuplicateLookupNeverBypassesWriteBoundaryValidation:
     current write admissibility of a new request that merely resembles
     it. These tests inject exactly that kind of legacy row directly (the
     same technique `test_evidence_support.py`'s A12.1.1 write-boundary
-    tests already use to bypass `Cortex.remember()`'s own gate and hit
+    tests already use to bypass `Urdyn.remember()`'s own gate and hit
     `MemoryStore.add()` head-on), then prove a matching request is still
     rejected by the SAME validation the baseline (pre-A17) codebase
     applies unconditionally."""
@@ -667,7 +667,7 @@ class TestDuplicateLookupNeverBypassesWriteBoundaryValidation:
     def _inject_legacy_verified_memory(cx, *, content, kind="lesson", supporting_evidence_id=None):
         """Directly write a `memories` row shaped exactly like a pre-A12.1
         verified memory: `epistemic_state='verified'`,
-        `supporting_evidence_ids=()` by default. `Cortex.remember()`
+        `supporting_evidence_ids=()` by default. `Urdyn.remember()`
         itself refuses to construct this shape (that is the gate A12.1
         added) -- this bypasses it on purpose, the same way A12.1.1's own
         tests do, to simulate data that already existed before that gate
@@ -681,15 +681,15 @@ class TestDuplicateLookupNeverBypassesWriteBoundaryValidation:
         row could have neither property enforced)."""
         import uuid
 
-        from cortex_memory._event import EVENT_KIND_MEMORY_RECORDED
-        from cortex_memory._store import MemoryStore
+        from urdyn._event import EVENT_KIND_MEMORY_RECORDED
+        from urdyn._store import MemoryStore
 
         with MemoryStore.create_or_open(cx._db_path):
             pass  # materialize memory.db (and its schema) before hand-inserting
 
         legacy_id = uuid.uuid4().hex
         recorded_at = dt.datetime.now(dt.timezone.utc)
-        connection = sqlite3.connect(cx.path / ".cortex" / "memory.db")
+        connection = sqlite3.connect(cx.path / ".urdyn" / "memory.db")
         try:
             connection.execute(
                 "INSERT INTO memories (memory_id, content, kind, epistemic_state, recorded_at, supersedes) "
@@ -716,13 +716,13 @@ class TestDuplicateLookupNeverBypassesWriteBoundaryValidation:
         would fail on the baseline must still fail, even though a
         matching legacy row already exists and would otherwise be
         recognized as a current equivalent."""
-        from cortex_memory._store import MemoryStore
+        from urdyn._store import MemoryStore
 
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         legacy_id, legacy_recorded_at = self._inject_legacy_verified_memory(
             cx, content="legacy verified claim", kind="lesson"
         )
-        connection = sqlite3.connect(cx.path / ".cortex" / "memory.db")
+        connection = sqlite3.connect(cx.path / ".urdyn" / "memory.db")
         try:
             (memories_before,) = connection.execute("SELECT COUNT(*) FROM memories").fetchone()
             (events_before,) = connection.execute("SELECT COUNT(*) FROM events").fetchone()
@@ -732,8 +732,8 @@ class TestDuplicateLookupNeverBypassesWriteBoundaryValidation:
         finally:
             connection.close()
 
-        from cortex_memory._memory import Memory
-        from cortex_memory._event import EVENT_KIND_MEMORY_RECORDED, Event
+        from urdyn._memory import Memory
+        from urdyn._event import EVENT_KIND_MEMORY_RECORDED, Event
 
         forged = Memory(
             memory_id="f" * 32,
@@ -757,7 +757,7 @@ class TestDuplicateLookupNeverBypassesWriteBoundaryValidation:
 
         # zero side effects: the rejected write must not have touched
         # anything, and the legacy row itself must be exactly as it was
-        connection = sqlite3.connect(cx.path / ".cortex" / "memory.db")
+        connection = sqlite3.connect(cx.path / ".urdyn" / "memory.db")
         try:
             (memories_after,) = connection.execute("SELECT COUNT(*) FROM memories").fetchone()
             (events_after,) = connection.execute("SELECT COUNT(*) FROM events").fetchone()
@@ -784,12 +784,12 @@ class TestDuplicateLookupNeverBypassesWriteBoundaryValidation:
 
     def test_verified_write_via_remember_stays_rejected_despite_a_legacy_lookalike(self, tmp_path):
         """Same property, exercised through the public API rather than
-        `MemoryStore.add()` directly: `Cortex.remember()`'s own gate
+        `MemoryStore.add()` directly: `Urdyn.remember()`'s own gate
         already rejects this (see `test_a12_1...` in
         `test_evidence_support.py`), but this proves the store-level fix
         did not accidentally make the outcome DEPEND on which gate runs
         first -- both must reject it, for the same reason."""
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         self._inject_legacy_verified_memory(cx, content="another legacy claim", kind="lesson")
 
         with pytest.raises(ValueError, match="supporting Evidence"):
@@ -803,11 +803,11 @@ class TestDuplicateLookupNeverBypassesWriteBoundaryValidation:
         must be equally immune. Without this, `_evidence_kind` would also
         be reachable with an unvalidated evidence_id if the ordering fix
         were only half-applied (see the docstring note on `add()`)."""
-        from cortex_memory._store import MemoryStore
-        from cortex_memory._memory import Memory
-        from cortex_memory._event import EVENT_KIND_MEMORY_RECORDED, Event
+        from urdyn._store import MemoryStore
+        from urdyn._memory import Memory
+        from urdyn._event import EVENT_KIND_MEMORY_RECORDED, Event
 
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         opinion = cx.add_evidence("I think this works.", kind="user_statement")
         # the legacy row is a genuine equivalence target: same content/kind/
         # epistemic_state AND same evidence_ids/supporting_evidence_ids as
@@ -852,7 +852,7 @@ class TestValidDuplicateStillIdempotentAfterTheFix:
     blocker by simply disabling duplicate detection, this would fail."""
 
     def test_valid_verified_memory_retry_is_idempotent(self, tmp_path):
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         proof = cx.add_evidence("suite green", kind="test_result")
 
         first = cx.remember(
@@ -867,7 +867,7 @@ class TestValidDuplicateStillIdempotentAfterTheFix:
         assert len(_events(cx)) == 1
 
     def test_valid_plain_memory_retry_is_still_idempotent(self, tmp_path):
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
 
         first = cx.remember(DUPLICATE_CONTENT, kind="root_cause")
         second = cx.remember(DUPLICATE_CONTENT, kind="root_cause")
@@ -882,7 +882,7 @@ class TestValidDuplicateStillIdempotentAfterTheFix:
         duplicate lookup, or this legitimate idempotent retry would be
         misreported as 'already superseded' (see the A17.1 docstring note
         on `MemoryStore.add`)."""
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         old = cx.remember("Python 3.11 is required.", kind="environment")
         new = cx.remember("Python 3.12 is required.", kind="environment", supersedes=old.memory_id)
 
@@ -897,7 +897,7 @@ class TestValidDuplicateStillIdempotentAfterTheFix:
         wraps validation + duplicate lookup + insert as one unit, so
         reordering what happens INSIDE the transaction must not have
         reopened the check-then-insert race between processes."""
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         cx.remember("concurrency seed", kind="note")
         barrier = threading.Barrier(4)
         results: list[str] = []
@@ -907,7 +907,7 @@ class TestValidDuplicateStillIdempotentAfterTheFix:
         def worker():
             try:
                 barrier.wait(timeout=10)
-                memory = Cortex.open(tmp_path).remember(DUPLICATE_CONTENT, kind="root_cause")
+                memory = Urdyn.open(tmp_path).remember(DUPLICATE_CONTENT, kind="root_cause")
                 with lock:
                     results.append(memory.memory_id)
             except BaseException as exc:  # noqa: BLE001 - reported, not swallowed

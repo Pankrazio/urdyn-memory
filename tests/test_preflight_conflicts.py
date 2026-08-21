@@ -1,10 +1,10 @@
 """A14.1: `Preflight.open_conflicts` -- surfacing OPEN canonical `Conflict`
 relations (A13) through `preflight()`, so an agent can never be shown a
-Memory as individually authoritative without also being told Cortex
+Memory as individually authoritative without also being told Urdyn
 knows it is contradicted.
 
 Before A14.1, `cx.preflight(task)` could return two `verified` Lessons
-that directly contradict each other, with no signal that Cortex had
+that directly contradict each other, with no signal that Urdyn had
 already recorded `record_conflict(A, B)` -- FALSE OPERATIONAL CERTAINTY.
 This file locks down:
 
@@ -31,11 +31,11 @@ import datetime as dt
 import numpy as np
 import pytest
 
-from cortex_memory import Cortex, CortexStorageError, Preflight, PreflightConflict
-from cortex_memory._conflict import Conflict
-from cortex_memory._memory import Memory
-from cortex_memory._preflight import build_preflight
-from cortex_memory._store import MemoryStore
+from urdyn import Urdyn, UrdynStorageError, Preflight, PreflightConflict
+from urdyn._conflict import Conflict
+from urdyn._memory import Memory
+from urdyn._preflight import build_preflight
+from urdyn._store import MemoryStore
 
 # ---------------------------------------------------------------------------
 # helpers
@@ -90,7 +90,7 @@ class _FakeStaticModel:
 
 @pytest.fixture
 def fake_semantic(monkeypatch):
-    import cortex_memory._semantic as semantic
+    import urdyn._semantic as semantic
 
     fake_model = _FakeStaticModel()
     monkeypatch.setattr(semantic, "load_model_for_setup", lambda model_id=None: fake_model)
@@ -105,7 +105,7 @@ def fake_semantic(monkeypatch):
 
 
 def test_open_conflicts_field_defaults_to_empty_tuple_on_a_workspace_with_no_conflicts(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
 
     result = cx.preflight("some task with no recorded experience at all")
 
@@ -113,7 +113,7 @@ def test_open_conflicts_field_defaults_to_empty_tuple_on_a_workspace_with_no_con
 
 
 def test_preflight_with_only_a_relevant_conflict_is_not_empty(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     a = _verified(cx, _LESSON_A)
     b = cx.learn(_LESSON_B)  # unverified candidate: kept out of every other field
     cx.record_conflict(a, b)
@@ -136,7 +136,7 @@ def test_preflight_with_only_a_relevant_conflict_is_not_empty(tmp_path):
 
 
 def test_north_star_two_verified_lessons_in_open_conflict(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     a = _verified(cx, _LESSON_A)
     b = _verified(cx, _LESSON_B)
     task = "Fix the retry idempotency key handling"
@@ -163,7 +163,7 @@ def test_north_star_two_verified_lessons_in_open_conflict(tmp_path):
 
 
 def test_verified_lessons_remain_verified_when_part_of_a_conflict(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     a = _verified(cx, _LESSON_A)
     b = _verified(cx, _LESSON_B)
     cx.record_conflict(a, b)
@@ -209,11 +209,11 @@ def test_conflict_membership_never_admits_a_memory_into_an_authority_field(tmp_p
     `open_conflicts` still carries both Memories in its derived view.
     Authority-field admission and conflict-participant visibility are
     different questions with different answers here, by design."""
-    from cortex_memory._relevance import is_relevant, memory_search_text, tokens
+    from urdyn._relevance import is_relevant, memory_search_text, tokens
 
     assert is_relevant(frozenset(tokens(_TASK_WEBHOOK)), memory_search_text(_LESSON_B)) is False
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     a = _verified(cx, _LESSON_A)
     b = _verified(cx, _LESSON_B)
 
@@ -247,7 +247,7 @@ def test_exact_field_equality_before_and_after_conflict_across_kinds(tmp_path, b
     """The before/after snapshot from `test_exact_non_interference_of_all_existing_fields`,
     repeated across the four kind combinations exercised throughout this file.
     The only field allowed to differ is `open_conflicts`."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
 
     if build == "lesson_lesson":
         task = _TASK_WEBHOOK
@@ -289,7 +289,7 @@ def test_one_sided_participant_relevance_is_sufficient(tmp_path):
     directly) -- the conflict must still surface, because a
     Memory shown as authoritative (A, in verified_lessons) must not hide
     that it is contradicted."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     a = _verified(cx, _LESSON_A)
     b = cx.learn(_LESSON_B)  # kept a candidate: excluded from verified_lessons
     cx.record_conflict(a, b)
@@ -308,7 +308,7 @@ def test_lexical_participant_relevance(tmp_path):
     evidence rescue), so the conflict's own appearance can only be
     explained by lexical relevance of the (verified, still-shown)
     participant."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     a = _verified(cx, _LESSON_A)
     b = cx.learn(_LESSON_B)
     cx.record_conflict(a, b)
@@ -324,7 +324,7 @@ def test_fts_participant_relevance_without_lexical_majority(tmp_path):
     candidate is short. Verified inline that plain `is_relevant` misses
     it (real baseline miss, not a query picked to already work) while
     `preflight()` still surfaces the conflict through FTS widening."""
-    from cortex_memory._relevance import is_relevant, memory_search_text, tokens
+    from urdyn._relevance import is_relevant, memory_search_text, tokens
 
     task = (
         "Could someone look into whether it is safe for us to retry sending the "
@@ -333,7 +333,7 @@ def test_fts_participant_relevance_without_lexical_majority(tmp_path):
     content_a = "Retrying the webhook delivery to the customer endpoint is safe."
     assert is_relevant(frozenset(tokens(task)), memory_search_text(content_a)) is False
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     a = _verified(cx, content_a)
     b = cx.learn("Retrying can duplicate the customer's charge under contention.")
     cx.record_conflict(a, b)
@@ -354,7 +354,7 @@ def test_semantic_admission_inherited_through_verified_lessons(tmp_path, fake_se
     EXISTING semantic channel (no lexical/FTS overlap at all) must carry
     its conflict along -- with zero new semantic call for the conflict
     itself (see the next test)."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     ev = cx.add_evidence("observed failure", kind="error_observation")
     a = _verified(cx, "alpha")  # no lexical overlap with the query below
     b = cx.learn("a completely different unrelated statement", evidence=[ev])
@@ -370,7 +370,7 @@ def test_semantic_admission_inherited_through_verified_lessons(tmp_path, fake_se
 
 
 def test_semantic_admission_inherited_through_root_causes(tmp_path, fake_semantic):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     ev = cx.add_evidence("observed failure", kind="error_observation")
     a = cx.remember("alpha", kind="root_cause", epistemic_state="inferred", evidence=[ev])
     b = cx.learn("a completely different unrelated statement")
@@ -386,27 +386,27 @@ def test_semantic_admission_inherited_through_root_causes(tmp_path, fake_semanti
 
 
 def test_zero_new_semantic_calls_are_made_for_conflicts(tmp_path, fake_semantic, monkeypatch):
-    """Proof, not inference: patch `Cortex._semantic_widen` to record every
+    """Proof, not inference: patch `Urdyn._semantic_widen` to record every
     call it receives, then run a real `preflight()` over a workspace with
     an open conflict whose participants are NOT in any other field. If
     A14.1 introduced a dedicated conflict-only semantic pool, this would
     observe an extra call restricted to the conflict's participant ids;
     it must not.
     """
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     a = cx.remember("An environment fact about alpha.", kind="environment")
     b = cx.remember("A different environment fact about alpha.", kind="environment")
     cx.record_conflict(a, b)
     cx.semantic_setup()
 
     calls = []
-    original = Cortex._semantic_widen
+    original = Urdyn._semantic_widen
 
     def _tracking_widen(self, query_text, entity_type, *, eligible_ids=None):
         calls.append(eligible_ids)
         return original(self, query_text, entity_type, eligible_ids=eligible_ids)
 
-    monkeypatch.setattr(Cortex, "_semantic_widen", _tracking_widen)
+    monkeypatch.setattr(Urdyn, "_semantic_widen", _tracking_widen)
 
     cx.preflight("totally unrelated wording that still somehow concerns alpha topics")
 
@@ -423,7 +423,7 @@ def test_exact_non_interference_of_all_existing_fields(tmp_path):
     """Snapshot every existing field's ids AND order before any Conflict
     exists, then again after adding several -- they must be byte-for-byte
     identical. Not a count comparison."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     ev = cx.add_evidence("pytest run", kind="test_result")
     l1 = _verified(cx, "Database migrations run before the new deployment starts.")
     l2 = _verified(cx, "Database migrations run after the new deployment is already live.")
@@ -468,7 +468,7 @@ def test_exact_non_interference_of_all_existing_fields(tmp_path):
     ],
 )
 def test_invariant_membership_does_not_make_a_conflict_relevant(tmp_path, task):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     inv = cx.remember("Never write to the production database from a test run.", kind="invariant")
     dec = cx.remember("We decided tests may write to a production replica.", kind="decision")
     cx.record_conflict(inv, dec)
@@ -483,7 +483,7 @@ def test_decision_versus_invariant_relevant_case(tmp_path):
     """Same kinds as the contagion test above, but here the DECISION side
     is genuinely lexically relevant to the task on its own -- proving the
     conflict surfaces because of real relevance, not invariant contagion."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     inv = cx.remember("Retry budget must never exceed one attempt.", kind="invariant")
     dec = cx.remember(
         "We decided to change the retry budget of the delivery worker to three attempts.",
@@ -508,7 +508,7 @@ def test_invariant_content_itself_relevant_makes_the_conflict_appear(tmp_path):
     is never REQUIRED for it to appear in `invariants`. No kind-specific
     special case exists in the code: this is `_memory_matches` applied to
     an invariant participant exactly like any other kind."""
-    from cortex_memory._relevance import is_relevant, memory_search_text, tokens
+    from urdyn._relevance import is_relevant, memory_search_text, tokens
 
     task = "Enforce the retry budget limit of one attempt"
     inv_content = "Retry budget must never exceed one attempt."
@@ -517,7 +517,7 @@ def test_invariant_content_itself_relevant_makes_the_conflict_appear(tmp_path):
     assert is_relevant(qt, memory_search_text(inv_content)) is True
     assert is_relevant(qt, memory_search_text(dec_content)) is False
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     inv = cx.remember(inv_content, kind="invariant")
     dec = cx.remember(dec_content, kind="decision")
     cx.record_conflict(inv, dec)
@@ -538,7 +538,7 @@ def test_invariant_content_itself_relevant_makes_the_conflict_appear(tmp_path):
 def test_environment_versus_environment_relevant_case(tmp_path):
     """Environment is not transported by ANY other Preflight field -- the
     derived view is the only way its content becomes visible."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     e1 = cx.remember("The staging queue worker runs a single retry consumer.", kind="environment")
     e2 = cx.remember("The staging queue worker runs three retry consumers.", kind="environment")
     cx.record_conflict(e1, e2)
@@ -556,7 +556,7 @@ def test_environment_versus_environment_relevant_case(tmp_path):
 
 
 def test_cross_kind_root_cause_versus_lesson(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     rc = cx.remember(
         "The retry loop reuses a stale idempotency key.", kind="root_cause", epistemic_state="inferred"
     )
@@ -571,7 +571,7 @@ def test_cross_kind_root_cause_versus_lesson(tmp_path):
 
 
 def test_participant_not_transported_by_any_field_is_still_readable_in_the_view(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     e1 = cx.remember("The staging queue worker runs a single retry consumer.", kind="environment")
     e2 = cx.remember("The staging queue worker runs three retry consumers.", kind="environment")
     cx.record_conflict(e1, e2)
@@ -612,7 +612,7 @@ def test_build_preflight_raises_on_a_conflict_with_a_missing_participant():
         recorded_at=dt.datetime.now(dt.timezone.utc),
     )
 
-    with pytest.raises(CortexStorageError):
+    with pytest.raises(UrdynStorageError):
         build_preflight(
             "some task",
             attempts=[],
@@ -642,7 +642,7 @@ def test_missing_participant_check_runs_before_relevance_filtering():
         recorded_at=dt.datetime.now(dt.timezone.utc),
     )
 
-    with pytest.raises(CortexStorageError):
+    with pytest.raises(UrdynStorageError):
         build_preflight(
             "Adjust the CSS grid spacing on the settings page",
             attempts=[],
@@ -660,7 +660,7 @@ def test_missing_participant_check_runs_before_relevance_filtering():
 
 
 def test_preflight_conflict_memories_follow_canonical_memory_ids_order(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     a = _verified(cx, _LESSON_A)
     b = _verified(cx, _LESSON_B)
     # Declare in reverse call order -- A13's canonical_pair normalizes it.
@@ -675,7 +675,7 @@ def test_preflight_conflict_memories_follow_canonical_memory_ids_order(tmp_path)
 
 
 def test_duplicate_and_reverse_declaration_still_produce_one_view(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     a = _verified(cx, _LESSON_A)
     b = _verified(cx, _LESSON_B)
     cx.record_conflict(a, b)
@@ -693,7 +693,7 @@ def test_duplicate_and_reverse_declaration_still_produce_one_view(tmp_path):
 
 
 def test_two_relevant_conflicts_both_appear(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     a = _verified(cx, _LESSON_A)
     b = _verified(cx, _LESSON_B)
     rc = cx.remember(
@@ -717,7 +717,7 @@ def test_two_relevant_conflicts_both_appear(tmp_path):
 
 
 def test_relevant_and_irrelevant_conflict_only_relevant_one_shown(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     a = _verified(cx, _LESSON_A)
     b = _verified(cx, _LESSON_B)
     p1 = cx.remember("Python runtime version 3.11 is required by the parser.", kind="environment")
@@ -733,7 +733,7 @@ def test_relevant_and_irrelevant_conflict_only_relevant_one_shown(tmp_path):
 
 
 def test_same_participant_in_two_conflicts_shows_both(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     a = _verified(cx, _LESSON_A)
     b = _verified(cx, _LESSON_B)
     c = _verified(cx, "Retry of the webhook delivery is safe only behind a lock.")
@@ -777,7 +777,7 @@ def test_shared_participant_python_representation_uses_one_object_not_copies(tmp
     SAME object (`id()` identity), never a fresh copy, so N conflicts
     sharing a participant cost N small tuples, not N duplicated Memory
     payloads."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     evidence = cx.add_evidence(f"confirmed: {_LESSON_A}", kind="user_confirmation")
     a = cx.learn(_LESSON_A, verified=True, supporting_evidence=[evidence])
     others = [cx.remember(f"unrelated fact number {i}", kind="environment") for i in range(8)]
@@ -808,13 +808,13 @@ def test_cli_output_size_grows_linearly_with_shared_participant_conflict_count(t
     share one participant. Compares two N's and checks the ratio, rather
     than asserting an absolute size -- the property under test is the
     TREND, not a byte-count SLA."""
-    from cortex_memory._cli import main
+    from urdyn._cli import main
 
     def _build_and_render(n: int) -> str:
         d = tmp_path / f"n{n}"
         d.mkdir()
         monkeypatch.chdir(d)
-        cx = Cortex.init(d, "dev")
+        cx = Urdyn.init(d, "dev")
         evidence = cx.add_evidence(f"confirmed: {_LESSON_A}", kind="user_confirmation")
         a = cx.learn(_LESSON_A, verified=True, supporting_evidence=[evidence])
         for i in range(n):
@@ -845,7 +845,7 @@ def test_result_and_query_count_do_not_blow_up_as_shared_participant_conflicts_g
     for n in (10, 100, 500):
         d = tmp_path / f"scale_{n}"
         d.mkdir()
-        cx = Cortex.init(d, "dev")
+        cx = Urdyn.init(d, "dev")
         evidence = cx.add_evidence(f"confirmed: {_LESSON_A}", kind="user_confirmation")
         a = cx.learn(_LESSON_A, verified=True, supporting_evidence=[evidence])
         for i in range(n):
@@ -873,7 +873,7 @@ def test_result_and_query_count_do_not_blow_up_as_shared_participant_conflicts_g
 
 
 def test_invalidation_closes_the_conflict_out_of_preflight(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     a = _verified(cx, _LESSON_A)
     b = _verified(cx, _LESSON_B)
     cx.record_conflict(a, b)
@@ -890,7 +890,7 @@ def test_invalidation_closes_the_conflict_out_of_preflight(tmp_path):
 
 
 def test_supersession_closes_the_conflict_out_of_preflight(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     a = _verified(cx, _LESSON_A)
     b = _verified(cx, _LESSON_B)
     cx.record_conflict(a, b)
@@ -910,7 +910,7 @@ def test_supersession_closes_the_conflict_out_of_preflight(tmp_path):
 
 
 def test_historical_conflict_never_shown_in_preflight(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     a = _verified(cx, _LESSON_A)
     b = _verified(cx, _LESSON_B)
     cx.record_conflict(a, b)
@@ -933,12 +933,12 @@ def test_historical_conflict_never_shown_in_preflight(tmp_path):
 
 
 def test_open_conflicts_survive_restart(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     a = _verified(cx, _LESSON_A)
     b = _verified(cx, _LESSON_B)
     cx.record_conflict(a, b)
 
-    reopened = Cortex.open(tmp_path)
+    reopened = Urdyn.open(tmp_path)
     result = reopened.preflight(_TASK_WEBHOOK)
 
     assert len(result.open_conflicts) == 1
@@ -954,9 +954,9 @@ def test_open_conflicts_survive_restart(tmp_path):
 def test_evidence_provenance_rescue_carries_its_conflict(tmp_path):
     """A root cause irrelevant on its own wording, rescued into
     `root_causes` only because it shares Evidence with a relevant failed
-    Attempt, must still carry its conflict -- Cortex must not show a
+    Attempt, must still carry its conflict -- Urdyn must not show a
     claim while hiding that it knows the claim is contested."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     evidence = cx.add_evidence("stack trace: KeyError in retry loop", kind="error_observation")
     cx.record_attempt(
         task="Fix the retry loop key error in the worker",
@@ -986,7 +986,7 @@ def test_evidence_shared_but_attempt_not_relevant_is_a_negative_control(tmp_path
     """Same shared-evidence shape, but the Attempt (and thus the rescue)
     is irrelevant to the task being asked about -- the conflict must not
     appear."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     evidence = cx.add_evidence("stack trace: KeyError in retry loop", kind="error_observation")
     cx.record_attempt(
         task="Fix the retry loop key error in the worker",
@@ -1021,7 +1021,7 @@ class _QueryCounter:
     its OWN `MemoryStore`/connection via `MemoryStore.open_if_exists` and
     installed `sqlite3.Connection.set_trace_callback` on THAT connection,
     then called `cx.preflight(...)` expecting it to share the trace.
-    It does not: `Cortex.preflight()` opens its OWN separate connection
+    It does not: `Urdyn.preflight()` opens its OWN separate connection
     internally (`MemoryStore.open_if_exists(self._db_path)` inside
     `_workspace.py`), so the traced connection was never the one
     `preflight()` actually used -- every count silently came back 0, and
@@ -1056,7 +1056,7 @@ def test_preflight_query_count_does_not_grow_with_conflict_count(tmp_path):
     for label, memory_count, conflict_count in [("C0", 60, 0), ("C_many", 60, 25)]:
         d = tmp_path / label
         d.mkdir()
-        cx = Cortex.init(d, "dev")
+        cx = Urdyn.init(d, "dev")
         memories = [
             cx.remember(f"operational fact number {i} about the delivery worker queue depth", kind="environment")
             for i in range(memory_count)
@@ -1110,11 +1110,11 @@ class TestTimelinePartitioningEquivalence:
                 assert [m.memory_id for m in old] == [m.memory_id for m in new], kind
 
     def test_empty_workspace(self, tmp_path):
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         self._assert_equivalent_for_all_kinds(cx)
 
     def test_mixed_kinds(self, tmp_path):
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         cx.remember("a root cause", kind="root_cause", epistemic_state="inferred")
         cx.learn("a lesson")
         cx.remember("an invariant", kind="invariant")
@@ -1123,19 +1123,19 @@ class TestTimelinePartitioningEquivalence:
         self._assert_equivalent_for_all_kinds(cx)
 
     def test_superseded_memory(self, tmp_path):
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         original = cx.remember("an environment fact", kind="environment")
         cx.remember("an updated environment fact", kind="environment", supersedes=original.memory_id)
         self._assert_equivalent_for_all_kinds(cx)
 
     def test_invalidations(self, tmp_path):
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         lesson = _verified(cx, "a verified lesson")
         cx.remember("withdrawn", kind="invalidation", supersedes=lesson.memory_id)
         self._assert_equivalent_for_all_kinds(cx)
 
     def test_recorded_at_tie(self, tmp_path):
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         store = MemoryStore.open_if_exists(cx._db_path)
         # Two memories recorded through the public API in immediate
         # succession are close enough in practice; the ordering guarantee
@@ -1148,10 +1148,10 @@ class TestTimelinePartitioningEquivalence:
         self._assert_equivalent_for_all_kinds(cx)
 
     def test_reopen(self, tmp_path):
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         cx.remember("a root cause", kind="root_cause", epistemic_state="inferred")
         cx.learn("a lesson")
-        reopened = Cortex.open(tmp_path)
+        reopened = Urdyn.open(tmp_path)
         self._assert_equivalent_for_all_kinds(reopened)
 
     def test_legacy_migrated_workspace(self, tmp_path):
@@ -1163,7 +1163,7 @@ class TestTimelinePartitioningEquivalence:
         migration history, not just for rows this session wrote itself."""
         from test_migration_v5 import _build_v4_database
 
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         _build_v4_database(cx._db_path, content="a legacy verified lesson", kind="lesson")
         _build_v4_database(cx._db_path, content="a legacy root cause", kind="root_cause")
 
@@ -1171,7 +1171,7 @@ class TestTimelinePartitioningEquivalence:
         self._assert_equivalent_for_all_kinds(cx)
 
     def test_copied_workspace(self, tmp_path):
-        """The SAME `.cortex` directory, opened from a
+        """The SAME `.urdyn` directory, opened from a
         DIFFERENT path after a filesystem copy (the same scenario A13's
         own `test_conflict_survives_a_copied_workspace` exercises for
         conflicts specifically)."""
@@ -1179,14 +1179,14 @@ class TestTimelinePartitioningEquivalence:
 
         source = tmp_path / "source"
         source.mkdir()
-        cx = Cortex.init(source, "dev")
+        cx = Urdyn.init(source, "dev")
         cx.remember("a root cause", kind="root_cause", epistemic_state="inferred")
         cx.learn("a lesson")
         cx.remember("an environment fact", kind="environment")
 
         destination = tmp_path / "destination"
         shutil.copytree(source, destination)
-        copied = Cortex.open(destination)
+        copied = Urdyn.open(destination)
 
         self._assert_equivalent_for_all_kinds(copied)
 
@@ -1194,14 +1194,14 @@ class TestTimelinePartitioningEquivalence:
         """`timeline(None)` still runs `_row_to_memory`'s
         validation on every row, exactly like `timeline(kind)` did per
         kind -- so a corrupted row must still surface as
-        `CortexStorageError` through `preflight()`, never silently
+        `UrdynStorageError` through `preflight()`, never silently
         dropped or mispartitioned by kind. Same corruption technique as
         `test_storage_safety.py::test_corrupted_kind_value_is_rejected_explicitly`."""
         import sqlite3
 
-        from cortex_memory import CortexStorageError
+        from urdyn import UrdynStorageError
 
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         cx.remember("a memory")
 
         connection = sqlite3.connect(cx._db_path)
@@ -1209,14 +1209,14 @@ class TestTimelinePartitioningEquivalence:
         connection.commit()
         connection.close()
 
-        with pytest.raises(CortexStorageError):
+        with pytest.raises(UrdynStorageError):
             cx.preflight("any task at all")
 
     def test_full_preflight_result_is_unaffected_by_the_partitioning_change(self, tmp_path):
         """End-to-end version of the same equivalence: the actual
         `Preflight` result must match what the four separate
         `timeline(kind)` reads would have produced."""
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         ev = cx.add_evidence("pytest run", kind="test_result")
         rc = cx.remember(
             "The retry loop reuses a stale idempotency key.",
@@ -1240,10 +1240,10 @@ class TestTimelinePartitioningEquivalence:
 
 
 def test_cli_open_conflicts_section_absent_when_no_conflict(tmp_path, monkeypatch, capsys):
-    from cortex_memory._cli import main
+    from urdyn._cli import main
 
     monkeypatch.chdir(tmp_path)
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     _verified(cx, _LESSON_A)
 
     exit_code = main(["preflight", _TASK_WEBHOOK])
@@ -1254,10 +1254,10 @@ def test_cli_open_conflicts_section_absent_when_no_conflict(tmp_path, monkeypatc
 
 
 def test_cli_renders_open_conflicts_section_with_participant_content(tmp_path, monkeypatch, capsys):
-    from cortex_memory._cli import main
+    from urdyn._cli import main
 
     monkeypatch.chdir(tmp_path)
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     a = _verified(cx, _LESSON_A)
     b = cx.learn(_LESSON_B)
     cx.record_conflict(a, b)
@@ -1279,18 +1279,18 @@ def test_cli_renders_open_conflicts_section_with_participant_content(tmp_path, m
 
 def test_cli_does_not_perform_a_second_lookup_for_conflicts(tmp_path, monkeypatch, capsys):
     """The CLI must render straight from `Preflight.open_conflicts`, never
-    re-querying storage. Patch `Cortex.state`/`Cortex.timeline`/
-    `Cortex.open_conflicts` to explode if called AFTER `preflight()`
+    re-querying storage. Patch `Urdyn.state`/`Urdyn.timeline`/
+    `Urdyn.open_conflicts` to explode if called AFTER `preflight()`
     returns, and confirm rendering still succeeds."""
-    from cortex_memory._cli import main
+    from urdyn._cli import main
 
     monkeypatch.chdir(tmp_path)
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     a = _verified(cx, _LESSON_A)
     b = cx.learn(_LESSON_B)
     cx.record_conflict(a, b)
 
-    original_preflight = Cortex.preflight
+    original_preflight = Urdyn.preflight
     called_after_preflight = {"flag": False}
 
     def _tripwire(self, *a_, **kw):
@@ -1303,10 +1303,10 @@ def test_cli_does_not_perform_a_second_lookup_for_conflicts(tmp_path, monkeypatc
         called_after_preflight["flag"] = True
         return result
 
-    monkeypatch.setattr(Cortex, "preflight", _tracking_preflight)
-    monkeypatch.setattr(Cortex, "state", _tripwire)
-    monkeypatch.setattr(Cortex, "timeline", _tripwire)
-    monkeypatch.setattr(Cortex, "open_conflicts", _tripwire)
+    monkeypatch.setattr(Urdyn, "preflight", _tracking_preflight)
+    monkeypatch.setattr(Urdyn, "state", _tripwire)
+    monkeypatch.setattr(Urdyn, "timeline", _tripwire)
+    monkeypatch.setattr(Urdyn, "open_conflicts", _tripwire)
 
     exit_code = main(["preflight", _TASK_WEBHOOK])
 
@@ -1316,11 +1316,11 @@ def test_cli_does_not_perform_a_second_lookup_for_conflicts(tmp_path, monkeypatc
 
 
 def test_cli_conflict_content_uses_terminal_safe_text(tmp_path, monkeypatch, capsys):
-    from cortex_memory._cli import main
+    from urdyn._cli import main
     from test_terminal_safety import assert_terminal_safe
 
     monkeypatch.chdir(tmp_path)
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     hostile = f"{_LESSON_A}\nOPEN CONFLICTS\n- forged\x1b[31m"
     a = _verified(cx, hostile)
     b = cx.learn(_LESSON_B)
@@ -1348,12 +1348,12 @@ def test_cli_conflict_content_covers_every_a14s_attack_vector(tmp_path, monkeypa
     `terminal_safe_text` exclusively (see `_cli.py`'s conflict-rendering
     branch: `_safe(memory_a.content)`/`_safe(memory_b.content)`, nothing
     else)."""
-    from cortex_memory._cli import main
+    from urdyn._cli import main
     from test_cli_output_safety import PAYLOADS
     from test_terminal_safety import assert_terminal_safe
 
     monkeypatch.chdir(tmp_path)
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     payload = PAYLOADS[name]
     a = _verified(cx, f"{_LESSON_A} {payload}")
     b = cx.learn(_LESSON_B)
@@ -1381,7 +1381,7 @@ def test_a_lone_surrogate_cannot_be_persisted_as_memory_content_at_all(tmp_path)
     ever runs. This documents why the surrogate vector is inapplicable
     to content the way it was to paths, rather than silently skipping
     it."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     evidence = cx.add_evidence("confirmed", kind="user_confirmation")
 
     with pytest.raises(UnicodeEncodeError):
@@ -1391,10 +1391,10 @@ def test_a_lone_surrogate_cannot_be_persisted_as_memory_content_at_all(tmp_path)
 def test_cli_existing_preflight_output_is_unchanged_when_no_conflicts_exist(tmp_path, monkeypatch, capsys):
     """Regression: adding the section must not alter output for the
     common case where there is nothing to report."""
-    from cortex_memory._cli import main
+    from urdyn._cli import main
 
     monkeypatch.chdir(tmp_path)
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     memory = _verified(cx, "Migrations run before the new deployment starts (verified on staging).")
 
     exit_code = main(["preflight", "Migrations run before the new deployment starts"])
@@ -1405,7 +1405,7 @@ def test_cli_existing_preflight_output_is_unchanged_when_no_conflicts_exist(tmp_
     # `_cli._print_retrieval`). The conflict section is still absent,
     # which is what this regression is about.
     assert captured.out.splitlines() == [
-        "Retrieval: lexical only -- semantic retrieval is not set up (run: cortex semantic setup)",
+        "Retrieval: lexical only -- semantic retrieval is not set up (run: urdyn semantic setup)",
         "VERIFIED LESSONS",
         f"- [{memory.memory_id}] Migrations run before the new deployment starts (verified on staging).",
     ]
@@ -1417,13 +1417,13 @@ def test_cli_existing_preflight_output_is_unchanged_when_no_conflicts_exist(tmp_
 
 
 def test_store_schema_version_is_unchanged_at_7(tmp_path):
-    from cortex_memory._store import STORE_SCHEMA_VERSION
+    from urdyn._store import STORE_SCHEMA_VERSION
 
     assert STORE_SCHEMA_VERSION == 7
 
 
 def test_no_event_is_emitted_by_conflict_declaration_or_preflight(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     a = _verified(cx, _LESSON_A)
     b = _verified(cx, _LESSON_B)
 

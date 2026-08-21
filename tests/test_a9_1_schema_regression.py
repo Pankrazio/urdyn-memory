@@ -7,22 +7,22 @@ never trigger a schema migration or change the stored schema version.
 
 import sqlite3
 
-from cortex_memory import Cortex
-from cortex_memory._store import STORE_SCHEMA_VERSION, db_path_for
-from cortex_memory._workspace import CORTEX_DIRNAME
+from urdyn import Urdyn
+from urdyn._store import STORE_SCHEMA_VERSION, db_path_for
+from urdyn._workspace import URDYN_DIRNAME
 
 
 def test_schema_version_unchanged_by_new_kinds(tmp_path):
     assert STORE_SCHEMA_VERSION == 7
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     cx.remember("Python 3.12 is required.", kind="environment")
     cx.remember("Run Dev Validation #2.", kind="pending")
     cx.remember("Which database should we use?", kind="question")
-    cx.remember(".cortex/ must remain gitignored.", kind="invariant")
+    cx.remember(".urdyn/ must remain gitignored.", kind="invariant")
     del cx
 
-    db_path = db_path_for(tmp_path / CORTEX_DIRNAME)
+    db_path = db_path_for(tmp_path / URDYN_DIRNAME)
     connection = sqlite3.connect(db_path)
     try:
         (version,) = connection.execute("PRAGMA user_version").fetchone()
@@ -36,15 +36,15 @@ def test_reopening_after_new_kinds_does_not_remigrate(tmp_path):
     """Opening the store a second time after the new kinds were used must
     be a no-op with respect to schema: no table is recreated, no
     migration function runs, `user_version` stays put."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     cx.remember("uv is the project package manager.", kind="environment")
     del cx
 
-    reopened = Cortex.open(tmp_path)
+    reopened = Urdyn.open(tmp_path)
     reopened.remember("Second environment fact.", kind="environment")
     del reopened
 
-    db_path = db_path_for(tmp_path / CORTEX_DIRNAME)
+    db_path = db_path_for(tmp_path / URDYN_DIRNAME)
     connection = sqlite3.connect(db_path)
     try:
         (version,) = connection.execute("PRAGMA user_version").fetchone()

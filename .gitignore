@@ -10,7 +10,7 @@ wheels/
 # Virtual environments
 .venv
 
-# Cortex workspace data / local agent tooling
-.cortex/
+# Urdyn workspace data / local agent tooling
+.urdyn/
 .claude/
 validation/

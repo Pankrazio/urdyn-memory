@@ -2,11 +2,11 @@
 
 import pytest
 
-from cortex_memory import Cortex
+from urdyn import Urdyn
 
 
 def test_supersession_preserves_old_memory(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     old = cx.remember("PostgreSQL was selected.", kind="decision")
 
     new = cx.remember("SQLite was selected for V1.", kind="decision", supersedes=old.memory_id)
@@ -17,7 +17,7 @@ def test_supersession_preserves_old_memory(tmp_path):
 
 
 def test_new_memory_records_supersedes_link(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     old = cx.remember("PostgreSQL was selected.", kind="decision")
 
     new = cx.remember("SQLite was selected for V1.", kind="decision", supersedes=old.memory_id)
@@ -27,7 +27,7 @@ def test_new_memory_records_supersedes_link(tmp_path):
 
 
 def test_recall_excludes_superseded_memory_by_default(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     old = cx.remember("PostgreSQL was selected.", kind="decision")
     cx.remember("SQLite was selected for V1.", kind="decision", supersedes=old.memory_id)
 
@@ -38,7 +38,7 @@ def test_recall_excludes_superseded_memory_by_default(tmp_path):
 
 
 def test_recall_includes_superseded_memory_when_requested(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     old = cx.remember("PostgreSQL was selected.", kind="decision")
     cx.remember("SQLite was selected for V1.", kind="decision", supersedes=old.memory_id)
 
@@ -49,7 +49,7 @@ def test_recall_includes_superseded_memory_when_requested(tmp_path):
 
 
 def test_state_returns_only_current_memory(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     old = cx.remember("PostgreSQL was selected.", kind="decision")
     new = cx.remember("SQLite was selected for V1.", kind="decision", supersedes=old.memory_id)
 
@@ -59,7 +59,7 @@ def test_state_returns_only_current_memory(tmp_path):
 
 
 def test_supersede_unknown_memory_is_rejected(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
 
     with pytest.raises(ValueError):
         cx.remember("SQLite was selected for V1.", kind="decision", supersedes="0" * 32)
@@ -69,7 +69,7 @@ def test_supersede_unknown_memory_is_rejected(tmp_path):
 
 
 def test_self_supersession_is_rejected(tmp_path, monkeypatch):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     first = cx.remember("PostgreSQL was selected.", kind="decision")
 
     import uuid as uuid_module
@@ -81,12 +81,12 @@ def test_self_supersession_is_rejected(tmp_path, monkeypatch):
 
 
 def test_supersession_survives_reopening(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     old = cx.remember("PostgreSQL was selected.", kind="decision")
     new = cx.remember("SQLite was selected for V1.", kind="decision", supersedes=old.memory_id)
     del cx
 
-    reopened = Cortex.open(tmp_path)
+    reopened = Urdyn.open(tmp_path)
 
     history = reopened.timeline(kind="decision")
     assert [m.memory_id for m in history] == [old.memory_id, new.memory_id]
@@ -95,7 +95,7 @@ def test_supersession_survives_reopening(tmp_path):
 
 
 def test_failed_supersession_does_not_partially_persist(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
 
     with pytest.raises(ValueError):
         cx.remember("orphaned decision", kind="decision", supersedes="0" * 32)
@@ -106,7 +106,7 @@ def test_failed_supersession_does_not_partially_persist(tmp_path):
 
 
 def test_memory_cannot_be_superseded_twice(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     old = cx.remember("PostgreSQL was selected.", kind="decision")
     cx.remember("SQLite was selected for V1.", kind="decision", supersedes=old.memory_id)
 
@@ -119,7 +119,7 @@ def test_memory_cannot_be_superseded_twice(tmp_path):
 
 
 def test_multiple_supersessions_form_a_chain(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     a = cx.remember("PostgreSQL was selected.", kind="decision")
     b = cx.remember("MySQL was selected.", kind="decision", supersedes=a.memory_id)
     c = cx.remember("SQLite was selected for V1.", kind="decision", supersedes=b.memory_id)

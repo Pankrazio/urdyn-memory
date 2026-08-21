@@ -29,7 +29,7 @@ evaluated against the same shared-token threshold. `_FTS_CANDIDATE_LIMIT`
 still bounds how many matches are evaluated per call, but purely as a
 defensive resource bound against a pathological result set, not as a
 relevance heuristic -- set generously relative to the tens-to-hundreds
-of records a per-project Cortex workspace is expected to hold (see
+of records a per-project Urdyn workspace is expected to hold (see
 A7.1's populated-workspace test), so it is not expected to bind in
 normal use.
 

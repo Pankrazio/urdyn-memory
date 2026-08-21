@@ -1,8 +1,8 @@
 """SQLite-backed persistence for canonical memories, evidence, events, and
 attempts.
 
-This module is the only place in Cortex that knows about SQL, cursors,
-connections, or row layout. `Cortex` and the public API depend only on
+This module is the only place in Urdyn that knows about SQL, cursors,
+connections, or row layout. `Urdyn` and the public API depend only on
 `MemoryStore`, `Memory`, `Evidence`, `Event`, and `Attempt`; SQLite is an
 implementation detail that can be replaced without changing any of them.
 
@@ -36,7 +36,7 @@ Schema history:
        docstring for the full reasoning).
   v7 - adds `sources` and `source_observations` (A19.1): the stable
        identity of an observed project file, and the append-only history
-       of what Cortex saw when it looked at it. No existing table changes
+       of what Urdyn saw when it looked at it. No existing table changes
        shape, and NOTHING is backfilled: A19.1 is the first producer of
        Sources, so there is no pre-v7 data to reinterpret. In particular
        existing `file_reference` Evidence rows are left exactly as they
@@ -56,7 +56,7 @@ Search index (derived, not versioned):
   rebuildable projection of `memories.content`, `attempts.task`/
   `approach`, and `skills.name`/`purpose`/conditions, keyed by their own
   canonical ids. Folding it into the versioned migration chain would
-  conflate "the data Cortex holds changed" with "a derived search aid
+  conflate "the data Urdyn holds changed" with "a derived search aid
   was (re)built" -- two different kinds of change with different
   failure semantics (a missing/stale index degrades search; a missing
   canonical table is corruption). Instead, `_ensure_schema` creates and
@@ -76,7 +76,7 @@ from pathlib import Path
 
 from ._attempt import ATTEMPT_ID_PATTERN, VALID_OUTCOMES, Attempt
 from ._conflict import Conflict, canonical_pair
-from ._errors import CortexStorageError
+from ._errors import UrdynStorageError
 from ._event import EVENT_KIND_ATTEMPT_RECORDED, EVENT_KIND_MEMORY_RECORDED, EVENT_KIND_SKILL_PROMOTED, Event
 from ._evidence import (
     EVIDENCE_ID_PATTERN,
@@ -264,7 +264,7 @@ _CREATE_SKILL_EVIDENCE_SQL = """
 # declaration (see `MemoryStore.add_conflict`).
 #
 # (A13.1.1) The `CHECK` is defence in depth, not the primary enforcement:
-# `Cortex.record_conflict`/`add_conflict` already canonicalize the pair
+# `Urdyn.record_conflict`/`add_conflict` already canonicalize the pair
 # and reject self-conflict in Python, before any SQL runs. Placing the
 # same invariant next to the canonical data means a row that is
 # non-canonically ordered (`b < a`) or self-referential (`a == a`, which
@@ -315,7 +315,7 @@ _CREATE_SOURCES_SQL = """
 # the public model.
 #
 # Deliberately no `ON DELETE` clause and no foreign key: nothing in
-# Cortex ever deletes a Source or an observation (A19.1 has no delete, no
+# Urdyn ever deletes a Source or an observation (A19.1 has no delete, no
 # GC, no rename), and referential integrity is verified fail-closed on
 # read instead (see `_load_source`/`list_sources`), consistent with how
 # `memory_evidence` and `attempt_evidence` already work.
@@ -332,8 +332,8 @@ _CREATE_SOURCE_OBSERVATIONS_SQL = """
 """
 
 
-def db_path_for(cortex_dir: Path) -> Path:
-    return cortex_dir / DB_FILENAME
+def db_path_for(urdyn_dir: Path) -> Path:
+    return urdyn_dir / DB_FILENAME
 
 
 class MemoryStore:
@@ -364,7 +364,7 @@ class MemoryStore:
             _ensure_schema(connection)
         except sqlite3.DatabaseError as exc:
             connection.close()
-            raise CortexStorageError(f"Cortex memory store at {db_path} is corrupted: {exc}") from exc
+            raise UrdynStorageError(f"Urdyn memory store at {db_path} is corrupted: {exc}") from exc
         except Exception:
             connection.close()
             raise
@@ -429,10 +429,10 @@ class MemoryStore:
         Memory row (i.e. `_find_current_equivalent` found no current
         duplicate) and `events` contains no `EVENT_KIND_MEMORY_RECORDED`
         event whose `subject_id` equals `memory.memory_id` -- see the
-        MEDIUM-1 note further down. Raises `CortexStorageError` on genuine storage
+        MEDIUM-1 note further down. Raises `UrdynStorageError` on genuine storage
         corruption or I/O failure.
 
-        WRITE-BOUNDARY NOTE (A12.1.1): `Cortex.remember()` is still the
+        WRITE-BOUNDARY NOTE (A12.1.1): `Urdyn.remember()` is still the
         primary, user-facing enforcement point for the verified contract
         (see its docstring) -- this repeats the SAME rule, against the
         SAME `VERIFICATION_EVIDENCE_KINDS` constant, at the canonical
@@ -567,7 +567,7 @@ class MemoryStore:
                         (event.event_id, event.kind, event.subject_id, event.occurred_at.isoformat()),
                     )
         except sqlite3.DatabaseError as exc:
-            raise CortexStorageError(f"Failed to persist memory {memory.memory_id!r}: {exc}") from exc
+            raise UrdynStorageError(f"Failed to persist memory {memory.memory_id!r}: {exc}") from exc
         return memory
 
     def _find_current_equivalent(self, memory: Memory) -> Memory | None:
@@ -577,7 +577,7 @@ class MemoryStore:
         "Exactly equivalent" means every canonical field that carries the
         memory's MEANING is identical: `content` (byte-for-byte, under
         SQLite's default BINARY collation -- no case folding, no
-        trimming, no Unicode normalization, none of which Cortex applies
+        trimming, no Unicode normalization, none of which Urdyn applies
         anywhere else either), `kind`, `epistemic_state`, `supersedes`,
         and both provenance tuples (`evidence_ids` and
         `supporting_evidence_ids`, order included). `memory_id` and
@@ -589,7 +589,7 @@ class MemoryStore:
 
         Only CURRENT memories qualify. Re-asserting something that was
         superseded is a new fact about now -- the earlier record stopped
-        being what Cortex believes, so restating it is a real transition
+        being what Urdyn believes, so restating it is a real transition
         and gets its own memory, exactly as it would have before A17. It
         is only the coexistence of two CURRENT equivalents that this
         prevents. Note that "current" is evaluated per candidate rather
@@ -633,7 +633,7 @@ class MemoryStore:
             cursor = self._connection.execute("SELECT COUNT(*) FROM memories")
             (total,) = cursor.fetchone()
         except sqlite3.DatabaseError as exc:
-            raise CortexStorageError(f"Failed to read Cortex memory store: {exc}") from exc
+            raise UrdynStorageError(f"Failed to read Urdyn memory store: {exc}") from exc
         return total
 
     def search(self, query: str, limit: int, *, current_only: bool) -> list[Memory]:
@@ -665,7 +665,7 @@ class MemoryStore:
         return [memory for _, memory in matches[:limit]]
 
     def timeline(self, kind: str | None) -> list[Memory]:
-        """Return memories in the order Cortex recorded them, oldest first.
+        """Return memories in the order Urdyn recorded them, oldest first.
 
         Ordering follows the append-only event log's own sequence, not
         `recorded_at` timestamps (which can collide) or incidental
@@ -678,7 +678,7 @@ class MemoryStore:
             )
             subject_ids = [row[0] for row in cursor.fetchall()]
         except sqlite3.DatabaseError as exc:
-            raise CortexStorageError(f"Failed to read Cortex event log: {exc}") from exc
+            raise UrdynStorageError(f"Failed to read Urdyn event log: {exc}") from exc
 
         evidence_map = self._all_memory_evidence_map()
         supporting_map = self._all_memory_supporting_evidence_map()
@@ -686,7 +686,7 @@ class MemoryStore:
         for memory_id in subject_ids:
             row = self._fetch_memory_row(memory_id)
             if row is None:
-                raise CortexStorageError(
+                raise UrdynStorageError(
                     f"Event log references memory {memory_id!r} that does not exist"
                 )
             memory = _row_to_memory(row, evidence_map.get(memory_id, ()), supporting_map.get(memory_id, ()))
@@ -715,7 +715,7 @@ class MemoryStore:
                     ),
                 )
         except sqlite3.DatabaseError as exc:
-            raise CortexStorageError(f"Failed to persist evidence {evidence.evidence_id!r}: {exc}") from exc
+            raise UrdynStorageError(f"Failed to persist evidence {evidence.evidence_id!r}: {exc}") from exc
 
     def get_evidence(self, evidence_id: str) -> Evidence | None:
         try:
@@ -724,7 +724,7 @@ class MemoryStore:
                 (evidence_id,),
             ).fetchone()
         except sqlite3.DatabaseError as exc:
-            raise CortexStorageError(f"Failed to read Cortex evidence store: {exc}") from exc
+            raise UrdynStorageError(f"Failed to read Urdyn evidence store: {exc}") from exc
         if row is None:
             return None
         return _row_to_evidence(row)
@@ -762,7 +762,7 @@ class MemoryStore:
 
         IDEMPOTENCY is judged against the LATEST observation only, never
         against the whole history: if the file's current digest equals the
-        one Cortex last saw, this is a re-seed of an unchanged file and
+        one Urdyn last saw, this is a re-seed of an unchanged file and
         nothing at all is written (`unchanged`). If it differs, a new
         observation is appended even if that exact digest appeared earlier
         in the file's history -- a file edited to A, then B, then back to
@@ -779,7 +779,7 @@ class MemoryStore:
         hex, a negative size, an absolute or empty path) -- repeating
         next to the canonical data the guarantees `_source.py` already
         enforces in Python, so no future internal call path can persist a
-        Source that violates them. Raises `CortexStorageError` on genuine
+        Source that violates them. Raises `UrdynStorageError` on genuine
         corruption (a Source with no observations, an observation whose
         Evidence no longer exists) or I/O failure.
         """
@@ -819,9 +819,9 @@ class MemoryStore:
                         # A Source is only ever created together with its
                         # first observation, so this shape cannot be
                         # produced by any write path here. Reaching it
-                        # means the store was edited outside Cortex;
+                        # means the store was edited outside Urdyn;
                         # appending an observation would paper over that.
-                        raise CortexStorageError(
+                        raise UrdynStorageError(
                             f"Corrupted source {source_id!r}: it has no observations"
                         )
                     if latest[0] == digest:
@@ -847,7 +847,7 @@ class MemoryStore:
                 evidence = self._require_observation_evidence(candidate_evidence_id)
                 return (status, self._load_source(source_id), evidence)
         except sqlite3.DatabaseError as exc:
-            raise CortexStorageError(f"Failed to observe source {path!r}: {exc}") from exc
+            raise UrdynStorageError(f"Failed to observe source {path!r}: {exc}") from exc
 
     def list_sources(self) -> list[Source]:
         """Every tracked Source with its full observation history, ordered
@@ -866,14 +866,14 @@ class MemoryStore:
                 "WHERE s.source_id IS NULL"
             ).fetchone()
             if orphans:
-                raise CortexStorageError(
-                    f"Cortex source store holds {orphans} observation(s) referring to an "
+                raise UrdynStorageError(
+                    f"Urdyn source store holds {orphans} observation(s) referring to an "
                     "unknown source; refusing to report a partial source history"
                 )
             rows = self._connection.execute("SELECT source_id FROM sources ORDER BY path").fetchall()
             return [self._load_source(row[0]) for row in rows]
         except sqlite3.DatabaseError as exc:
-            raise CortexStorageError(f"Failed to read Cortex source store: {exc}") from exc
+            raise UrdynStorageError(f"Failed to read Urdyn source store: {exc}") from exc
 
     def _load_source(self, source_id: str) -> Source:
         row = self._connection.execute(
@@ -881,7 +881,7 @@ class MemoryStore:
             (source_id,),
         ).fetchone()
         if row is None:
-            raise CortexStorageError(f"Unknown source {source_id!r} in Cortex source store")
+            raise UrdynStorageError(f"Unknown source {source_id!r} in Urdyn source store")
 
         # LEFT JOIN rather than an inner join on purpose: an observation
         # whose Evidence has vanished must surface as corruption, not
@@ -896,23 +896,23 @@ class MemoryStore:
         observations = []
         for observation_row in observation_rows:
             if observation_row[5] is None:
-                raise CortexStorageError(
+                raise UrdynStorageError(
                     f"Corrupted source {source_id!r}: observation references unknown "
                     f"evidence {observation_row[1]!r}"
                 )
             observations.append(_row_to_source_observation(observation_row[:5]))
         if not observations:
-            raise CortexStorageError(f"Corrupted source {source_id!r}: it has no observations")
+            raise UrdynStorageError(f"Corrupted source {source_id!r}: it has no observations")
         return _row_to_source(row, tuple(observations))
 
     def _require_observation_evidence(self, evidence_id: str) -> Evidence:
         evidence = self.get_evidence(evidence_id)
         if evidence is None:
-            raise CortexStorageError(
+            raise UrdynStorageError(
                 f"Corrupted source observation: evidence {evidence_id!r} does not exist"
             )
         if evidence.kind != EVIDENCE_KIND_DOCUMENT_OBSERVATION:
-            raise CortexStorageError(
+            raise UrdynStorageError(
                 f"Corrupted source observation: evidence {evidence_id!r} has kind "
                 f"{evidence.kind!r}, expected {EVIDENCE_KIND_DOCUMENT_OBSERVATION!r}"
             )
@@ -924,7 +924,7 @@ class MemoryStore:
         """Persist a new attempt, its evidence links, and its event atomically.
 
         Raises `ValueError` if any `attempt.evidence_ids` entry names
-        unknown evidence. Raises `CortexStorageError` on genuine storage
+        unknown evidence. Raises `UrdynStorageError` on genuine storage
         corruption or I/O failure.
         """
         try:
@@ -959,10 +959,10 @@ class MemoryStore:
                     (event.event_id, event.kind, event.subject_id, event.occurred_at.isoformat()),
                 )
         except sqlite3.DatabaseError as exc:
-            raise CortexStorageError(f"Failed to persist attempt {attempt.attempt_id!r}: {exc}") from exc
+            raise UrdynStorageError(f"Failed to persist attempt {attempt.attempt_id!r}: {exc}") from exc
 
     def list_attempts(self) -> list[Attempt]:
-        """Return every attempt in the order Cortex recorded them, oldest
+        """Return every attempt in the order Urdyn recorded them, oldest
         first. Attempts are append-only: nothing here is ever rewritten,
         including failed ones."""
         try:
@@ -972,14 +972,14 @@ class MemoryStore:
             )
             attempt_ids = [row[0] for row in cursor.fetchall()]
         except sqlite3.DatabaseError as exc:
-            raise CortexStorageError(f"Failed to read Cortex event log: {exc}") from exc
+            raise UrdynStorageError(f"Failed to read Urdyn event log: {exc}") from exc
 
         evidence_map = self._all_attempt_evidence_map()
         results: list[Attempt] = []
         for attempt_id in attempt_ids:
             row = self._fetch_attempt_row(attempt_id)
             if row is None:
-                raise CortexStorageError(
+                raise UrdynStorageError(
                     f"Event log references attempt {attempt_id!r} that does not exist"
                 )
             results.append(_row_to_attempt(row, evidence_map.get(attempt_id, ())))
@@ -1007,8 +1007,8 @@ class MemoryStore:
         the CANONICAL Lesson memory actually persisted under
         `source_lesson_id` — its own `epistemic_state` and its own
         evidence links — so a caller cannot elevate a Skill's verification
-        or redirect its provenance by handing `Cortex.promote()` a
-        `Memory` object whose fields disagree with what Cortex itself has
+        or redirect its provenance by handing `Urdyn.promote()` a
+        `Memory` object whose fields disagree with what Urdyn itself has
         on record for that id (e.g. a forged `epistemic_state="verified"`
         or forged `evidence_ids` on an object that merely shares a real
         Lesson's `memory_id`). The persisted Lesson row is the only
@@ -1016,7 +1016,7 @@ class MemoryStore:
         which id to look up.
 
         Raises `ValueError` if `source_lesson_id` does not name an
-        existing memory of kind `lesson`. Raises `CortexStorageError` on
+        existing memory of kind `lesson`. Raises `UrdynStorageError` on
         genuine storage corruption or I/O failure.
         """
         try:
@@ -1086,7 +1086,7 @@ class MemoryStore:
                     (event.event_id, event.kind, event.subject_id, event.occurred_at.isoformat()),
                 )
         except sqlite3.DatabaseError as exc:
-            raise CortexStorageError(f"Failed to persist skill {skill_id!r}: {exc}") from exc
+            raise UrdynStorageError(f"Failed to persist skill {skill_id!r}: {exc}") from exc
         return skill
 
     def get_skill(self, skill_id: str) -> Skill | None:
@@ -1101,7 +1101,7 @@ class MemoryStore:
         )
 
     def list_skills(self) -> list[Skill]:
-        """Return every skill in the order Cortex recorded them, oldest
+        """Return every skill in the order Urdyn recorded them, oldest
         first. Skills are append-only: promoting a new skill never rewrites
         or removes an earlier one."""
         try:
@@ -1111,13 +1111,13 @@ class MemoryStore:
             )
             skill_ids = [row[0] for row in cursor.fetchall()]
         except sqlite3.DatabaseError as exc:
-            raise CortexStorageError(f"Failed to read Cortex event log: {exc}") from exc
+            raise UrdynStorageError(f"Failed to read Urdyn event log: {exc}") from exc
 
         results: list[Skill] = []
         for skill_id in skill_ids:
             row = self._fetch_skill_row(skill_id)
             if row is None:
-                raise CortexStorageError(f"Event log references skill {skill_id!r} that does not exist")
+                raise UrdynStorageError(f"Event log references skill {skill_id!r} that does not exist")
             results.append(
                 _row_to_skill(
                     row,
@@ -1136,7 +1136,7 @@ class MemoryStore:
                 (skill_id,),
             ).fetchone()
         except sqlite3.DatabaseError as exc:
-            raise CortexStorageError(f"Failed to read Cortex skill store: {exc}") from exc
+            raise UrdynStorageError(f"Failed to read Urdyn skill store: {exc}") from exc
 
     def _skill_steps(self, skill_id: str) -> tuple[str, ...]:
         try:
@@ -1144,7 +1144,7 @@ class MemoryStore:
                 "SELECT step FROM skill_steps WHERE skill_id = ? ORDER BY position", (skill_id,)
             ).fetchall()
         except sqlite3.DatabaseError as exc:
-            raise CortexStorageError(f"Failed to read Cortex skill store: {exc}") from exc
+            raise UrdynStorageError(f"Failed to read Urdyn skill store: {exc}") from exc
         return tuple(row[0] for row in rows)
 
     def _skill_conditions(self, skill_id: str) -> tuple[str, ...]:
@@ -1153,7 +1153,7 @@ class MemoryStore:
                 "SELECT condition FROM skill_conditions WHERE skill_id = ? ORDER BY position", (skill_id,)
             ).fetchall()
         except sqlite3.DatabaseError as exc:
-            raise CortexStorageError(f"Failed to read Cortex skill store: {exc}") from exc
+            raise UrdynStorageError(f"Failed to read Urdyn skill store: {exc}") from exc
         return tuple(row[0] for row in rows)
 
     def _skill_evidence(self, skill_id: str) -> tuple[str, ...]:
@@ -1162,7 +1162,7 @@ class MemoryStore:
                 "SELECT evidence_id FROM skill_evidence WHERE skill_id = ? ORDER BY position", (skill_id,)
             ).fetchall()
         except sqlite3.DatabaseError as exc:
-            raise CortexStorageError(f"Failed to read Cortex skill store: {exc}") from exc
+            raise UrdynStorageError(f"Failed to read Urdyn skill store: {exc}") from exc
         return tuple(row[0] for row in rows)
 
     # -- conflicts ----------------------------------------------------------
@@ -1201,7 +1201,7 @@ class MemoryStore:
         success by returning the pre-existing row. Targeting the primary
         key explicitly keeps "this exact relation was already declared"
         as the only condition that is ever absorbed; anything else still
-        raises and is wrapped as `CortexStorageError` below.
+        raises and is wrapped as `UrdynStorageError` below.
         """
         if memory_id_a == memory_id_b:
             raise ValueError("A memory cannot conflict with itself")
@@ -1223,7 +1223,7 @@ class MemoryStore:
                     pair,
                 ).fetchone()
         except sqlite3.DatabaseError as exc:
-            raise CortexStorageError(f"Failed to persist conflict {pair!r}: {exc}") from exc
+            raise UrdynStorageError(f"Failed to persist conflict {pair!r}: {exc}") from exc
         return _row_to_conflict(row)
 
     def list_conflicts(self) -> list[Conflict]:
@@ -1234,7 +1234,7 @@ class MemoryStore:
 
         (A13.1.1) Every participant is verified to name a memory this
         store actually holds, and a dangling one raises
-        `CortexStorageError`. `_row_to_conflict` alone is not enough:
+        `UrdynStorageError`. `_row_to_conflict` alone is not enough:
         it validates that each id is well-FORMED (32 hex, canonically
         ordered), which a corrupted or hand-edited row can satisfy while
         still pointing at a memory that does not exist. Returning such a
@@ -1243,7 +1243,7 @@ class MemoryStore:
         recorded at all -- and, worse, `open_conflicts()` would quietly
         drop it (a nonexistent id is never in `current_ids()`), making
         storage corruption indistinguishable from the legitimate,
-        expected "this conflict is no longer open" answer. Cortex does
+        expected "this conflict is no longer open" answer. Urdyn does
         not repair or delete the row: it refuses to reinterpret it, the
         same standard `_all_memory_supporting_evidence_map` already
         applies to an unrecognized `memory_evidence.role`.
@@ -1257,15 +1257,15 @@ class MemoryStore:
                 row[0] for row in self._connection.execute("SELECT memory_id FROM memories").fetchall()
             }
         except sqlite3.DatabaseError as exc:
-            raise CortexStorageError(f"Failed to read Cortex conflict store: {exc}") from exc
+            raise UrdynStorageError(f"Failed to read Urdyn conflict store: {exc}") from exc
 
         conflicts = [_row_to_conflict(row) for row in rows]
         for conflict in conflicts:
             for memory_id in conflict.memory_ids:
                 if memory_id not in known_ids:
-                    raise CortexStorageError(
+                    raise UrdynStorageError(
                         f"Conflict {conflict.memory_ids!r} references memory {memory_id!r} "
-                        "that does not exist in the Cortex memory store"
+                        "that does not exist in the Urdyn memory store"
                     )
         return conflicts
 
@@ -1311,13 +1311,13 @@ class MemoryStore:
                 (entity_type, match_query),
             ).fetchall()
         except sqlite3.DatabaseError as exc:
-            raise CortexStorageError(f"Failed to search Cortex search index: {exc}") from exc
+            raise UrdynStorageError(f"Failed to search Urdyn search index: {exc}") from exc
         return [(row[0], row[1]) for row in rows]
 
     def rebuild_search_index(self) -> None:
         """Fully rebuild the derived search index from canonical data,
         discarding whatever it currently holds first. Internal
-        maintenance primitive, not a public Cortex command: the index is
+        maintenance primitive, not a public Urdyn command: the index is
         disposable and derived, so this is always safe to call, and is
         exactly what recovers a store opened once without FTS5 support
         (index missing) that is later opened by a build that has it.
@@ -1329,7 +1329,7 @@ class MemoryStore:
             with self._connection:
                 _rebuild_search_index(self._connection)
         except sqlite3.DatabaseError as exc:
-            raise CortexStorageError(f"Failed to rebuild Cortex search index: {exc}") from exc
+            raise UrdynStorageError(f"Failed to rebuild Urdyn search index: {exc}") from exc
 
     def _memory_evidence_ids(self, memory_id: str) -> tuple[str, ...]:
         try:
@@ -1338,7 +1338,7 @@ class MemoryStore:
                 (memory_id,),
             ).fetchall()
         except sqlite3.DatabaseError as exc:
-            raise CortexStorageError(f"Failed to read Cortex provenance links: {exc}") from exc
+            raise UrdynStorageError(f"Failed to read Urdyn provenance links: {exc}") from exc
         return tuple(row[0] for row in rows)
 
     def _memory_supporting_evidence_ids(self, memory_id: str) -> tuple[str, ...]:
@@ -1351,11 +1351,11 @@ class MemoryStore:
                 (memory_id,),
             ).fetchall()
         except sqlite3.DatabaseError as exc:
-            raise CortexStorageError(f"Failed to read Cortex provenance links: {exc}") from exc
+            raise UrdynStorageError(f"Failed to read Urdyn provenance links: {exc}") from exc
         result: list[str] = []
         for evidence_id, role in rows:
             if role not in (_ROLE_RELATED, _ROLE_SUPPORTING):
-                raise CortexStorageError(
+                raise UrdynStorageError(
                     f"Corrupted memory_evidence.role {role!r} for memory {memory_id!r}"
                 )
             if role == _ROLE_SUPPORTING:
@@ -1372,7 +1372,7 @@ class MemoryStore:
             )
             return cursor.fetchall()
         except sqlite3.DatabaseError as exc:
-            raise CortexStorageError(f"Failed to read Cortex memory store: {exc}") from exc
+            raise UrdynStorageError(f"Failed to read Urdyn memory store: {exc}") from exc
 
     def _fetch_memory_row(self, memory_id: str) -> tuple | None:
         try:
@@ -1382,7 +1382,7 @@ class MemoryStore:
                 (memory_id,),
             ).fetchone()
         except sqlite3.DatabaseError as exc:
-            raise CortexStorageError(f"Failed to read Cortex memory store: {exc}") from exc
+            raise UrdynStorageError(f"Failed to read Urdyn memory store: {exc}") from exc
 
     def _fetch_attempt_row(self, attempt_id: str) -> tuple | None:
         try:
@@ -1392,7 +1392,7 @@ class MemoryStore:
                 (attempt_id,),
             ).fetchone()
         except sqlite3.DatabaseError as exc:
-            raise CortexStorageError(f"Failed to read Cortex attempt store: {exc}") from exc
+            raise UrdynStorageError(f"Failed to read Urdyn attempt store: {exc}") from exc
 
     def _all_memory_evidence_map(self) -> dict[str, tuple[str, ...]]:
         try:
@@ -1400,7 +1400,7 @@ class MemoryStore:
                 "SELECT memory_id, evidence_id FROM memory_evidence ORDER BY memory_id, position"
             ).fetchall()
         except sqlite3.DatabaseError as exc:
-            raise CortexStorageError(f"Failed to read Cortex provenance links: {exc}") from exc
+            raise UrdynStorageError(f"Failed to read Urdyn provenance links: {exc}") from exc
         return _group_ordered(rows)
 
     def _all_memory_supporting_evidence_map(self) -> dict[str, tuple[str, ...]]:
@@ -1425,11 +1425,11 @@ class MemoryStore:
                 "SELECT memory_id, evidence_id, role FROM memory_evidence ORDER BY memory_id, position"
             ).fetchall()
         except sqlite3.DatabaseError as exc:
-            raise CortexStorageError(f"Failed to read Cortex provenance links: {exc}") from exc
+            raise UrdynStorageError(f"Failed to read Urdyn provenance links: {exc}") from exc
         supporting_rows: list[tuple[str, str]] = []
         for memory_id, evidence_id, role in rows:
             if role not in (_ROLE_RELATED, _ROLE_SUPPORTING):
-                raise CortexStorageError(
+                raise UrdynStorageError(
                     f"Corrupted memory_evidence.role {role!r} for memory {memory_id!r}"
                 )
             if role == _ROLE_SUPPORTING:
@@ -1442,7 +1442,7 @@ class MemoryStore:
                 "SELECT attempt_id, evidence_id FROM attempt_evidence ORDER BY attempt_id, position"
             ).fetchall()
         except sqlite3.DatabaseError as exc:
-            raise CortexStorageError(f"Failed to read Cortex provenance links: {exc}") from exc
+            raise UrdynStorageError(f"Failed to read Urdyn provenance links: {exc}") from exc
         return _group_ordered(rows)
 
     @staticmethod
@@ -1538,8 +1538,8 @@ def _migrate_v1_to_v2(connection: sqlite3.Connection) -> None:
     statement here rather than leaving them committed.
     """
     if not _table_exists(connection, "memories"):
-        raise CortexStorageError(
-            "Cortex memory store is stamped with schema version 1 but is missing the "
+        raise UrdynStorageError(
+            "Urdyn memory store is stamped with schema version 1 but is missing the "
             "'memories' table; refusing to migrate a possibly corrupted store"
         )
     connection.execute("ALTER TABLE memories ADD COLUMN supersedes TEXT")
@@ -1564,8 +1564,8 @@ def _migrate_v2_to_v3(connection: sqlite3.Connection) -> None:
     """
     missing = [name for name in _V2_TABLES if not _table_exists(connection, name)]
     if missing:
-        raise CortexStorageError(
-            f"Cortex memory store is stamped with schema version 2 but is missing "
+        raise UrdynStorageError(
+            f"Urdyn memory store is stamped with schema version 2 but is missing "
             f"table(s) {missing!r}; refusing to migrate a possibly corrupted store"
         )
     connection.execute(_CREATE_ATTEMPTS_SQL)
@@ -1580,8 +1580,8 @@ def _migrate_v3_to_v4(connection: sqlite3.Connection) -> None:
     """
     missing = [name for name in _V3_TABLES if not _table_exists(connection, name)]
     if missing:
-        raise CortexStorageError(
-            f"Cortex memory store is stamped with schema version 3 but is missing "
+        raise UrdynStorageError(
+            f"Urdyn memory store is stamped with schema version 3 but is missing "
             f"table(s) {missing!r}; refusing to migrate a possibly corrupted store"
         )
     connection.execute(_CREATE_SKILLS_SQL)
@@ -1604,8 +1604,8 @@ def _migrate_v4_to_v5(connection: sqlite3.Connection) -> None:
     """
     missing = [name for name in _V4_TABLES if not _table_exists(connection, name)]
     if missing:
-        raise CortexStorageError(
-            f"Cortex memory store is stamped with schema version 4 but is missing "
+        raise UrdynStorageError(
+            f"Urdyn memory store is stamped with schema version 4 but is missing "
             f"table(s) {missing!r}; refusing to migrate a possibly corrupted store"
         )
     connection.execute(
@@ -1622,8 +1622,8 @@ def _migrate_v5_to_v6(connection: sqlite3.Connection) -> None:
     """
     missing = [name for name in _V5_TABLES if not _table_exists(connection, name)]
     if missing:
-        raise CortexStorageError(
-            f"Cortex memory store is stamped with schema version 5 but is missing "
+        raise UrdynStorageError(
+            f"Urdyn memory store is stamped with schema version 5 but is missing "
             f"table(s) {missing!r}; refusing to migrate a possibly corrupted store"
         )
     connection.execute(_CREATE_MEMORY_CONFLICTS_SQL)
@@ -1645,8 +1645,8 @@ def _migrate_v6_to_v7(connection: sqlite3.Connection) -> None:
     """
     missing = [name for name in _V6_TABLES if not _table_exists(connection, name)]
     if missing:
-        raise CortexStorageError(
-            f"Cortex memory store is stamped with schema version 6 but is missing "
+        raise UrdynStorageError(
+            f"Urdyn memory store is stamped with schema version 6 but is missing "
             f"table(s) {missing!r}; refusing to migrate a possibly corrupted store"
         )
     connection.execute(_CREATE_SOURCES_SQL)
@@ -1701,8 +1701,8 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
             (version,) = connection.execute("PRAGMA user_version").fetchone()
             if version == 0:
                 if any(_table_exists(connection, name) for name in _V7_TABLES):
-                    raise CortexStorageError(
-                        "Cortex memory store has no recognized schema version but already "
+                    raise UrdynStorageError(
+                        "Urdyn memory store has no recognized schema version but already "
                         "contains data tables; refusing to open a possibly corrupted store"
                     )
                 _create_v7_schema(connection)
@@ -1782,15 +1782,15 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
             version = next_version
 
     if version != STORE_SCHEMA_VERSION:
-        raise CortexStorageError(
-            f"Cortex memory store schema version {version} is not supported by this "
-            f"version of Cortex (expected {STORE_SCHEMA_VERSION})"
+        raise UrdynStorageError(
+            f"Urdyn memory store schema version {version} is not supported by this "
+            f"version of Urdyn (expected {STORE_SCHEMA_VERSION})"
         )
 
     missing = [name for name in _V7_TABLES if not _table_exists(connection, name)]
     if missing:
-        raise CortexStorageError(
-            f"Cortex memory store is stamped with schema version {version} but is "
+        raise UrdynStorageError(
+            f"Urdyn memory store is stamped with schema version {version} but is "
             f"missing table(s) {missing!r}; refusing to silently recreate them"
         )
 
@@ -1834,7 +1834,7 @@ def _ensure_search_index(connection: sqlite3.Connection) -> None:
     version chain and this derived projection are different boundaries
     with different failure semantics (see module docstring), and merging
     them would put a rebuildable search aid inside the transaction that
-    defines what Cortex canonically holds.
+    defines what Urdyn canonically holds.
 
     A missing FTS5 module in this SQLite build is an expected, handled
     condition: `_try_create_search_index` reports it and this function
@@ -1842,7 +1842,7 @@ def _ensure_search_index(connection: sqlite3.Connection) -> None:
     open. A failure while creating the index in some other way (e.g.
     disk I/O) is not swallowed here; it propagates like any other
     `sqlite3.DatabaseError` in this module, to be wrapped by the
-    `CortexStorageError` handling in `MemoryStore.create_or_open`.
+    `UrdynStorageError` handling in `MemoryStore.create_or_open`.
     """
     if _table_exists(connection, SEARCH_INDEX_TABLE):
         return
@@ -1925,21 +1925,21 @@ def _row_to_memory(
     memory_id, content, kind, epistemic_state, recorded_at_raw, supersedes = row
 
     if not isinstance(memory_id, str) or not MEMORY_ID_PATTERN.fullmatch(memory_id):
-        raise CortexStorageError(f"Corrupted memory_id {memory_id!r} in Cortex memory store")
+        raise UrdynStorageError(f"Corrupted memory_id {memory_id!r} in Urdyn memory store")
     if kind not in VALID_KINDS:
-        raise CortexStorageError(f"Corrupted kind {kind!r} for memory {memory_id!r}")
+        raise UrdynStorageError(f"Corrupted kind {kind!r} for memory {memory_id!r}")
     if epistemic_state not in VALID_EPISTEMIC_STATES:
-        raise CortexStorageError(
+        raise UrdynStorageError(
             f"Corrupted epistemic_state {epistemic_state!r} for memory {memory_id!r}"
         )
     if supersedes is not None and (
         not isinstance(supersedes, str) or not MEMORY_ID_PATTERN.fullmatch(supersedes)
     ):
-        raise CortexStorageError(f"Corrupted supersedes value {supersedes!r} for memory {memory_id!r}")
+        raise UrdynStorageError(f"Corrupted supersedes value {supersedes!r} for memory {memory_id!r}")
     try:
         recorded_at = dt.datetime.fromisoformat(recorded_at_raw)
     except ValueError as exc:
-        raise CortexStorageError(
+        raise UrdynStorageError(
             f"Corrupted recorded_at value {recorded_at_raw!r} for memory {memory_id!r}"
         ) from exc
     return Memory(
@@ -1958,11 +1958,11 @@ def _row_to_evidence(row: tuple[str, str, str, str]) -> Evidence:
     evidence_id, content, kind, recorded_at_raw = row
 
     if not isinstance(evidence_id, str) or not EVIDENCE_ID_PATTERN.fullmatch(evidence_id):
-        raise CortexStorageError(f"Corrupted evidence_id {evidence_id!r} in Cortex evidence store")
+        raise UrdynStorageError(f"Corrupted evidence_id {evidence_id!r} in Urdyn evidence store")
     try:
         recorded_at = dt.datetime.fromisoformat(recorded_at_raw)
     except ValueError as exc:
-        raise CortexStorageError(
+        raise UrdynStorageError(
             f"Corrupted recorded_at value {recorded_at_raw!r} for evidence {evidence_id!r}"
         ) from exc
     return Evidence(evidence_id=evidence_id, content=content, kind=kind, recorded_at=recorded_at)
@@ -1972,16 +1972,16 @@ def _row_to_source(row: tuple[str, str, str], observations: tuple[SourceObservat
     source_id, path, first_observed_at_raw = row
 
     if not isinstance(source_id, str) or not SOURCE_ID_PATTERN.fullmatch(source_id):
-        raise CortexStorageError(f"Corrupted source_id {source_id!r} in Cortex source store")
+        raise UrdynStorageError(f"Corrupted source_id {source_id!r} in Urdyn source store")
     if not isinstance(path, str) or not path or path.startswith("/"):
         # A persisted absolute path would silently break the portability
         # guarantee (see `_CREATE_SOURCES_SQL`): refuse to hand it back as
         # if it were a valid workspace-relative Source.
-        raise CortexStorageError(f"Corrupted path {path!r} for source {source_id!r}")
+        raise UrdynStorageError(f"Corrupted path {path!r} for source {source_id!r}")
     try:
         first_observed_at = dt.datetime.fromisoformat(first_observed_at_raw)
     except (TypeError, ValueError) as exc:
-        raise CortexStorageError(
+        raise UrdynStorageError(
             f"Corrupted first_observed_at value {first_observed_at_raw!r} for source {source_id!r}"
         ) from exc
     return Source(
@@ -1996,23 +1996,23 @@ def _row_to_source_observation(row: tuple[str, str, str, int, str]) -> SourceObs
     source_id, evidence_id, digest, size_bytes, observed_at_raw = row
 
     if not isinstance(source_id, str) or not SOURCE_ID_PATTERN.fullmatch(source_id):
-        raise CortexStorageError(f"Corrupted source_id {source_id!r} in Cortex source store")
+        raise UrdynStorageError(f"Corrupted source_id {source_id!r} in Urdyn source store")
     if not isinstance(evidence_id, str) or not EVIDENCE_ID_PATTERN.fullmatch(evidence_id):
-        raise CortexStorageError(
+        raise UrdynStorageError(
             f"Corrupted evidence_id {evidence_id!r} for an observation of source {source_id!r}"
         )
     if not isinstance(digest, str) or not DIGEST_PATTERN.fullmatch(digest):
-        raise CortexStorageError(
+        raise UrdynStorageError(
             f"Corrupted digest {digest!r} for an observation of source {source_id!r}"
         )
     if not isinstance(size_bytes, int) or isinstance(size_bytes, bool) or size_bytes < 0:
-        raise CortexStorageError(
+        raise UrdynStorageError(
             f"Corrupted size_bytes {size_bytes!r} for an observation of source {source_id!r}"
         )
     try:
         observed_at = dt.datetime.fromisoformat(observed_at_raw)
     except (TypeError, ValueError) as exc:
-        raise CortexStorageError(
+        raise UrdynStorageError(
             f"Corrupted observed_at value {observed_at_raw!r} for an observation of "
             f"source {source_id!r}"
         ) from exc
@@ -2029,13 +2029,13 @@ def _row_to_attempt(row: tuple[str, str, str, str, str], evidence_ids: tuple[str
     attempt_id, task, approach, outcome, recorded_at_raw = row
 
     if not isinstance(attempt_id, str) or not ATTEMPT_ID_PATTERN.fullmatch(attempt_id):
-        raise CortexStorageError(f"Corrupted attempt_id {attempt_id!r} in Cortex attempt store")
+        raise UrdynStorageError(f"Corrupted attempt_id {attempt_id!r} in Urdyn attempt store")
     if outcome not in VALID_OUTCOMES:
-        raise CortexStorageError(f"Corrupted outcome {outcome!r} for attempt {attempt_id!r}")
+        raise UrdynStorageError(f"Corrupted outcome {outcome!r} for attempt {attempt_id!r}")
     try:
         recorded_at = dt.datetime.fromisoformat(recorded_at_raw)
     except ValueError as exc:
-        raise CortexStorageError(
+        raise UrdynStorageError(
             f"Corrupted recorded_at value {recorded_at_raw!r} for attempt {attempt_id!r}"
         ) from exc
     return Attempt(
@@ -2053,15 +2053,15 @@ def _row_to_conflict(row: tuple[str, str, str]) -> Conflict:
 
     for memory_id in (memory_id_a, memory_id_b):
         if not isinstance(memory_id, str) or not MEMORY_ID_PATTERN.fullmatch(memory_id):
-            raise CortexStorageError(f"Corrupted memory_id {memory_id!r} in Cortex conflict store")
+            raise UrdynStorageError(f"Corrupted memory_id {memory_id!r} in Urdyn conflict store")
     if not memory_id_a < memory_id_b:
-        raise CortexStorageError(
-            f"Corrupted conflict pair ordering ({memory_id_a!r}, {memory_id_b!r}) in Cortex conflict store"
+        raise UrdynStorageError(
+            f"Corrupted conflict pair ordering ({memory_id_a!r}, {memory_id_b!r}) in Urdyn conflict store"
         )
     try:
         recorded_at = dt.datetime.fromisoformat(recorded_at_raw)
     except ValueError as exc:
-        raise CortexStorageError(
+        raise UrdynStorageError(
             f"Corrupted recorded_at value {recorded_at_raw!r} for conflict "
             f"({memory_id_a!r}, {memory_id_b!r})"
         ) from exc
@@ -2078,17 +2078,17 @@ def _row_to_skill(
     skill_id, name, purpose, verification_state, source_lesson_id, recorded_at_raw = row
 
     if not isinstance(skill_id, str) or not SKILL_ID_PATTERN.fullmatch(skill_id):
-        raise CortexStorageError(f"Corrupted skill_id {skill_id!r} in Cortex skill store")
+        raise UrdynStorageError(f"Corrupted skill_id {skill_id!r} in Urdyn skill store")
     if verification_state not in VALID_SKILL_VERIFICATION_STATES:
-        raise CortexStorageError(
+        raise UrdynStorageError(
             f"Corrupted verification_state {verification_state!r} for skill {skill_id!r}"
         )
     if not isinstance(source_lesson_id, str) or not MEMORY_ID_PATTERN.fullmatch(source_lesson_id):
-        raise CortexStorageError(f"Corrupted source_lesson_id {source_lesson_id!r} for skill {skill_id!r}")
+        raise UrdynStorageError(f"Corrupted source_lesson_id {source_lesson_id!r} for skill {skill_id!r}")
     try:
         recorded_at = dt.datetime.fromisoformat(recorded_at_raw)
     except ValueError as exc:
-        raise CortexStorageError(
+        raise UrdynStorageError(
             f"Corrupted recorded_at value {recorded_at_raw!r} for skill {skill_id!r}"
         ) from exc
     return Skill(

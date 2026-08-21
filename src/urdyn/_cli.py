@@ -1,7 +1,7 @@
-"""Command-line interface for the Cortex Memory Engine.
+"""Command-line interface for the Urdyn Memory Engine.
 
 Every value printed here is either STRUCTURE the CLI itself emits
-(section headers, `- ` prefixes, field labels, ids and enum values Cortex
+(section headers, `- ` prefixes, field labels, ids and enum values Urdyn
 validates on the way in) or DATA the caller stored (memory content,
 attempt task/approach, skill names, evidence text, workspace paths and
 manifest fields). Data is always passed through `terminal_safe_text`
@@ -19,40 +19,40 @@ import sys
 from . import _watcher
 from ._attempt import VALID_OUTCOMES
 from ._context import DEFAULT_CONTEXT_BUDGET
-from ._errors import CortexError
+from ._errors import UrdynError
 from ._evidence import DEFAULT_EVIDENCE_KIND, VALID_EVIDENCE_KINDS
 from ._manifest import CANONICAL_PROFILES, PROFILE_DEV
 from ._memory import DEFAULT_KIND, VALID_KINDS
 from ._source import SEED_UNCHANGED
 from ._terminal import terminal_safe_text as _safe
-from ._workspace import DEFAULT_RECALL_LIMIT, Cortex
+from ._workspace import DEFAULT_RECALL_LIMIT, Urdyn
 
 
-def _discover_and_supervise() -> Cortex:
-    """`Cortex.discover()` plus the watcher recovery hook: every normal
+def _discover_and_supervise() -> Urdyn:
+    """`Urdyn.discover()` plus the watcher recovery hook: every normal
     command is a chance to notice and restart a `dev` workspace's Dev
     watcher if it is enabled but not currently running. A cheap no-op for
     every other workspace. Deliberately NOT used by `watch status`/
     `watch stop` (see their handlers) -- inspecting or stopping the
     watcher must never itself resurrect it.
     """
-    cx = Cortex.discover()
+    cx = Urdyn.discover()
     _watcher.supervise(cx)
     return cx
 
 
 # (A27) Both of these are CLI STRUCTURE, not caller data: every
-# component is a Cortex constant or an integer Cortex counted, so they
+# component is a Urdyn constant or an integer Urdyn counted, so they
 # are printed without `_safe` exactly like section headers are. They are
-# also plain ASCII on purpose -- Cortex treats Windows consoles as a
+# also plain ASCII on purpose -- Urdyn treats Windows consoles as a
 # first-class target, and a lifecycle warning must never be the line that
 # fails to encode.
 _SEMANTIC_SETUP_HINT = (
-    "Semantic retrieval is not enabled. Run `cortex semantic setup` to enable it "
+    "Semantic retrieval is not enabled. Run `urdyn semantic setup` to enable it "
     "(one-time model download; everything else stays offline)."
 )
 
-# (A43) `cortex watch start`/`cortex watch stop` render exactly the facts
+# (A43) `urdyn watch start`/`urdyn watch stop` render exactly the facts
 # `_watcher.WatcherAction` returns; this module owns the wording, never
 # `_watcher.py` itself. Keyed by the action's `code`, one line each.
 _WATCH_START_MESSAGES = {
@@ -84,7 +84,7 @@ def _print_retrieval(state) -> None:
     BEFORE the result itself -- including a healthy one, and including an
     empty result.
 
-    A26's failure was not that Cortex printed something wrong; it was
+    A26's failure was not that Urdyn printed something wrong; it was
     that `No relevant experience found.` is equally consistent with "the
     semantic channel ran and had nothing" and with "the semantic channel
     was never there". Printing this only when degraded would leave the
@@ -115,10 +115,10 @@ class _SafeArgumentParser(argparse.ArgumentParser):
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = _SafeArgumentParser(prog="cortex", description="Cortex Memory Engine")
+    parser = _SafeArgumentParser(prog="urdyn", description="Urdyn Memory Engine")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    init_parser = subparsers.add_parser("init", help="Initialize a Cortex workspace")
+    init_parser = subparsers.add_parser("init", help="Initialize a Urdyn workspace")
     init_parser.add_argument(
         "profile",
         nargs="?",
@@ -127,7 +127,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Workspace profile (default: general)",
     )
 
-    subparsers.add_parser("status", help="Show the current Cortex workspace status")
+    subparsers.add_parser("status", help="Show the current Urdyn workspace status")
 
     remember_parser = subparsers.add_parser("remember", help="Record a new memory")
     remember_parser.add_argument("text", help="Memory content")
@@ -145,7 +145,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     # (A20) Provenance only, repeatable. This is the CLI half of a
     # capability the library already had in full: `remember()` has taken
-    # `evidence=` since long before A19.1 made `cortex seed` produce
+    # `evidence=` since long before A19.1 made `urdyn seed` produce
     # citable `document_observation` Evidence, and without this flag the
     # only way to derive a belief from a seeded document was the Python
     # API. Deliberately NOT accompanied by `--supporting-evidence` or
@@ -154,7 +154,7 @@ def _build_parser() -> argparse.ArgumentParser:
     # support or reach `verified` at all -- the A12.1 gate is not merely
     # enforced against this path, it is unreachable from it. `--source
     # PATH` is likewise absent by decision: the caller cites an exact,
-    # immutable evidence_id (read from `cortex sources <path>`), so the
+    # immutable evidence_id (read from `urdyn sources <path>`), so the
     # provenance is never re-resolved against a file that has since
     # changed.
     remember_parser.add_argument(
@@ -168,13 +168,13 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # (A25.1) Closes the CLI gap A24 measured: `remember --evidence` (A20)
     # could cite an Evidence id but the CLI had no way to PRODUCE one --
-    # only `Cortex.add_evidence()` could. `evidence add` is a thin,
+    # only `Urdyn.add_evidence()` could. `evidence add` is a thin,
     # one-record-per-call adapter over exactly that method: no dedup, no
     # Event, no Source, no promotion to Memory (see `add_evidence()`'s own
     # docstring). Nested under `evidence` rather than a bare
-    # `cortex evidence "<content>"` so a future `evidence show <id>` has a
+    # `urdyn evidence "<content>"` so a future `evidence show <id>` has a
     # positional slot to use without a breaking rename -- the same reason
-    # `semantic setup` is nested instead of a bare `cortex semantic`.
+    # `semantic setup` is nested instead of a bare `urdyn semantic`.
     evidence_parser = subparsers.add_parser("evidence", help="Manage canonical Evidence")
     evidence_subparsers = evidence_parser.add_subparsers(dest="evidence_command", required=True)
     evidence_add_parser = evidence_subparsers.add_parser(
@@ -188,7 +188,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help=f"Evidence kind (default: {DEFAULT_EVIDENCE_KIND})",
     )
 
-    # (A25.1) The CLI half of `Cortex.learn()`. Deliberately its own
+    # (A25.1) The CLI half of `Urdyn.learn()`. Deliberately its own
     # top-level command, not `remember --verified`: `remember` stays the
     # A20 `user_asserted`-only path, and `--epistemic-state` is not
     # exposed anywhere -- `verified` is reachable ONLY by requesting this
@@ -265,7 +265,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     # (A38) A portable sibling of `context`, not a new domain API: it
-    # reuses `Cortex.context()` verbatim and only swaps the renderer
+    # reuses `Urdyn.context()` verbatim and only swaps the renderer
     # (`CompiledContext.render_portable()` instead of `render()`), so
     # stdout carries exactly the task-aware payload an external target
     # can consume -- no `Retrieval:` line, no success/progress noise.
@@ -297,7 +297,7 @@ def _build_parser() -> argparse.ArgumentParser:
     guard_parser.add_argument("action", help="Action about to be taken")
 
     seed_parser = subparsers.add_parser(
-        "seed", help="Record project files as Cortex sources (with no paths: show candidates)"
+        "seed", help="Record project files as Urdyn sources (with no paths: show candidates)"
     )
     seed_parser.add_argument(
         "paths",
@@ -305,7 +305,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Project files to record. With none, list dev discovery candidates without recording.",
     )
 
-    sources_parser = subparsers.add_parser("sources", help="List the project files Cortex tracks")
+    sources_parser = subparsers.add_parser("sources", help="List the project files Urdyn tracks")
     sources_parser.add_argument(
         "path",
         nargs="?",
@@ -341,10 +341,10 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         if args.command == "init":
-            cx = Cortex.init(".", args.profile)
-            # The path is filesystem-derived, not Cortex-validated: a
+            cx = Urdyn.init(".", args.profile)
+            # The path is filesystem-derived, not Urdyn-validated: a
             # directory name can hold anything, so it is data.
-            print(f"Initialized Cortex workspace at {_safe(str(cx.path))}")
+            print(f"Initialized Urdyn workspace at {_safe(str(cx.path))}")
             print(f"Profile: {_safe(cx.profile)}")
             # (A43) `dev` is the only profile that starts a background
             # process automatically, and it says so plainly every time --
@@ -358,8 +358,8 @@ def main(argv: list[str] | None = None) -> int:
                 else:
                     print(
                         "Project watcher: enabled -- a local background process now records changes "
-                        "to tracked project documents into .cortex/. Nothing leaves this machine. "
-                        "Stop it with `cortex watch stop`."
+                        "to tracked project documents into .urdyn/. Nothing leaves this machine. "
+                        "Stop it with `urdyn watch stop`."
                     )
             # (A27) `init` deliberately does NOT enable semantic
             # retrieval: doing so would download an embedding model, and
@@ -372,11 +372,11 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.command == "status":
             cx = _discover_and_supervise()
-            # `profile`/`cortex_id` are read back from the on-disk
+            # `profile`/`urdyn_id` are read back from the on-disk
             # manifest, which a hand edit can change: data, not structure.
-            print(f"Cortex workspace: {_safe(str(cx.path))}")
+            print(f"Urdyn workspace: {_safe(str(cx.path))}")
             print(f"Profile: {_safe(cx.profile)}")
-            print(f"Cortex ID: {_safe(cx.cortex_id)}")
+            print(f"Urdyn ID: {_safe(cx.urdyn_id)}")
             print(f"Memories: {cx._count_memories()}")
             print(f"Invariants: {len(cx.state(kind='invariant'))}")
             print(f"Pending: {len(cx.state(kind='pending'))}")
@@ -418,10 +418,10 @@ def main(argv: list[str] | None = None) -> int:
             if memory.supersedes:
                 print(f"Supersedes [{memory.supersedes}]")
             # Printed from the PERSISTED memory, not from `args.evidence`:
-            # what matters is the provenance Cortex actually holds, which
+            # what matters is the provenance Urdyn actually holds, which
             # for an "Already remembered" collapse is the existing memory's
             # own trail, and which the Core may have deduplicated. Ids are
-            # canonical Cortex identities (structure), like `memory_id`
+            # canonical Urdyn identities (structure), like `memory_id`
             # above.
             for evidence_id in memory.evidence_ids:
                 print(f"Evidence [{evidence_id}]")
@@ -458,7 +458,7 @@ def main(argv: list[str] | None = None) -> int:
             state = "verified" if memory.epistemic_state == "verified" else "candidate"
             print(f"Learned [{memory.memory_id}] ({state})")
             # Printed from the PERSISTED memory, exactly like `remember`
-            # above: what matters is the provenance Cortex actually holds.
+            # above: what matters is the provenance Urdyn actually holds.
             for evidence_id in memory.evidence_ids:
                 print(f"Evidence [{evidence_id}]")
             for evidence_id in memory.supporting_evidence_ids:
@@ -558,7 +558,7 @@ def main(argv: list[str] | None = None) -> int:
             # `render_portable()` is itself the rendering boundary (see
             # `_context.py`): stdout gets ONLY the portable payload, with
             # no `Retrieval:` line and no CLI-added status text, so
-            # `cortex export "<task>" > context.txt` and `| cat` both
+            # `urdyn export "<task>" > context.txt` and `| cat` both
             # capture exactly the payload an external target would read.
             print(compiled.render_portable())
             return 0
@@ -578,9 +578,9 @@ def main(argv: list[str] | None = None) -> int:
             result = cx.guard(args.action)
             _print_retrieval(result.retrieval)
             if result.is_empty():
-                print("No known Cortex warnings for this action.")
+                print("No known Urdyn warnings for this action.")
                 return 0
-            print("CORTEX WARNING")
+            print("URDYN WARNING")
             if result.known_failures:
                 print()
                 print("Known failure:")
@@ -612,12 +612,12 @@ def main(argv: list[str] | None = None) -> int:
                 print("Project context candidates:")
                 for candidate in candidates:
                     print(f"- {_safe(candidate)}")
-                print("Nothing was recorded. Run 'cortex seed <path>...' to record them.")
+                print("Nothing was recorded. Run 'urdyn seed <path>...' to record them.")
                 return 0
             results = cx.seed(args.paths)
             for result in results:
                 # Paths are filesystem-derived and are rendered as data;
-                # the status word is Cortex's own vocabulary (structure).
+                # the status word is Urdyn's own vocabulary (structure).
                 print(f"{result.status} {_safe(result.source.path)}")
             # Only claim something was recorded when something was: an
             # all-`unchanged` run writes nothing, and saying otherwise
@@ -625,11 +625,11 @@ def main(argv: list[str] | None = None) -> int:
             # remembered" (A17).
             if any(result.status != SEED_UNCHANGED for result in results):
                 # Says plainly that a copy of the text now lives in
-                # `.cortex/`: the user chose which files to observe, and
-                # what Cortex keeps of them should not have to be inferred
+                # `.urdyn/`: the user chose which files to observe, and
+                # what Urdyn keeps of them should not have to be inferred
                 # from documentation.
                 print("Recorded as project evidence, not verified knowledge.")
-                print("Document content is stored locally in .cortex/.")
+                print("Document content is stored locally in .urdyn/.")
             return 0
 
         if args.command == "sources":
@@ -678,7 +678,7 @@ def main(argv: list[str] | None = None) -> int:
                 # newlines and each resulting line is both prefixed by
                 # structure the CLI emits and rendered through the terminal
                 # boundary, so no line of output can be mistaken for
-                # Cortex's own -- while the canonical Evidence keeps every
+                # Urdyn's own -- while the canonical Evidence keeps every
                 # byte verbatim (see `_terminal.py`: sanitize on output,
                 # never on storage).
                 for line in evidence.content.split("\n"):
@@ -710,10 +710,10 @@ def main(argv: list[str] | None = None) -> int:
             return 2
 
         if args.command == "watch":
-            # Deliberately plain `Cortex.discover()`, never
+            # Deliberately plain `Urdyn.discover()`, never
             # `_discover_and_supervise()`: inspecting or stopping the
             # watcher must not itself resurrect it.
-            cx = Cortex.discover()
+            cx = Urdyn.discover()
             if args.watch_command == "status":
                 lines = _watcher.status_lines(cx, detailed=True)
                 for line in lines:
@@ -732,10 +732,10 @@ def main(argv: list[str] | None = None) -> int:
 
         parser.error(f"unknown command {args.command!r}")
         return 2
-    except (CortexError, ValueError) as exc:
+    except (UrdynError, ValueError) as exc:
         # Error text is structure the codebase writes, but it interpolates
         # ids, kinds and paths that came from outside -- rendered as data.
-        print(f"cortex: error: {_safe(str(exc))}", file=sys.stderr)
+        print(f"urdyn: error: {_safe(str(exc))}", file=sys.stderr)
         return 1
 
 

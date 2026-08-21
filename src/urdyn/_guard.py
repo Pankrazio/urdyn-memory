@@ -5,7 +5,7 @@ procedure directly relevant to an action about to be taken?
 answers "what prior experience is worth knowing before starting this
 task" and surfaces known failures, root causes, and verified lessons on
 lexical relevance alone. Guard answers a stricter question: "is there a
-Skill — a procedure Cortex was deliberately taught — that applies here?"
+Skill — a procedure Urdyn was deliberately taught — that applies here?"
 
 A `known_failure` must satisfy all three of:
   1. it failed;
@@ -58,16 +58,16 @@ class GuardResult:
     """Advisory output of `guard()`, grouped the same way `Preflight` is.
 
     Guard never blocks, mutates, or executes anything — it only reports
-    what Cortex found. `applicable_skills` carries each Skill's own
+    what Urdyn found. `applicable_skills` carries each Skill's own
     `verification_state`, so a consumer can tell a verified procedure from
-    an unverified one instead of Cortex quietly implying certainty it
+    an unverified one instead of Urdyn quietly implying certainty it
     doesn't have.
 
     `retrieval` (A27) reports which retrieval substrate actually answered
     — semantic plus lexical, or lexical alone because the semantic index
     was never enabled, is unusable here, or could not be brought up to
     date. It is `None` only when a caller built this object directly
-    without going through `Cortex.guard()`. Deliberately placed last and
+    without going through `Urdyn.guard()`. Deliberately placed last and
     defaulted so the existing field shape stays an unbroken prefix, and
     deliberately excluded from `is_empty()`: it describes HOW the answer
     was produced, never WHAT was found.
@@ -99,7 +99,7 @@ def build_guard_result(
     storage. Takes no dependency on SQLite so it can be tested and
     reasoned about independently of the storage boundary.
 
-    `skills` and `attempts` are expected in the order Cortex recorded
+    `skills` and `attempts` are expected in the order Urdyn recorded
     them, so the result stays deterministic across calls.
 
     `skill_fts_candidates`/`attempt_fts_candidates` are `(entity_id,

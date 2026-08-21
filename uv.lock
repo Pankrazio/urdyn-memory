@@ -46,7 +46,7 @@ wheels = [
 ]
 
 [[package]]
-name = "cortex-memory"
+name = "urdyn-memory"
 version = "0.1.0"
 source = { editable = "." }
 

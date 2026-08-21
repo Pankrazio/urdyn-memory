@@ -1,5 +1,5 @@
 [project]
-name = "cortex-memory"
+name = "urdyn-memory"
 version = "0.1.0"
 description = "A standalone, local-first, persistent, model-independent memory engine"
 readme = "README.md"
@@ -24,11 +24,14 @@ semantic = [
 ]
 
 [project.scripts]
-cortex = "cortex_memory._cli:main"
+urdyn = "urdyn._cli:main"
 
 [build-system]
 requires = ["uv_build>=0.11.24,<0.12.0"]
 build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "urdyn"
 
 [dependency-groups]
 dev = ["pytest>=8.0.0"]

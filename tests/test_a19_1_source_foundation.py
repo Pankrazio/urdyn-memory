@@ -1,6 +1,6 @@
 """A19.1 Source foundation & dev seed.
 
-Cortex gains a `Source` primitive: the stable identity of a project file
+Urdyn gains a `Source` primitive: the stable identity of a project file
 it has observed, plus the append-only history of those observations. Each
 observation records one `document_observation` Evidence holding the
 document's text VERBATIM, alongside a SHA-256 digest, a size and a
@@ -23,22 +23,22 @@ import uuid
 
 import pytest
 
-from cortex_memory import Cortex, CortexSourceError, CortexStorageError
-from cortex_memory._cli import main as cli_main
-from cortex_memory._evidence import (
+from urdyn import Urdyn, UrdynSourceError, UrdynStorageError
+from urdyn._cli import main as cli_main
+from urdyn._evidence import (
     EVIDENCE_KIND_DOCUMENT_OBSERVATION,
     RECOMMENDED_VALIDATION_EVIDENCE_KINDS,
     VALID_EVIDENCE_KINDS,
     VERIFICATION_EVIDENCE_KINDS,
 )
-from cortex_memory._source import (
+from urdyn._source import (
     MAX_SEED_FILE_BYTES,
     SEED_ADDED,
     SEED_CHANGED,
     SEED_UNCHANGED,
     compute_digest,
 )
-from cortex_memory._store import STORE_SCHEMA_VERSION, MemoryStore, db_path_for
+from urdyn._store import STORE_SCHEMA_VERSION, MemoryStore, db_path_for
 
 
 def _dev_workspace(tmp_path, **files):
@@ -46,7 +46,7 @@ def _dev_workspace(tmp_path, **files):
         target = tmp_path / name
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
-    return Cortex.init(tmp_path, "dev")
+    return Urdyn.init(tmp_path, "dev")
 
 
 def _raw_counts(cx):
@@ -113,7 +113,7 @@ class TestSeedRecordsSourceNotKnowledge:
         assert result.evidence.content == document
         assert cx.get_evidence(result.evidence.evidence_id).content == document
         # And it really reached the canonical store, not just the return value.
-        assert document.encode("utf-8") in db_path_for(tmp_path / ".cortex").read_bytes()
+        assert document.encode("utf-8") in db_path_for(tmp_path / ".urdyn").read_bytes()
 
     def test_evidence_content_carries_no_structured_metadata(self, tmp_path):
         """Path/digest/size live in their own columns. Embedding them in
@@ -235,7 +235,7 @@ class TestSeedPathSecurity:
         outside.write_text("not yours\n", encoding="utf-8")
         cx = _dev_workspace(tmp_path)
 
-        with pytest.raises(CortexSourceError, match="outside"):
+        with pytest.raises(UrdynSourceError, match="outside"):
             cx.seed(["../outside.md"])
 
     def test_absolute_path_outside_workspace_is_refused(self, tmp_path):
@@ -243,7 +243,7 @@ class TestSeedPathSecurity:
         outside.write_text("not yours\n", encoding="utf-8")
         cx = _dev_workspace(tmp_path)
 
-        with pytest.raises(CortexSourceError, match="outside"):
+        with pytest.raises(UrdynSourceError, match="outside"):
             cx.seed([str(outside)])
 
     def test_symlink_escaping_the_workspace_is_refused(self, tmp_path):
@@ -252,7 +252,7 @@ class TestSeedPathSecurity:
         cx = _dev_workspace(tmp_path)
         (tmp_path / "link.md").symlink_to(outside)
 
-        with pytest.raises(CortexSourceError, match="outside"):
+        with pytest.raises(UrdynSourceError, match="outside"):
             cx.seed(["link.md"])
 
     def test_symlink_inside_workspace_is_recorded_under_its_resolved_path(self, tmp_path):
@@ -280,69 +280,69 @@ class TestSeedPathSecurity:
             },
         )
         for path in (".env", "config/.env.local", "server.pem", "id_rsa", "app.key"):
-            with pytest.raises(CortexSourceError, match="credential"):
+            with pytest.raises(UrdynSourceError, match="credential"):
                 cx.seed([path])
 
-        assert not db_path_for(tmp_path / ".cortex").exists()
+        assert not db_path_for(tmp_path / ".urdyn").exists()
 
-    def test_cortex_own_directory_is_refused(self, tmp_path):
+    def test_urdyn_own_directory_is_refused(self, tmp_path):
         cx = _dev_workspace(tmp_path, **{"README.md": "x\n"})
         cx.seed(["README.md"])
 
-        with pytest.raises(CortexSourceError, match="Cortex's own"):
-            cx.seed([".cortex/manifest.json"])
+        with pytest.raises(UrdynSourceError, match="Urdyn's own"):
+            cx.seed([".urdyn/manifest.json"])
 
     def test_directory_is_refused(self, tmp_path):
         cx = _dev_workspace(tmp_path, **{"docs/a.md": "x\n"})
 
-        with pytest.raises(CortexSourceError, match="not a regular file"):
+        with pytest.raises(UrdynSourceError, match="not a regular file"):
             cx.seed(["docs"])
 
     def test_missing_file_is_refused(self, tmp_path):
         cx = _dev_workspace(tmp_path)
 
-        with pytest.raises(CortexSourceError, match="Cannot read"):
+        with pytest.raises(UrdynSourceError, match="Cannot read"):
             cx.seed(["nope.md"])
 
     def test_oversized_file_is_refused(self, tmp_path):
         cx = _dev_workspace(tmp_path)
         (tmp_path / "big.md").write_text("x" * (MAX_SEED_FILE_BYTES + 1), encoding="utf-8")
 
-        with pytest.raises(CortexSourceError, match="over the"):
+        with pytest.raises(UrdynSourceError, match="over the"):
             cx.seed(["big.md"])
 
     def test_binary_file_is_refused(self, tmp_path):
         cx = _dev_workspace(tmp_path)
         (tmp_path / "logo.png").write_bytes(b"\x89PNG\x00\x01\x02")
 
-        with pytest.raises(CortexSourceError, match="binary"):
+        with pytest.raises(UrdynSourceError, match="binary"):
             cx.seed(["logo.png"])
 
     def test_empty_file_is_refused(self, tmp_path):
         cx = _dev_workspace(tmp_path, **{"EMPTY.md": ""})
 
-        with pytest.raises(CortexSourceError, match="empty"):
+        with pytest.raises(UrdynSourceError, match="empty"):
             cx.seed(["EMPTY.md"])
 
-        assert not db_path_for(tmp_path / ".cortex").exists()
+        assert not db_path_for(tmp_path / ".urdyn").exists()
 
     def test_whitespace_only_file_is_refused(self, tmp_path):
         cx = _dev_workspace(tmp_path, **{"BLANK.md": "  \n\t\n"})
 
-        with pytest.raises(CortexSourceError, match="empty"):
+        with pytest.raises(UrdynSourceError, match="empty"):
             cx.seed(["BLANK.md"])
 
     def test_invalid_utf8_is_refused(self, tmp_path):
         cx = _dev_workspace(tmp_path)
         (tmp_path / "broken.md").write_bytes(b"caf\xe9 latin-1 only")
 
-        with pytest.raises(CortexSourceError, match="UTF-8"):
+        with pytest.raises(UrdynSourceError, match="UTF-8"):
             cx.seed(["broken.md"])
 
     def test_one_bad_path_records_none_of_the_batch(self, tmp_path):
         cx = _dev_workspace(tmp_path, **{"README.md": "good\n"})
 
-        with pytest.raises(CortexSourceError):
+        with pytest.raises(UrdynSourceError):
             cx.seed(["README.md", "missing.md"])
 
         assert cx.sources() == []
@@ -393,18 +393,18 @@ class TestDiscovery:
 
         cx.seed_candidates()
 
-        assert not db_path_for(tmp_path / ".cortex").exists()
+        assert not db_path_for(tmp_path / ".urdyn").exists()
         assert cx.sources() == []
 
     def test_discovery_is_dev_only(self, tmp_path):
-        cx = Cortex.init(tmp_path, "general")
+        cx = Urdyn.init(tmp_path, "general")
         (tmp_path / "README.md").write_text("r\n", encoding="utf-8")
 
         with pytest.raises(ValueError, match="dev"):
             cx.seed_candidates()
 
     def test_explicit_seed_works_outside_dev(self, tmp_path):
-        cx = Cortex.init(tmp_path, "general")
+        cx = Urdyn.init(tmp_path, "general")
         (tmp_path / "README.md").write_text("r\n", encoding="utf-8")
 
         (result,) = cx.seed(["README.md"])
@@ -434,7 +434,7 @@ class TestSources:
         cx = _dev_workspace(tmp_path)
 
         assert cx.sources() == []
-        assert not db_path_for(tmp_path / ".cortex").exists()
+        assert not db_path_for(tmp_path / ".urdyn").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -457,7 +457,7 @@ class TestProvenanceIntegration:
         assert memory.epistemic_state == "user_asserted"
 
     def test_document_observation_cannot_make_a_memory_verified(self, tmp_path):
-        """Cortex genuinely read the document -- and that still verifies
+        """Urdyn genuinely read the document -- and that still verifies
         nothing about whether what it says is true."""
         cx = _dev_workspace(tmp_path, **{"README.md": "claims things\n"})
         (result,) = cx.seed(["README.md"])
@@ -490,7 +490,7 @@ class TestPortability:
         moved = tmp_path / "moved-elsewhere"
         shutil.copytree(origin, moved)
 
-        reopened = Cortex.open(moved)
+        reopened = Urdyn.open(moved)
         (source,) = reopened.sources()
         assert source.source_id == first.source.source_id
         assert source.path == "README.md"
@@ -507,7 +507,7 @@ class TestPortability:
         (second,) = cx.seed(["docs/decisions.md"])
 
         (tmp_path / "docs" / "decisions.md").unlink()
-        reopened = Cortex.open(tmp_path)
+        reopened = Urdyn.open(tmp_path)
 
         (source,) = reopened.sources()
         assert [observation.digest for observation in source.observations] == [
@@ -518,7 +518,7 @@ class TestPortability:
         assert reopened.get_evidence(second.evidence.evidence_id).content == "we chose Postgres\n"
         # Re-seeding a file that no longer exists fails plainly; nothing
         # marks the Source deleted (no deletion tracking in A19.1).
-        with pytest.raises(CortexSourceError, match="Cannot read"):
+        with pytest.raises(UrdynSourceError, match="Cannot read"):
             reopened.seed(["docs/decisions.md"])
 
     def test_workspace_copied_without_the_project_files_keeps_its_snapshots(self, tmp_path):
@@ -529,12 +529,12 @@ class TestPortability:
         cx = _dev_workspace(origin, **{"README.md": "portable payload\n"})
         (first,) = cx.seed(["README.md"])
 
-        # Only `.cortex/` travels: the project itself is left behind.
+        # Only `.urdyn/` travels: the project itself is left behind.
         archived = tmp_path / "archived"
         archived.mkdir()
-        shutil.copytree(origin / ".cortex", archived / ".cortex")
+        shutil.copytree(origin / ".urdyn", archived / ".urdyn")
 
-        reopened = Cortex.open(archived)
+        reopened = Urdyn.open(archived)
         (source,) = reopened.sources()
         assert source.path == "README.md"
         assert reopened.get_evidence(first.evidence.evidence_id).content == "portable payload\n"
@@ -546,7 +546,7 @@ class TestPortability:
         with sqlite3.connect(cx._db_path) as connection:
             paths = [row[0] for row in connection.execute("SELECT path FROM sources")]
         assert paths == ["docs/a.md"]
-        assert str(tmp_path).encode() not in db_path_for(tmp_path / ".cortex").read_bytes()
+        assert str(tmp_path).encode() not in db_path_for(tmp_path / ".urdyn").read_bytes()
 
 
 # ---------------------------------------------------------------------------
@@ -601,7 +601,7 @@ class TestCorruptionFailsClosed:
             connection.execute("UPDATE sources SET source_id = 'not-a-canonical-id'")
             connection.execute("UPDATE source_observations SET source_id = 'not-a-canonical-id'")
 
-        with pytest.raises(CortexStorageError, match="Corrupted source_id"):
+        with pytest.raises(UrdynStorageError, match="Corrupted source_id"):
             cx.sources()
 
     def test_absolute_persisted_path_is_rejected_on_read(self, tmp_path):
@@ -617,7 +617,7 @@ class TestCorruptionFailsClosed:
         with sqlite3.connect(cx._db_path) as connection:
             connection.execute("UPDATE source_observations SET digest = 'zz'")
 
-        with pytest.raises(CortexStorageError, match="Corrupted digest"):
+        with pytest.raises(UrdynStorageError, match="Corrupted digest"):
             cx.sources()
 
     def test_negative_size_is_refused_by_the_table(self, tmp_path):
@@ -631,7 +631,7 @@ class TestCorruptionFailsClosed:
         with sqlite3.connect(cx._db_path) as connection:
             connection.execute("UPDATE source_observations SET observed_at = 'yesterday'")
 
-        with pytest.raises(CortexStorageError, match="Corrupted observed_at"):
+        with pytest.raises(UrdynStorageError, match="Corrupted observed_at"):
             cx.sources()
 
     def test_dangling_evidence_reference_is_rejected_on_read(self, tmp_path):
@@ -639,7 +639,7 @@ class TestCorruptionFailsClosed:
         with sqlite3.connect(cx._db_path) as connection:
             connection.execute("DELETE FROM evidence")
 
-        with pytest.raises(CortexStorageError, match="unknown evidence"):
+        with pytest.raises(UrdynStorageError, match="unknown evidence"):
             cx.sources()
 
     def test_dangling_source_reference_is_rejected_on_read(self, tmp_path):
@@ -647,7 +647,7 @@ class TestCorruptionFailsClosed:
         with sqlite3.connect(cx._db_path) as connection:
             connection.execute("DELETE FROM sources")
 
-        with pytest.raises(CortexStorageError, match="unknown source"):
+        with pytest.raises(UrdynStorageError, match="unknown source"):
             cx.sources()
 
     def test_source_without_observations_is_rejected_on_reseed(self, tmp_path):
@@ -655,7 +655,7 @@ class TestCorruptionFailsClosed:
         with sqlite3.connect(cx._db_path) as connection:
             connection.execute("DELETE FROM source_observations")
 
-        with pytest.raises(CortexStorageError, match="no observations"):
+        with pytest.raises(UrdynStorageError, match="no observations"):
             cx.seed(["README.md"])
 
 
@@ -700,7 +700,7 @@ class TestFailureInjection:
 
         store = MemoryStore.create_or_open(cx._db_path)
         store._connection = _FailingConnection(store._connection, fail_on)
-        with pytest.raises(CortexStorageError):
+        with pytest.raises(UrdynStorageError):
             store.observe_source(
                 path="README.md",
                 digest=compute_digest(b"x\n"),
@@ -728,9 +728,9 @@ _PROC_COUNT = 6
 def _seed_worker(workspace_dir, relative_path, barrier, queue):
     try:
         barrier.wait(timeout=30)
-        from cortex_memory import Cortex as _Cortex
+        from urdyn import Urdyn as _Urdyn
 
-        (result,) = _Cortex.open(workspace_dir).seed([relative_path])
+        (result,) = _Urdyn.open(workspace_dir).seed([relative_path])
         queue.put(("ok", result.status, result.source.source_id, result.evidence.evidence_id))
     except BaseException as exc:  # noqa: BLE001 - reported to the parent, not swallowed
         queue.put(("error", f"{type(exc).__name__}: {exc}", None, None))
@@ -765,7 +765,7 @@ def _integrity(db_path):
 class TestConcurrentSeed:
     def test_concurrent_first_seed_produces_one_source(self, tmp_path):
         cx = _dev_workspace(tmp_path, **{"README.md": "shared\n"})
-        assert not db_path_for(tmp_path / ".cortex").exists()
+        assert not db_path_for(tmp_path / ".urdyn").exists()
 
         results = _run_seed_workers(tmp_path, "README.md")
 
@@ -960,7 +960,7 @@ class TestSourcesCli:
         cli_main(["seed", "internal-design.md"])
 
         captured = capsys.readouterr()
-        assert "stored locally in .cortex/" in captured.out
+        assert "stored locally in .urdyn/" in captured.out
         assert "not verified knowledge" in captured.out
 
     def test_unchanged_seed_claims_nothing_was_recorded(self, tmp_path, monkeypatch, capsys):
@@ -1011,7 +1011,7 @@ class TestSourcesCli:
         self._seeded_workspace(tmp_path, monkeypatch, content=f"{payload}\n")
         capsys.readouterr()
 
-        cx = Cortex.open(tmp_path)
+        cx = Urdyn.open(tmp_path)
         (source,) = cx.sources()
         evidence = cx.get_evidence(source.latest_observation.evidence_id)
 
@@ -1040,7 +1040,7 @@ class TestMigrationV6ToV7:
         legacy = cx.add_evidence("see the README", kind="file_reference")
         _downgrade_to_v6(cx._db_path)
 
-        reopened = Cortex.open(tmp_path)
+        reopened = Urdyn.open(tmp_path)
 
         # Nothing is backfilled: a pre-v7 `file_reference` was never an
         # observation of a tracked Source, and guessing one out of its
@@ -1055,7 +1055,7 @@ class TestMigrationV6ToV7:
         cx.remember("a belief recorded before A19.1", kind="note")
         _downgrade_to_v6(cx._db_path)
 
-        (result,) = Cortex.open(tmp_path).seed(["README.md"])
+        (result,) = Urdyn.open(tmp_path).seed(["README.md"])
 
         assert result.status == SEED_ADDED
         assert result.evidence.content == "post-migration\n"

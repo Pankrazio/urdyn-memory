@@ -1,4 +1,4 @@
-"""Tests for `Cortex.guard()` and `GuardResult`.
+"""Tests for `Urdyn.guard()` and `GuardResult`.
 
 `test_guard_finds_known_failure_applicable_skill_and_validation` mirrors
 the A5 milestone's own REAL UTILITY TEST scenario, and
@@ -11,7 +11,7 @@ import dataclasses
 
 import pytest
 
-from cortex_memory import Cortex
+from urdyn import Urdyn
 
 
 def _build_refresh_token_experience(cx):
@@ -53,14 +53,14 @@ def _build_refresh_token_experience(cx):
 
 
 def test_guard_rejects_empty_action(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
 
     with pytest.raises(ValueError):
         cx.guard("   ")
 
 
 def test_guard_on_empty_workspace_returns_empty_result(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
 
     result = cx.guard("Modify refresh-token persistence logic")
 
@@ -68,7 +68,7 @@ def test_guard_on_empty_workspace_returns_empty_result(tmp_path):
 
 
 def test_guard_finds_known_failure_applicable_skill_and_validation(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     _build_refresh_token_experience(cx)
 
     result = cx.guard("Modify refresh-token persistence logic")
@@ -84,7 +84,7 @@ def test_guard_finds_known_failure_applicable_skill_and_validation(tmp_path):
 
 
 def test_guard_on_unrelated_action_returns_empty(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     _build_refresh_token_experience(cx)
 
     result = cx.guard("Change CSS button color")
@@ -93,7 +93,7 @@ def test_guard_on_unrelated_action_returns_empty(tmp_path):
 
 
 def test_guard_excludes_skill_with_no_lexical_relevance(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     _build_refresh_token_experience(cx)
 
     result = cx.guard("Refactor CSS button styles")
@@ -105,7 +105,7 @@ def test_guard_is_not_an_alias_of_preflight(tmp_path):
     """A failed attempt that lexically matches the action but has no
     associated Skill must surface through preflight but NOT through
     guard: guard is anchored on applicable skills, preflight is not."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     cx.record_attempt(
         task="Refactor the database connection pool.",
         approach="Rewrite the pooling logic from scratch.",
@@ -120,7 +120,7 @@ def test_guard_is_not_an_alias_of_preflight(tmp_path):
 
 
 def test_guard_ordering_is_deterministic_across_calls(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     _build_refresh_token_experience(cx)
 
     first_call = cx.guard("Modify refresh-token persistence logic")
@@ -135,11 +135,11 @@ def test_guard_ordering_is_deterministic_across_calls(tmp_path):
 
 
 def test_guard_survives_reopening(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     _build_refresh_token_experience(cx)
     del cx
 
-    reopened = Cortex.open(tmp_path)
+    reopened = Urdyn.open(tmp_path)
     result = reopened.guard("Modify refresh-token persistence logic")
 
     assert not result.is_empty()
@@ -151,10 +151,10 @@ def test_guard_from_independent_handle_after_promotion(tmp_path):
     experience and promotes a skill; a second, independent handle (a
     fresh agent) discovers the workspace and gets a warning purely from
     `guard()`, without any shared conversation state."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     _build_refresh_token_experience(cx)
 
-    agent_b = Cortex.discover(tmp_path)
+    agent_b = Urdyn.discover(tmp_path)
     result = agent_b.guard("Modify refresh-token persistence logic")
 
     assert len(result.known_failures) == 1
@@ -167,7 +167,7 @@ def test_guard_from_independent_handle_after_promotion(tmp_path):
 
 
 def test_guard_result_is_immutable(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     result = cx.guard("some action")
 
     with pytest.raises(dataclasses.FrozenInstanceError):
@@ -182,7 +182,7 @@ def test_guard_shared_evidence_does_not_leak_across_unrelated_skills(tmp_path):
     enough to leak the unrelated AUTH failure in, since AUTH's own
     task/approach text has nothing lexically in common with the CSS
     action either."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     shared_note = cx.add_evidence("CI run #4021 output", kind="command_output")
 
     css_attempt = cx.record_attempt(
@@ -242,7 +242,7 @@ def test_guard_excludes_failure_that_shares_evidence_but_is_not_lexically_releva
     sufficient. Here the failed attempt's own task/approach text has
     nothing to do with the guarded action, even though it cites the same
     Evidence as the (lexically applicable) Skill."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     shared_note = cx.add_evidence("CI run #4021 output", kind="command_output")
 
     unrelated_attempt = cx.record_attempt(
@@ -274,7 +274,7 @@ def test_guard_candidate_skill_is_still_reported_but_labeled_candidate(tmp_path)
     honestly labeled as `candidate`, since epistemic honesty means never
     pretending a candidate is verified, not suppressing candidates
     entirely."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     lesson = cx.learn("Refresh tokens for authentication rotation might need special handling.")
     cx.promote(
         lesson,

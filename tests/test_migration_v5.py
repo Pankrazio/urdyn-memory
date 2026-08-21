@@ -17,7 +17,7 @@ import uuid
 
 import pytest
 
-from cortex_memory import Cortex, CortexStorageError
+from urdyn import Urdyn, UrdynStorageError
 
 _CREATE_MEMORIES_V2_SQL = """
     CREATE TABLE memories (
@@ -182,7 +182,7 @@ def _build_v4_database(
 
 
 def test_v4_database_opens_and_memory_survives(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     memory_id = _build_v4_database(cx._db_path)
 
     results = cx.recall("legacy verified lesson")
@@ -192,7 +192,7 @@ def test_v4_database_opens_and_memory_survives(tmp_path):
 
 
 def test_v4_migration_reaches_v5_and_adds_role_column(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     _build_v4_database(cx._db_path)
 
     # migration v4 -> v5 -> v6 -> v7 happens transparently on first open
@@ -218,7 +218,7 @@ def test_legacy_verified_memory_stays_verified_with_empty_supporting_ids(tmp_pat
     though it has no explicit supporting Evidence (that concept did not
     exist when it was recorded). Its generic `evidence_ids` must survive
     unchanged; `supporting_evidence_ids` is empty, not invented."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     evidence_id = uuid.uuid4().hex
     memory_id = _build_v4_database(
         cx._db_path,
@@ -238,12 +238,12 @@ def test_legacy_verified_memory_stays_verified_with_empty_supporting_ids(tmp_pat
 def test_legacy_verified_lesson_still_surfaces_in_preflight_after_migration(tmp_path):
     """`preflight().verified_lessons` filters only
     on `epistemic_state == "verified"` (see `_workspace.py`'s
-    `Cortex.preflight`) -- it has never depended on
+    `Urdyn.preflight`) -- it has never depended on
     `supporting_evidence_ids` and must not start doing so now. A
     v4-migrated verified lesson with empty `supporting_evidence_ids`
     must keep appearing in preflight exactly as it did before A12.1,
     for a lexically matching task."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     memory_id = _build_v4_database(
         cx._db_path,
         content="Migration rollback is atomic under process crashes.",
@@ -263,7 +263,7 @@ def test_legacy_verified_lesson_still_surfaces_in_preflight_after_migration(tmp_
 def test_legacy_memory_evidence_rows_are_backfilled_to_related_not_supporting(tmp_path):
     """The migration must never invent an explicit support assertion a
     pre-A12.1 caller never made."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     evidence_id = uuid.uuid4().hex
     memory_id = _build_v4_database(
         cx._db_path,
@@ -288,7 +288,7 @@ def test_legacy_memory_evidence_rows_are_backfilled_to_related_not_supporting(tm
 def test_v4_migrated_lesson_preserved_after_new_supporting_lesson_recorded(tmp_path):
     """The legacy row and a freshly-recorded, properly-supported lesson
     coexist without interference after migration."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     legacy_evidence_id = uuid.uuid4().hex
     legacy_id = _build_v4_database(
         cx._db_path,
@@ -307,7 +307,7 @@ def test_v4_migrated_lesson_preserved_after_new_supporting_lesson_recorded(tmp_p
 
 
 def test_v4_migration_is_safe_to_repeat(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     memory_id = _build_v4_database(cx._db_path)
 
     first = cx.recall("legacy verified lesson")
@@ -325,7 +325,7 @@ def test_v4_migration_does_not_destroy_data_on_failure(tmp_path):
     partway through the migration's own transaction. The schema version
     must not advance and the pre-existing canonical row must survive
     untouched."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     memory_id = _build_v4_database(cx._db_path, content="must survive a failed migration")
 
     connection = sqlite3.connect(cx._db_path)
@@ -335,7 +335,7 @@ def test_v4_migration_does_not_destroy_data_on_failure(tmp_path):
     finally:
         connection.close()
 
-    with pytest.raises(CortexStorageError):
+    with pytest.raises(UrdynStorageError):
         cx.recall("must survive")
 
     connection = sqlite3.connect(cx._db_path)
@@ -361,9 +361,9 @@ def test_invalid_role_value_raises_cleanly_instead_of_silently_dropping_support(
     (never written by this codebase, but not impossible for hand-edited
     or externally-touched data) must not be silently reinterpreted as
     "not supporting" -- that would drop a real support designation with
-    no error at all. It must raise `CortexStorageError`, the same way
+    no error at all. It must raise `UrdynStorageError`, the same way
     `_row_to_memory` already does for a corrupted `kind`/`epistemic_state`."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     validation = cx.add_evidence("checked", kind="test_result")
     lesson = cx.learn("a lesson", supporting_evidence=[validation], verified=True)
 
@@ -377,7 +377,7 @@ def test_invalid_role_value_raises_cleanly_instead_of_silently_dropping_support(
     finally:
         connection.close()
 
-    with pytest.raises(CortexStorageError):
+    with pytest.raises(UrdynStorageError):
         cx.state(kind="lesson")
 
 
@@ -386,12 +386,12 @@ def test_user_version_5_with_missing_role_column_raises_cleanly(tmp_path):
     trusted as proof the schema is actually shaped like v5: if
     `memory_evidence` is missing its `role` column (a corrupted or
     incomplete upgrade), every read/write path that touches
-    `role` fails loudly as `CortexStorageError` -- the same standard of
+    `role` fails loudly as `UrdynStorageError` -- the same standard of
     schema integrity already applied to every other version (table-level
     checks in `_ensure_schema`, `sqlite3.DatabaseError` wrapped
     consistently everywhere else in this module). Nothing recreates the
     table automatically and no data is lost."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     original = cx.remember("seed content that must survive", kind="note")
 
     connection = sqlite3.connect(cx._db_path)
@@ -405,13 +405,13 @@ def test_user_version_5_with_missing_role_column_raises_cleanly(tmp_path):
         (version,) = connection.execute("PRAGMA user_version").fetchone()
     finally:
         connection.close()
-    # A19.1 bumped STORE_SCHEMA_VERSION to 7, so `Cortex.init` above
+    # A19.1 bumped STORE_SCHEMA_VERSION to 7, so `Urdyn.init` above
     # already created this store directly at v7; the assertion tracks
     # that literal, not the v5 this test predates.
     assert version == 7  # sabotage did not touch the version stamp
 
-    reopened = Cortex.open(tmp_path)
-    with pytest.raises(CortexStorageError):
+    reopened = Urdyn.open(tmp_path)
+    with pytest.raises(UrdynStorageError):
         reopened.recall("seed")
 
     # the canonical row itself was never touched or lost by the sabotage

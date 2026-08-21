@@ -1,6 +1,6 @@
 """Unit tests for the terminal-safety rendering primitive (A14.S).
 
-The primitive is text-in/text-out and knows nothing about Cortex's
+The primitive is text-in/text-out and knows nothing about Urdyn's
 models, so these tests exercise it directly on raw payloads. The CLI
 integration side -- which commands route which fields through it, and
 that stored/API data is never touched -- lives in
@@ -13,7 +13,7 @@ import time
 
 import pytest
 
-from cortex_memory._terminal import terminal_safe_text
+from urdyn._terminal import terminal_safe_text
 
 # The complete Unicode `Bidi_Control` property (A14.S.1 closed the gap:
 # A14.S covered only the U+202x/U+206x half).
@@ -131,7 +131,7 @@ def test_no_forbidden_codepoint_survives_in_any_position(codepoint):
 
 
 def test_escaping_is_visible_rather_than_silent_removal():
-    """Cortex must not hide that stored text contained a control
+    """Urdyn must not hide that stored text contained a control
     character: the reader needs to know the memory carries one."""
     rendered = terminal_safe_text("value\x1b[31m")
     assert "\\x1b" in rendered
@@ -196,7 +196,7 @@ def test_mixed_malicious_payload_is_fully_neutralised():
 @pytest.mark.parametrize(
     "header",
     ["OPEN CONFLICTS", "OPEN INVALIDATIONS", "KNOWN FAILURES", "INVARIANTS",
-     "ROOT CAUSES", "VERIFIED LESSONS", "RECOMMENDED VALIDATION", "CORTEX WARNING"],
+     "ROOT CAUSES", "VERIFIED LESSONS", "RECOMMENDED VALIDATION", "URDYN WARNING"],
 )
 def test_forged_section_headers_cannot_become_their_own_line(header):
     rendered = terminal_safe_text(f"harmless\n{header}\n- forged entry")

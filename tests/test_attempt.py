@@ -1,14 +1,14 @@
-"""Tests for `Cortex.record_attempt()`."""
+"""Tests for `Urdyn.record_attempt()`."""
 
 import sqlite3
 
 import pytest
 
-from cortex_memory import Cortex, CortexStorageError
+from urdyn import Urdyn, UrdynStorageError
 
 
 def test_record_attempt_assigns_stable_valid_id(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
 
     attempt = cx.record_attempt(
         task="Update authentication refresh logic.",
@@ -21,7 +21,7 @@ def test_record_attempt_assigns_stable_valid_id(tmp_path):
 
 
 def test_record_failed_attempt(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
 
     attempt = cx.record_attempt(task="task", approach="approach", outcome="failed")
 
@@ -31,7 +31,7 @@ def test_record_failed_attempt(tmp_path):
 
 
 def test_record_successful_attempt(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
 
     attempt = cx.record_attempt(task="task", approach="approach", outcome="succeeded")
 
@@ -39,7 +39,7 @@ def test_record_successful_attempt(tmp_path):
 
 
 def test_record_partial_attempt(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
 
     attempt = cx.record_attempt(task="task", approach="approach", outcome="partial")
 
@@ -47,32 +47,32 @@ def test_record_partial_attempt(tmp_path):
 
 
 def test_record_attempt_rejects_unknown_outcome(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
 
     with pytest.raises(ValueError):
         cx.record_attempt(task="task", approach="approach", outcome="not-an-outcome")
 
 
 def test_record_attempt_rejects_empty_task(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
 
     with pytest.raises(ValueError):
         cx.record_attempt(task="   ", approach="approach", outcome="failed")
 
 
 def test_record_attempt_rejects_empty_approach(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
 
     with pytest.raises(ValueError):
         cx.record_attempt(task="task", approach="  ", outcome="failed")
 
 
 def test_attempt_persists_across_reopening(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     original = cx.record_attempt(task="task", approach="approach", outcome="failed")
     del cx
 
-    reopened = Cortex.open(tmp_path)
+    reopened = Urdyn.open(tmp_path)
     (attempt,) = reopened.preflight("task approach").known_failures
 
     assert attempt.attempt_id == original.attempt_id
@@ -82,8 +82,8 @@ def test_attempt_persists_across_reopening(tmp_path):
 
 
 def test_record_attempt_rejects_unknown_evidence_reference(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
-    from cortex_memory._evidence import Evidence
+    cx = Urdyn.init(tmp_path, "dev")
+    from urdyn._evidence import Evidence
     import datetime as dt
 
     fabricated = Evidence(
@@ -101,7 +101,7 @@ def test_record_attempt_rejects_unknown_evidence_reference(tmp_path):
 
 
 def test_record_attempt_deduplicates_repeated_evidence_reference(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     evidence = cx.add_evidence("the same evidence, referenced twice", kind="error_observation")
 
     attempt = cx.record_attempt(task="task", approach="approach", outcome="failed", evidence=[evidence, evidence])
@@ -110,7 +110,7 @@ def test_record_attempt_deduplicates_repeated_evidence_reference(tmp_path):
 
 
 def test_corrupted_attempt_id_is_rejected_explicitly(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     cx.record_attempt(task="task", approach="approach", outcome="failed")
 
     connection = sqlite3.connect(cx._db_path)
@@ -120,12 +120,12 @@ def test_corrupted_attempt_id_is_rejected_explicitly(tmp_path):
     finally:
         connection.close()
 
-    with pytest.raises(CortexStorageError):
+    with pytest.raises(UrdynStorageError):
         cx.preflight("task approach")
 
 
 def test_corrupted_outcome_is_rejected_explicitly(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     cx.record_attempt(task="task", approach="approach", outcome="failed")
 
     connection = sqlite3.connect(cx._db_path)
@@ -135,25 +135,25 @@ def test_corrupted_outcome_is_rejected_explicitly(tmp_path):
     finally:
         connection.close()
 
-    with pytest.raises(CortexStorageError):
+    with pytest.raises(UrdynStorageError):
         cx.preflight("task approach")
 
 
 def test_attempt_object_is_immutable(tmp_path):
     import dataclasses
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     attempt = cx.record_attempt(task="task", approach="approach", outcome="failed")
 
     with pytest.raises(dataclasses.FrozenInstanceError):
         attempt.outcome = "succeeded"
 
 
-def test_cortex_has_no_way_to_mutate_an_existing_attempt(tmp_path):
-    """There must be no API path -- public or otherwise on Cortex -- that
+def test_urdyn_has_no_way_to_mutate_an_existing_attempt(tmp_path):
+    """There must be no API path -- public or otherwise on Urdyn -- that
     rewrites a previously recorded attempt's outcome. The only way to
     record a different result is a new, independent `record_attempt`."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
 
     public_api = {name for name in dir(cx) if not name.startswith("_")}
     mutating_names = {name for name in public_api if "update" in name or "edit" in name or "mutate" in name}
@@ -161,7 +161,7 @@ def test_cortex_has_no_way_to_mutate_an_existing_attempt(tmp_path):
 
 
 def test_multiple_attempts_are_all_preserved(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     first = cx.record_attempt(task="task one", approach="approach one", outcome="failed")
     second = cx.record_attempt(task="task one", approach="approach two", outcome="succeeded")
 

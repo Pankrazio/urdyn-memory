@@ -1,14 +1,14 @@
-"""Minimal .gitignore safety net for the Cortex workspace directory."""
+"""Minimal .gitignore safety net for the Urdyn workspace directory."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-_ENTRY = ".cortex/"
+_ENTRY = ".urdyn/"
 
 
 def ensure_gitignore_entry(workspace: Path) -> None:
-    """Ensure `.cortex/` is ignored, without disturbing existing content."""
+    """Ensure `.urdyn/` is ignored, without disturbing existing content."""
     gitignore_path = workspace / ".gitignore"
 
     if not gitignore_path.exists():

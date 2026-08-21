@@ -1,28 +1,28 @@
-"""Public exceptions raised by the Cortex Memory Engine."""
+"""Public exceptions raised by the Urdyn Memory Engine."""
 
 
-class CortexError(Exception):
-    """Base class for all Cortex-specific errors."""
+class UrdynError(Exception):
+    """Base class for all Urdyn-specific errors."""
 
 
-class CortexNotFoundError(CortexError):
-    """Raised when no Cortex workspace can be located."""
+class UrdynNotFoundError(UrdynError):
+    """Raised when no Urdyn workspace can be located."""
 
 
-class CortexAlreadyInitializedError(CortexError):
+class UrdynAlreadyInitializedError(UrdynError):
     """Raised when re-initializing a workspace with a conflicting profile."""
 
 
-class CortexManifestError(CortexError):
-    """Raised when a persisted Cortex manifest is missing or malformed."""
+class UrdynManifestError(UrdynError):
+    """Raised when a persisted Urdyn manifest is missing or malformed."""
 
 
-class CortexStorageError(CortexError):
+class UrdynStorageError(UrdynError):
     """Raised when the persisted memory store is missing, corrupted, or an
     unsupported schema version."""
 
 
-class CortexSourceError(CortexError):
+class UrdynSourceError(UrdynError):
     """Raised when a path cannot be seeded as a project Source: it escapes
     the workspace, is not an ordinary text file, is too large, or matches
     the credential denylist.
@@ -33,12 +33,12 @@ class CortexSourceError(CortexError):
     automatic writer would run over more), where one rejected file is an
     expected per-item outcome rather than a caller bug. Catching
     `ValueError` to skip it would also swallow genuine programming errors;
-    this class lets a batch caller skip exactly what Cortex refused."""
+    this class lets a batch caller skip exactly what Urdyn refused."""
 
 
-class CortexSemanticUnavailableError(CortexError):
+class UrdynSemanticUnavailableError(UrdynError):
     """Raised only by explicit semantic setup/maintenance calls (e.g. the
-    `cortex semantic setup` CLI command) when the `cortex-memory[semantic]`
+    `urdyn semantic setup` CLI command) when the `urdyn-memory[semantic]`
     optional dependency is not installed. Never raised by `preflight()` or
     `guard()`: those degrade silently to lexical/FTS-only instead, per
     A7.4's "no hidden download, no crash" requirement."""

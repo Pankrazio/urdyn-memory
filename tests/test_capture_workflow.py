@@ -29,15 +29,15 @@ Evidence is supporting material resolved by id from their `evidence_ids`.
 
 from __future__ import annotations
 
-from cortex_memory import Cortex
-from cortex_memory._retrieval import ENTITY_ATTEMPT, ENTITY_MEMORY, ENTITY_SKILL
-from cortex_memory._store import SEARCH_INDEX_TABLE
+from urdyn import Urdyn
+from urdyn._retrieval import ENTITY_ATTEMPT, ENTITY_MEMORY, ENTITY_SKILL
+from urdyn._store import SEARCH_INDEX_TABLE
 
 TASK = "Prevent a database migration from leaving partially applied state after a failure."
 
 
 def test_capture_workflow_end_to_end(tmp_path):
-    process_a = Cortex.init(tmp_path, "dev")
+    process_a = Urdyn.init(tmp_path, "dev")
 
     # STEP A -- explicit failure Evidence: a raw observation, no
     # conclusion drawn from it yet.
@@ -91,7 +91,7 @@ def test_capture_workflow_end_to_end(tmp_path):
     del process_a
 
     # a brand-new process/session discovers the same workspace
-    process_b = Cortex.open(tmp_path)
+    process_b = Urdyn.open(tmp_path)
 
     result = process_b.preflight(TASK)
 
@@ -136,7 +136,7 @@ def test_standalone_evidence_is_never_surfaced_by_preflight(tmp_path):
     recommended validation. Capture never promotes anything to
     knowledge on its own; only an explicit `record_attempt()`/`learn()`
     call does."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
 
     cx.add_evidence(
         "A forced migration failure left only part of the schema update applied.",
@@ -161,7 +161,7 @@ def test_add_evidence_does_not_append_an_event(tmp_path):
     the event log the way Memory/Attempt/Skill are."""
     import sqlite3
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     cx.add_evidence("some raw observation", kind="command_output")
 
     connection = sqlite3.connect(cx._db_path)
@@ -183,7 +183,7 @@ def test_evidence_content_is_never_indexed_for_retrieval(tmp_path):
     `ENTITY_ATTEMPT`/`ENTITY_SKILL`."""
     import sqlite3
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     evidence = cx.add_evidence(
         "A forced migration failure left only part of the schema update applied.",
         kind="error_observation",
@@ -211,7 +211,7 @@ def test_add_evidence_with_identical_content_yields_distinct_ids(tmp_path):
     content: two observations made at different times are different
     evidence, even if their text happens to coincide -- content equality
     is not event equality."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
 
     first = cx.add_evidence("1 failed, 8 passed", kind="test_result")
     second = cx.add_evidence("1 failed, 8 passed", kind="test_result")
@@ -236,11 +236,11 @@ def test_capture_workflow_does_not_depend_on_the_semantic_channel(tmp_path, monk
     semantic channel. Simulating the `[semantic]` extra being absent
     must not change the outcome, because this admission path never
     consults it."""
-    from cortex_memory import _workspace
+    from urdyn import _workspace
 
     monkeypatch.setattr(_workspace, "_load_semantic_module", lambda: None)
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     failure_evidence = cx.add_evidence(
         "A forced migration failure left only part of the schema update applied.",
         kind="error_observation",

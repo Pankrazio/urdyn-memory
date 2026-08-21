@@ -11,17 +11,17 @@ lexical tokens" should be observable from outside `_preflight.py`.
 import dataclasses
 import datetime as dt
 
-import cortex_memory
-from cortex_memory import Cortex, Preflight, PreflightConflict
-from cortex_memory._conflict import Conflict
-from cortex_memory._memory import Memory
+import urdyn
+from urdyn import Urdyn, Preflight, PreflightConflict
+from urdyn._conflict import Conflict
+from urdyn._memory import Memory
 
 
 def test_preflight_is_exported_but_matching_internals_are_not():
-    assert "Preflight" in cortex_memory.__all__
-    assert not hasattr(cortex_memory, "build_preflight")
-    assert not hasattr(cortex_memory, "_is_relevant")
-    assert not hasattr(cortex_memory, "_tokens")
+    assert "Preflight" in urdyn.__all__
+    assert not hasattr(urdyn, "build_preflight")
+    assert not hasattr(urdyn, "_is_relevant")
+    assert not hasattr(urdyn, "_tokens")
 
 
 def test_preflight_dataclass_shape_has_no_matching_strategy_leakage():
@@ -74,7 +74,7 @@ def test_retrieval_state_exposes_lifecycle_not_matching_internals():
     """[A27] The boundary the field above is allowed to cross, and the
     one it is not: a consumer may learn WHETHER the semantic substrate
     was current, never HOW candidates were matched."""
-    from cortex_memory import SemanticState
+    from urdyn import SemanticState
 
     field_names = {f.name for f in dataclasses.fields(SemanticState)}
 
@@ -177,8 +177,8 @@ def test_preflight_with_only_open_conflicts_is_not_empty(tmp_path):
     assert preflight.is_empty() is False
 
 
-def test_cortex_preflight_signature_takes_only_a_task_string(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+def test_urdyn_preflight_signature_takes_only_a_task_string(tmp_path):
+    cx = Urdyn.init(tmp_path, "dev")
 
     # a real call with just a task string must work; there is no second
     # positional/keyword parameter a caller is expected to supply that

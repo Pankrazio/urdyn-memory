@@ -1,14 +1,14 @@
-"""Tests for `Cortex.remember()`."""
+"""Tests for `Urdyn.remember()`."""
 
 import datetime as dt
 
 import pytest
 
-from cortex_memory import Cortex
+from urdyn import Urdyn
 
 
 def test_remember_returns_memory_with_content(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
 
     memory = cx.remember("SQLite was selected for the first storage implementation.")
 
@@ -16,7 +16,7 @@ def test_remember_returns_memory_with_content(tmp_path):
 
 
 def test_remember_assigns_stable_valid_id(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
 
     memory = cx.remember("first memory")
 
@@ -25,7 +25,7 @@ def test_remember_assigns_stable_valid_id(tmp_path):
 
 
 def test_remember_assigns_utc_recorded_at(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
 
     before = dt.datetime.now(dt.timezone.utc)
     memory = cx.remember("timestamped memory")
@@ -36,15 +36,15 @@ def test_remember_assigns_utc_recorded_at(tmp_path):
 
 
 def test_remember_defaults_to_user_asserted_epistemic_state(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
 
-    memory = cx.remember("something the user told Cortex")
+    memory = cx.remember("something the user told Urdyn")
 
     assert memory.epistemic_state == "user_asserted"
 
 
 def test_remember_defaults_to_note_kind(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
 
     memory = cx.remember("plain memory")
 
@@ -52,7 +52,7 @@ def test_remember_defaults_to_note_kind(tmp_path):
 
 
 def test_remember_accepts_explicit_valid_kind(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
 
     memory = cx.remember("we chose SQLite", kind="decision")
 
@@ -60,36 +60,36 @@ def test_remember_accepts_explicit_valid_kind(tmp_path):
 
 
 def test_remember_rejects_unknown_kind(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
 
     with pytest.raises(ValueError):
         cx.remember("something", kind="not-a-kind")
 
 
 def test_remember_rejects_empty_content(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
 
     with pytest.raises(ValueError):
         cx.remember("")
 
 
 def test_remember_rejects_whitespace_only_content(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
 
     with pytest.raises(ValueError):
         cx.remember("   \n\t  ")
 
 
 def test_remember_persists_to_disk(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
 
     cx.remember("durable memory")
 
-    assert (tmp_path / ".cortex" / "memory.db").is_file()
+    assert (tmp_path / ".urdyn" / "memory.db").is_file()
 
 
 def test_multiple_memories_are_all_retained(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
 
     cx.remember("first")
     cx.remember("second")
@@ -99,7 +99,7 @@ def test_multiple_memories_are_all_retained(tmp_path):
 
 
 def test_remember_assigns_distinct_ids(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
 
     first = cx.remember("one")
     second = cx.remember("two")

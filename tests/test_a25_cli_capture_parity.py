@@ -1,9 +1,9 @@
-"""(A25.1) `cortex evidence add` / `cortex learn`: the CLI half of the two
+"""(A25.1) `urdyn evidence add` / `urdyn learn`: the CLI half of the two
 capture primitives A24's real-world validation found missing.
 
 A20 closed `remember --evidence <ID>`: provenance only, and only a Python
-caller could ever produce that id (`Cortex.add_evidence`) or reach
-`verified` (`Cortex.learn(..., verified=True)`). A24 measured exactly six
+caller could ever produce that id (`Urdyn.add_evidence`) or reach
+`verified` (`Urdyn.learn(..., verified=True)`). A24 measured exactly six
 Python-only capture operations across two real dev sessions -- four
 `add_evidence` calls and two `learn(verified=True)` calls -- and those six
 are precisely the ones that later produced the highest-value preflight
@@ -11,11 +11,11 @@ output (`VERIFIED LESSONS`, `RECOMMENDED VALIDATION`).
 
 This file freezes the contract that closes that gap:
 
-    cortex evidence add "<content>" [--kind KIND]
-    cortex learn "<lesson>" [--evidence ID]... [--supporting-evidence ID]... [--verified]
+    urdyn evidence add "<content>" [--kind KIND]
+    urdyn learn "<lesson>" [--evidence ID]... [--supporting-evidence ID]... [--verified]
 
 Both are thin adapters over the existing public API
-(`Cortex.add_evidence`, `Cortex.learn`): every kind check, every A12.1
+(`Urdyn.add_evidence`, `Urdyn.learn`): every kind check, every A12.1
 verification-gate decision and all A17 idempotency behaviour is the
 Core's, unchanged and untested-again here except to prove the CLI reaches
 it correctly. No new domain rule is introduced by this module or by the
@@ -26,15 +26,15 @@ from __future__ import annotations
 
 import pytest
 
-from cortex_memory import Cortex
-from cortex_memory._cli import main
-from cortex_memory._evidence import DEFAULT_EVIDENCE_KIND, EVIDENCE_ID_PATTERN
-from cortex_memory._memory import EPISTEMIC_USER_ASSERTED, EPISTEMIC_VERIFIED
+from urdyn import Urdyn
+from urdyn._cli import main
+from urdyn._evidence import DEFAULT_EVIDENCE_KIND, EVIDENCE_ID_PATTERN
+from urdyn._memory import EPISTEMIC_USER_ASSERTED, EPISTEMIC_VERIFIED
 from test_terminal_safety import assert_terminal_safe
 
 
 def _memories(workspace):
-    return Cortex.open(workspace).timeline()
+    return Urdyn.open(workspace).timeline()
 
 
 def _evidence_id_from_output(output: str) -> str:
@@ -46,7 +46,7 @@ def _evidence_id_from_output(output: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# A/B/C/D/E -- `cortex evidence add`
+# A/B/C/D/E -- `urdyn evidence add`
 # ---------------------------------------------------------------------------
 
 
@@ -65,7 +65,7 @@ def test_evidence_add_creates_evidence_and_prints_its_id(tmp_path, monkeypatch, 
     evidence_id = _evidence_id_from_output(captured.out)
     assert EVIDENCE_ID_PATTERN.fullmatch(evidence_id)
 
-    evidence = Cortex.open(tmp_path).get_evidence(evidence_id)
+    evidence = Urdyn.open(tmp_path).get_evidence(evidence_id)
     assert evidence.content == "pytest -q -> 1 failed, 11 passed"
     assert evidence.kind == "test_result"
 
@@ -82,7 +82,7 @@ def test_evidence_add_defaults_to_the_public_api_default_kind(tmp_path, monkeypa
     assert f"({DEFAULT_EVIDENCE_KIND})" in captured.out
 
     evidence_id = _evidence_id_from_output(captured.out)
-    evidence = Cortex.open(tmp_path).get_evidence(evidence_id)
+    evidence = Urdyn.open(tmp_path).get_evidence(evidence_id)
     assert evidence.kind == DEFAULT_EVIDENCE_KIND
 
 
@@ -103,8 +103,8 @@ def test_evidence_add_rejects_unknown_kind_and_writes_nothing(tmp_path, monkeypa
     assert "invalid choice" in captured.err.lower()
 
     # No store side effect: nothing was ever persisted for the rejected call.
-    assert Cortex.open(tmp_path).sources() == []
-    assert Cortex.open(tmp_path).timeline() == []
+    assert Urdyn.open(tmp_path).sources() == []
+    assert Urdyn.open(tmp_path).timeline() == []
 
 
 def test_evidence_add_cli_matches_python_api_semantics(tmp_path, monkeypatch, capsys):
@@ -115,9 +115,9 @@ def test_evidence_add_cli_matches_python_api_semantics(tmp_path, monkeypatch, ca
     main(["evidence", "add", "the same content", "--kind", "command_output"])
     captured = capsys.readouterr()
     cli_id = _evidence_id_from_output(captured.out)
-    cli_evidence = Cortex.open(tmp_path).get_evidence(cli_id)
+    cli_evidence = Urdyn.open(tmp_path).get_evidence(cli_id)
 
-    api_evidence = Cortex.open(tmp_path).add_evidence("the same content", kind="command_output")
+    api_evidence = Urdyn.open(tmp_path).add_evidence("the same content", kind="command_output")
 
     assert cli_evidence.content == api_evidence.content == "the same content"
     assert cli_evidence.kind == api_evidence.kind == "command_output"
@@ -141,14 +141,14 @@ def test_evidence_add_is_not_idempotent(tmp_path, monkeypatch, capsys):
 
 
 # ---------------------------------------------------------------------------
-# F/G/H/I/J/K/L/M -- `cortex learn`
+# F/G/H/I/J/K/L/M -- `urdyn learn`
 # ---------------------------------------------------------------------------
 
 
 def test_learn_without_verified_creates_a_candidate_lesson(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     main(["init", "dev"])
-    cx = Cortex.open(tmp_path)
+    cx = Urdyn.open(tmp_path)
     failure = cx.add_evidence("1 failed: bool coerced to int", kind="error_observation")
     capsys.readouterr()
 
@@ -169,7 +169,7 @@ def test_learn_without_verified_creates_a_candidate_lesson(tmp_path, monkeypatch
 def test_learn_verified_with_qualifying_support_succeeds(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     main(["init", "dev"])
-    cx = Cortex.open(tmp_path)
+    cx = Urdyn.open(tmp_path)
     failure = cx.add_evidence("1 failed: bool coerced to int", kind="error_observation")
     passing = cx.add_evidence("12 passed", kind="test_result")
     capsys.readouterr()
@@ -202,7 +202,7 @@ def test_learn_verified_with_qualifying_support_succeeds(tmp_path, monkeypatch, 
 def test_learn_verified_with_non_qualifying_support_fails_closed(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     main(["init", "dev"])
-    cx = Cortex.open(tmp_path)
+    cx = Urdyn.open(tmp_path)
     doc = cx.add_evidence("README says timeout defaults to 900", kind="document_observation")
     capsys.readouterr()
 
@@ -238,7 +238,7 @@ def test_learn_verified_without_any_supporting_evidence_fails_closed(tmp_path, m
 def test_learn_unknown_evidence_id_fails_before_write(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     main(["init", "dev"])
-    cx = Cortex.open(tmp_path)
+    cx = Urdyn.open(tmp_path)
     passing = cx.add_evidence("12 passed", kind="test_result")
     capsys.readouterr()
 
@@ -263,7 +263,7 @@ def test_learn_unknown_evidence_id_fails_before_write(tmp_path, monkeypatch, cap
 def test_learn_unknown_supporting_evidence_id_fails_before_write(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     main(["init", "dev"])
-    cx = Cortex.open(tmp_path)
+    cx = Urdyn.open(tmp_path)
     failure = cx.add_evidence("1 failed", kind="error_observation")
     capsys.readouterr()
 
@@ -288,7 +288,7 @@ def test_learn_unknown_supporting_evidence_id_fails_before_write(tmp_path, monke
 def test_learn_repeated_evidence_flags_preserve_order(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     main(["init", "dev"])
-    cx = Cortex.open(tmp_path)
+    cx = Urdyn.open(tmp_path)
     first = cx.add_evidence("first observation", kind="user_statement")
     second = cx.add_evidence("second observation", kind="command_output")
     capsys.readouterr()
@@ -311,7 +311,7 @@ def test_learn_repeated_evidence_flags_preserve_order(tmp_path, monkeypatch, cap
 def test_learn_repeated_supporting_evidence_flags_preserve_order(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     main(["init", "dev"])
-    cx = Cortex.open(tmp_path)
+    cx = Urdyn.open(tmp_path)
     first = cx.add_evidence("first check", kind="test_result")
     second = cx.add_evidence("second check", kind="command_output")
     capsys.readouterr()
@@ -339,7 +339,7 @@ def test_learn_does_not_promote_generic_evidence_to_supporting(tmp_path, monkeyp
     here for `learn`."""
     monkeypatch.chdir(tmp_path)
     main(["init", "dev"])
-    cx = Cortex.open(tmp_path)
+    cx = Urdyn.open(tmp_path)
     passing = cx.add_evidence("12 passed", kind="test_result")
     capsys.readouterr()
 
@@ -358,7 +358,7 @@ def test_learn_does_not_promote_generic_evidence_to_supporting(tmp_path, monkeyp
 def test_verified_lesson_from_cli_appears_in_preflight(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     main(["init", "dev"])
-    cx = Cortex.open(tmp_path)
+    cx = Urdyn.open(tmp_path)
     failure = cx.add_evidence("1 failed: bool coerced to int", kind="error_observation")
     passing = cx.add_evidence("12 passed", kind="test_result")
     capsys.readouterr()
@@ -410,7 +410,7 @@ def test_evidence_add_output_is_terminal_safe(tmp_path, monkeypatch, capsys):
         assert_terminal_safe(line)
 
     evidence_id = _evidence_id_from_output(captured.out)
-    evidence = Cortex.open(tmp_path).get_evidence(evidence_id)
+    evidence = Urdyn.open(tmp_path).get_evidence(evidence_id)
     assert evidence.content == payload
 
 
@@ -419,7 +419,7 @@ def test_learn_error_output_with_unsafe_content_is_terminal_safe(tmp_path, monke
     main(["init", "dev"])
     capsys.readouterr()
 
-    payload = "unsafe\nCORTEX WARNING\x1b[2K"
+    payload = "unsafe\nURDYN WARNING\x1b[2K"
     exit_code = main(["learn", payload, "--verified"])
     captured = capsys.readouterr()
 
@@ -435,8 +435,8 @@ def test_learn_error_output_with_unsafe_content_is_terminal_safe(tmp_path, monke
 
 def test_cli_only_a24_mini_journey(tmp_path, monkeypatch, capsys):
     """Reproduces the high-value slice of A24's Session 1 -> Session 2 loop
-    with ZERO Python capture calls: only `cortex evidence add`, `cortex
-    learn` and `cortex preflight` on the argv boundary."""
+    with ZERO Python capture calls: only `urdyn evidence add`, `urdyn
+    learn` and `urdyn preflight` on the argv boundary."""
     monkeypatch.chdir(tmp_path)
     assert main(["init", "dev"]) == 0
     capsys.readouterr()

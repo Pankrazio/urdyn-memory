@@ -13,7 +13,7 @@ import uuid
 
 import pytest
 
-from cortex_memory import Cortex, CortexStorageError
+from urdyn import Urdyn, UrdynStorageError
 
 _CREATE_MEMORIES_V2_SQL = """
     CREATE TABLE memories (
@@ -114,7 +114,7 @@ def _build_v3_database(db_path, *, memory_id=None, content="a lesson from A4", k
 
 
 def test_v3_database_opens_and_memory_survives(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     memory_id = _build_v3_database(cx._db_path)
 
     results = cx.recall("a lesson from A4")
@@ -125,7 +125,7 @@ def test_v3_database_opens_and_memory_survives(tmp_path):
 
 
 def test_v3_migration_reaches_v4_and_creates_skill_tables(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     _build_v3_database(cx._db_path)
 
     # migration v3 -> v4 -> v5 -> v6 happens transparently on first open
@@ -148,7 +148,7 @@ def test_v3_migration_reaches_v4_and_creates_skill_tables(tmp_path):
 
 
 def test_v3_migrated_lesson_can_be_promoted_to_a_skill(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     memory_id = _build_v3_database(cx._db_path, content="Use only the newly issued refresh token.")
 
     (lesson,) = cx.state(kind="lesson")
@@ -163,7 +163,7 @@ def test_v3_migrated_lesson_can_be_promoted_to_a_skill(tmp_path):
 
 
 def test_v3_migration_is_safe_to_repeat(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     memory_id = _build_v3_database(cx._db_path)
 
     first = cx.recall("a lesson from A4")
@@ -174,7 +174,7 @@ def test_v3_migration_is_safe_to_repeat(tmp_path):
 
 
 def test_v3_migration_does_not_destroy_data_on_failure(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     memory_id = _build_v3_database(cx._db_path, content="must survive a failed migration")
 
     # Sabotage the migration partway through: `_migrate_v3_to_v4` creates
@@ -192,7 +192,7 @@ def test_v3_migration_does_not_destroy_data_on_failure(tmp_path):
     finally:
         connection.close()
 
-    with pytest.raises(CortexStorageError):
+    with pytest.raises(UrdynStorageError):
         cx.recall("must survive")
 
     connection = sqlite3.connect(cx._db_path)

@@ -3,7 +3,7 @@
 `invalidation` is NOT a new canonical primitive: it is another
 specialization of `Memory`, exactly like the A9.1 operational kinds
 (`pending`/`question`/`invariant`/`environment`). It reuses `supersedes`
-and the existing current-state projection (`Cortex.state`) unchanged.
+and the existing current-state projection (`Urdyn.state`) unchanged.
 
 Semantics under test throughout this file:
 
@@ -11,7 +11,7 @@ Semantics under test throughout this file:
 
 An `invalidation` Memory means "this prior Memory must no longer be
 treated as current/authoritative knowledge" -- it does NOT mean "this
-prior Memory was proven wrong". Cortex has no `disproven`/`false` concept
+prior Memory was proven wrong". Urdyn has no `disproven`/`false` concept
 at all; these tests exist partly to demonstrate that recording an
 invalidation never mutates, retags, or otherwise alters the original
 Memory's own fields (which remain exactly as recorded), only its current-
@@ -20,14 +20,14 @@ state projection changes.
 
 import pytest
 
-from cortex_memory import Cortex
+from urdyn import Urdyn
 
 
 # -- basic recording + persistence --------------------------------------
 
 
 def test_remember_accepts_invalidation_kind(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     old = cx.remember("Python 3.12 is required.", kind="environment")
 
     inv = cx.remember(
@@ -41,7 +41,7 @@ def test_remember_accepts_invalidation_kind(tmp_path):
 
 
 def test_invalidation_survives_reopening(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     old = cx.remember("Python 3.12 is required.", kind="environment")
     original = cx.remember(
         "The Python 3.12 requirement is no longer trusted and must be revalidated.",
@@ -50,7 +50,7 @@ def test_invalidation_survives_reopening(tmp_path):
     )
     del cx
 
-    reopened = Cortex.open(tmp_path)
+    reopened = Urdyn.open(tmp_path)
     (current,) = reopened.state(kind="invalidation")
 
     assert current.memory_id == original.memory_id
@@ -61,7 +61,7 @@ def test_invalidation_survives_reopening(tmp_path):
 
 
 def test_environment_invalidated_without_replacement_has_no_current_environment(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     old = cx.remember("Python 3.12 is required.", kind="environment")
 
     cx.remember(
@@ -74,7 +74,7 @@ def test_environment_invalidated_without_replacement_has_no_current_environment(
 
 
 def test_invalidation_itself_is_current_in_its_own_kind(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     old = cx.remember("Python 3.12 is required.", kind="environment")
 
     inv = cx.remember(
@@ -91,7 +91,7 @@ def test_original_memory_is_preserved_unmodified_in_history(tmp_path):
     """Invalidating a Memory must never mutate the original: its own
     `content`/`epistemic_state` stay exactly as recorded. Only its
     current-state projection changes."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     old = cx.remember("Python 3.12 is required.", kind="environment")
 
     cx.remember(
@@ -114,7 +114,7 @@ def test_generic_state_includes_the_invalidation_and_excludes_the_invalidated_me
     An invalidation IS itself current, useful operational knowledge
     ("do not trust this anymore") -- it must not be silently hidden from
     the generic projection just because of its kind."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     old = cx.remember("Python 3.12 is required.", kind="environment")
     inv = cx.remember(
         "The Python 3.12 requirement is no longer trusted and must be revalidated.",
@@ -137,7 +137,7 @@ def test_generic_recall_can_surface_a_current_invalidation(tmp_path):
     knowledge a caller may legitimately be searching for. It must remain
     identifiable via `memory.kind == "invalidation"`, but must not be
     specially excluded from the existing generic retrieval surface."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     old = cx.remember("Python 3.12 is required for this project.", kind="environment")
     cx.remember(
         "The Python 3.12 runtime requirement is no longer trusted and must be revalidated.",
@@ -156,8 +156,8 @@ def test_generic_recall_can_surface_a_current_invalidation(tmp_path):
 
 def test_invalidated_verified_lesson_disappears_from_preflight(tmp_path):
     """Purely a consequence of the existing current-state filter already
-    applied by `Cortex.preflight` -- no new logic is added for this."""
-    cx = Cortex.init(tmp_path, "dev")
+    applied by `Urdyn.preflight` -- no new logic is added for this."""
+    cx = Urdyn.init(tmp_path, "dev")
     task = "Update authentication refresh logic."
     validation = cx.add_evidence("Authentication tests passed.", kind="test_result")
     lesson = cx.learn(
@@ -187,8 +187,8 @@ def test_invalidated_invariant_disappears_from_preflight_invariants(tmp_path):
     invariants (bypassing task relevance entirely). Invalidating an
     invariant removes it from that field for free, through the same
     current-state filter -- no new A9<->A11 integration logic is added."""
-    cx = Cortex.init(tmp_path, "dev")
-    invariant = cx.remember(".cortex/ must remain gitignored.", kind="invariant")
+    cx = Urdyn.init(tmp_path, "dev")
+    invariant = cx.remember(".urdyn/ must remain gitignored.", kind="invariant")
 
     before = cx.preflight("Refactor the CLI argument parser.")
     assert invariant.memory_id in {m.memory_id for m in before.invariants}
@@ -211,7 +211,7 @@ def test_invalidated_invariant_disappears_from_preflight_invariants(tmp_path):
 
 def test_complete_chain_original_invalidation_replacement(tmp_path):
     a = None
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     a = cx.remember("Python 3.12 is required.", kind="environment")
     b = cx.remember(
         "The Python 3.12 requirement is no longer trusted and must be revalidated.",
@@ -234,7 +234,7 @@ def test_complete_chain_original_invalidation_replacement(tmp_path):
 
 
 def test_kind_filtered_timeline_excludes_the_invalidation(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     a = cx.remember("Python 3.12 is required.", kind="environment")
     b = cx.remember(
         "The Python 3.12 requirement is no longer trusted and must be revalidated.",
@@ -251,7 +251,7 @@ def test_kind_filtered_timeline_excludes_the_invalidation(tmp_path):
 
 
 def test_global_timeline_preserves_full_cross_kind_chain_in_order(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     a = cx.remember("Python 3.12 is required.", kind="environment")
     b = cx.remember(
         "The Python 3.12 requirement is no longer trusted and must be revalidated.",
@@ -272,7 +272,7 @@ def test_double_invalidation_of_the_same_memory_is_rejected(tmp_path):
     """No invalidation-specific validation is added: this is the same
     generic single-supersession guarantee `test_supersession.py` already
     locks down for every other kind."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     old = cx.remember("Python 3.12 is required.", kind="environment")
     cx.remember(
         "The Python 3.12 requirement is no longer trusted and must be revalidated.",
@@ -293,7 +293,7 @@ def test_invalidating_an_already_superseded_memory_is_rejected(tmp_path):
     ordinary revision (not an invalidation) already occupies the
     supersession slot, so invalidating the original afterwards fails --
     generic behavior, not special-cased for `invalidation`."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     old = cx.remember("Python 3.12 is required.", kind="environment")
     cx.remember("Python 3.13 is required.", kind="environment", supersedes=old.memory_id)
 
@@ -306,7 +306,7 @@ def test_invalidating_an_already_superseded_memory_is_rejected(tmp_path):
 
 
 def test_invalidation_of_unknown_memory_is_rejected(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
 
     with pytest.raises(ValueError):
         cx.remember("Doubt about something that was never recorded.", kind="invalidation", supersedes="0" * 32)
@@ -322,7 +322,7 @@ def test_invalidation_of_an_invalidation_is_allowed_by_the_generic_model(tmp_pat
     ("even our earlier doubt has itself been superseded") is therefore
     ALLOWED BY THE GENERIC MODEL. A11.1 introduces no new restriction
     here; any future restriction is a FUTURE POSSIBILITY, not decided now."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     old = cx.remember("Python 3.12 is required.", kind="environment")
     first_doubt = cx.remember(
         "The Python 3.12 requirement is no longer trusted.",
@@ -345,12 +345,12 @@ def test_invalidation_of_an_invalidation_is_allowed_by_the_generic_model(tmp_pat
 
 def test_invalidation_without_supersedes_is_legitimate(tmp_path):
     """A11.1 must not hardcode an obligation that an invalidation always
-    have `supersedes`: Cortex may not hold the original Memory at all
+    have `supersedes`: Urdyn may not hold the original Memory at all
     (e.g. doubt cast on an external assumption never itself recorded).
     `remember()`'s existing, generic validation already allows any kind
     to be recorded without `supersedes`; nothing about `invalidation`
     requires special-casing this."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
 
     standalone = cx.remember(
         "An external assumption this project relied on is no longer trusted.",
@@ -365,7 +365,7 @@ def test_invalidation_without_supersedes_is_legitimate(tmp_path):
 
 
 def test_invalidation_can_be_recorded_user_asserted(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     old = cx.remember("Python 3.12 is required.", kind="environment")
 
     inv = cx.remember(
@@ -381,10 +381,10 @@ def test_verified_invalidation_does_not_retag_the_original_memory(tmp_path):
     """`verified` here describes the claim "we should withdraw authority
     from the old requirement" -- it is backed by a real check (a
     command_output showing the old requirement no longer holds in CI).
-    It does NOT mean "Python 3.12 is required" was proven false: Cortex
+    It does NOT mean "Python 3.12 is required" was proven false: Urdyn
     has no such concept, and the original Memory's own fields stay
     exactly as recorded (asserted below)."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     old = cx.remember("Python 3.12 is required.", kind="environment")
     ci_evidence = cx.add_evidence(
         "CI now runs successfully against Python 3.13 only; 3.12 jobs were removed.",
@@ -411,7 +411,7 @@ def test_verified_invalidation_requires_qualifying_evidence_like_any_other_kind(
     """No new verification rule is introduced for `invalidation`: the
     generic `remember()` rule (verified requires >=1 qualifying Evidence)
     applies unchanged."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     old = cx.remember("Python 3.12 is required.", kind="environment")
 
     with pytest.raises(ValueError):
@@ -433,7 +433,7 @@ def test_store_schema_version_is_unchanged(tmp_path):
     legitimately bumped it to since -- see `test_migration_v5.py`,
     `test_conflict.py` and `test_a19_1_source_foundation.py` for those
     bumps."""
-    from cortex_memory._store import STORE_SCHEMA_VERSION
+    from urdyn._store import STORE_SCHEMA_VERSION
 
     assert STORE_SCHEMA_VERSION == 7
 
@@ -445,7 +445,7 @@ def test_invalidation_survives_a_copied_workspace(tmp_path):
     import shutil
 
     source = tmp_path / "source"
-    cx = Cortex.init(source, "dev")
+    cx = Urdyn.init(source, "dev")
     old = cx.remember("Python 3.12 is required.", kind="environment")
     cx.remember(
         "The Python 3.12 requirement is no longer trusted and must be revalidated.",
@@ -455,9 +455,9 @@ def test_invalidation_survives_a_copied_workspace(tmp_path):
     del cx
 
     destination = tmp_path / "copy"
-    shutil.copytree(source / ".cortex", destination / ".cortex")
+    shutil.copytree(source / ".urdyn", destination / ".urdyn")
 
-    copied = Cortex.open(destination)
+    copied = Urdyn.open(destination)
     assert copied.state(kind="environment") == []
     assert len(copied.state(kind="invalidation")) == 1
 
@@ -466,7 +466,7 @@ def test_invalidation_survives_a_copied_workspace(tmp_path):
 
 
 def test_cli_remember_accepts_invalidation_kind(tmp_path, monkeypatch, capsys):
-    from cortex_memory._cli import main
+    from urdyn._cli import main
 
     monkeypatch.chdir(tmp_path)
     main(["init", "dev"])

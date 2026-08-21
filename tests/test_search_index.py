@@ -13,10 +13,10 @@ import uuid
 
 import pytest
 
-from cortex_memory import Cortex, CortexStorageError
-from cortex_memory._evidence import Evidence
-from cortex_memory._retrieval import ENTITY_MEMORY
-from cortex_memory._store import SEARCH_INDEX_TABLE, MemoryStore
+from urdyn import Urdyn, UrdynStorageError
+from urdyn._evidence import Evidence
+from urdyn._retrieval import ENTITY_MEMORY
+from urdyn._store import SEARCH_INDEX_TABLE, MemoryStore
 
 _CREATE_MEMORIES_V2_SQL = """
     CREATE TABLE memories (
@@ -93,7 +93,7 @@ def _table_exists(connection, name):
 
 def _build_standalone_v4_database(db_path, *, lesson_content):
     """Build a complete, hand-crafted v4-schema database from nothing --
-    never touching `Cortex`/`MemoryStore` -- with one pre-existing
+    never touching `Urdyn`/`MemoryStore` -- with one pre-existing
     verified lesson. Mirrors `test_migration_v4.py`'s own style: the
     schema this module would have produced before A7 is trusted from
     its own SQL, not from current code, so opening it for the first
@@ -132,7 +132,7 @@ def _build_standalone_v4_database(db_path, *, lesson_content):
 
 
 def test_fresh_workspace_gets_a_search_index_created_and_backfilled(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     cx.remember("Searchable canonical content.", kind="note")
 
     store = MemoryStore.open_if_exists(cx._db_path)
@@ -143,13 +143,13 @@ def test_fresh_workspace_gets_a_search_index_created_and_backfilled(tmp_path):
 
 
 def test_search_index_survives_reopening_without_duplication(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     cx.remember("Searchable canonical content.", kind="note")
     db_path = cx._db_path
     del cx
 
-    Cortex.open(tmp_path).recall("anything")  # forces a store open/close cycle
-    Cortex.open(tmp_path).recall("anything")  # and again
+    Urdyn.open(tmp_path).recall("anything")  # forces a store open/close cycle
+    Urdyn.open(tmp_path).recall("anything")  # and again
 
     connection = sqlite3.connect(db_path)
     try:
@@ -161,10 +161,10 @@ def test_search_index_survives_reopening_without_duplication(tmp_path):
 
 def test_v4_workspace_search_index_is_backfilled_on_first_open(tmp_path):
     """A pre-A7 (schema v4) database, built entirely by hand without
-    ever touching `Cortex`, must get its search index created and
+    ever touching `Urdyn`, must get its search index created and
     backfilled from the pre-existing data the first time A7's code
     opens it -- recovery, not just fresh-database initialization."""
-    db_path = tmp_path / ".cortex" / "memory.db"
+    db_path = tmp_path / ".urdyn" / "memory.db"
     db_path.parent.mkdir(parents=True)
     _build_standalone_v4_database(
         db_path, lesson_content="A long-forgotten insight about database connection pool exhaustion."
@@ -188,7 +188,7 @@ def test_rebuild_search_index_recovers_from_a_cleared_index(tmp_path):
     dropping/clearing the derived index and rebuilding it must restore
     identical retrieval behavior, proving the index carries no
     information the canonical tables do not already have."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     cx.remember("Searchable canonical content.", kind="note")
 
     store = MemoryStore.open_if_exists(cx._db_path)
@@ -214,11 +214,11 @@ def test_fts5_unavailable_falls_back_to_lexical_channel_only(tmp_path, monkeypat
     the same way it would in that case. The workspace must still open,
     and `preflight()`/`guard()` must still work correctly through the
     lexical channel that predates A7."""
-    import cortex_memory._store as store_module
+    import urdyn._store as store_module
 
     monkeypatch.setattr(store_module, "_try_create_search_index", lambda connection: False)
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     cx.record_attempt(
         task="Fix database connection pool exhaustion under load",
         approach="Increased the pool size without addressing connection leaks",
@@ -252,11 +252,11 @@ def test_a_genuine_schema_bug_in_the_create_statement_is_not_silently_swallowed(
     and recoverable. `sqlite3.OperationalError` is also raised for a
     malformed `CREATE VIRTUAL TABLE` statement -- a schema-level bug,
     e.g. a duplicate column name -- and that must still propagate as a
-    loud `CortexStorageError`, not be silently reinterpreted as "this
+    loud `UrdynStorageError`, not be silently reinterpreted as "this
     SQLite build has no FTS5" and leave the store open with
     `fts_enabled=False` and no visible sign anything went wrong.
     """
-    import cortex_memory._store as store_module
+    import urdyn._store as store_module
 
     monkeypatch.setattr(
         store_module,
@@ -265,8 +265,8 @@ def test_a_genuine_schema_bug_in_the_create_statement_is_not_silently_swallowed(
         "USING fts5(entity_type UNINDEXED, entity_type UNINDEXED, text)",
     )
 
-    with pytest.raises(CortexStorageError):
-        Cortex.init(tmp_path, "dev").remember("Anything.", kind="note")
+    with pytest.raises(UrdynStorageError):
+        Urdyn.init(tmp_path, "dev").remember("Anything.", kind="note")
 
 
 def test_canonical_write_rollback_leaves_no_orphaned_index_row(tmp_path):
@@ -275,7 +275,7 @@ def test_canonical_write_rollback_leaves_no_orphaned_index_row(tmp_path):
     would have accompanied it -- the canonical write and its index
     entry share one transaction (see `_store.py`'s `add()`), so there is
     no window where one exists without the other."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     fake_evidence = Evidence(
         evidence_id="0" * 32, content="fake", kind="user_statement", recorded_at=dt.datetime.now(dt.timezone.utc)
     )
@@ -297,7 +297,7 @@ def test_canonical_write_rollback_leaves_no_orphaned_index_row(tmp_path):
 
 
 def test_search_index_is_not_part_of_the_canonical_schema_version(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     cx.remember("Anything.", kind="note")
 
     connection = sqlite3.connect(cx._db_path)
@@ -317,7 +317,7 @@ def test_entity_type_isolates_a_deliberate_id_collision(tmp_path):
     workspace would ever produce (UUID4 collision odds are negligible)
     to prove entity_type isolation holds structurally, not just by
     accident of always-distinct ids."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     same_id = "a" * 32
     store = MemoryStore.create_or_open(cx._db_path)
     with store:

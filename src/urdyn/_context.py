@@ -1,11 +1,11 @@
 """The Context Compiler: a budgeted, task-relevant working context,
 compiled from the same canonical experience `preflight()` reads.
 
-`preflight()` answers "what does Cortex know that bears on this task" by
+`preflight()` answers "what does Urdyn know that bears on this task" by
 projecting every relevant category, unbounded, one item per line, letting
 the consumer read and prioritize it themselves. That is the right answer
 for a human or an agent doing its own audit, but it does not scale: the
-projection grows with how much relevant experience Cortex holds, not with
+projection grows with how much relevant experience Urdyn holds, not with
 how much of it actually constrains the task at hand, and it never
 arbitrates between categories or removes redundancy.
 
@@ -47,7 +47,7 @@ trust `_preflight.py`'s own evidence-rescue channel already places in
 shared Evidence.
 
 WHAT THIS MODULE DOES NOT DO. It never opens a store, never loads a
-model, and never decides relevance -- `Cortex.context()` is the only
+model, and never decides relevance -- `Urdyn.context()` is the only
 caller, and it does all storage/semantic-retrieval work (through the
 exact same `_gather_experience`/`_semantic_prepare`/`_semantic_widen`
 machinery `preflight()` uses) before calling `compile_context` with
@@ -70,7 +70,7 @@ from ._memory import Memory
 from ._semantic_store import SemanticState
 from ._terminal import terminal_safe_text as _safe
 
-# [A29.1] Character budget, not a token estimate: Cortex has no
+# [A29.1] Character budget, not a token estimate: Urdyn has no
 # provider-specific tokenizer dependency anywhere in the Core (see
 # `pyproject.toml`), and a character count is exactly measurable against
 # what `render()` actually produces, with no model-specific conversion
@@ -133,7 +133,7 @@ class ContextItem:
     side. It is computed BEFORE this item's budget cost is measured, so
     the item and its conflict marker are always admitted or rejected
     together -- never a marker with no item to explain it, and never an
-    item that hides a contradiction Cortex already knows about.
+    item that hides a contradiction Urdyn already knows about.
     """
 
     entity_id: str
@@ -161,7 +161,7 @@ class CompiledContext:
     never mutated afterward. Derived and transient, like `Preflight`:
     never persisted as canonical Memory, never logged as an Event, and
     always fully reconstructible from canonical state plus `task` and
-    `budget` alone (see `Cortex.context`).
+    `budget` alone (see `Urdyn.context`).
 
     `used` is how many characters `sections`' headings and items
     actually cost, measured by the same rendering `render()` uses (see
@@ -283,7 +283,7 @@ def _render_item(item: ContextItem) -> str:
 def _footer_text(*, selected: int, total: int, omitted: int, invariants_excluded: int) -> str:
     text = f"-- {selected} of {total} selected; {omitted} omitted for budget"
     if invariants_excluded:
-        text += f"; {invariants_excluded} project invariant(s) not relevant to this task (see: cortex preflight)"
+        text += f"; {invariants_excluded} project invariant(s) not relevant to this task (see: urdyn preflight)"
     return text
 
 
@@ -363,7 +363,7 @@ def compile_context(
     retrieval: SemanticState | None,
 ) -> CompiledContext:
     """Pure composition/budgeting/rendering logic over ALREADY
-    relevance-admitted candidates. `Cortex.context()` is the only caller
+    relevance-admitted candidates. `Urdyn.context()` is the only caller
     and does every storage read and semantic-retrieval call before
     reaching here (see its docstring for the full pipeline); nothing in
     this function opens a store, loads a model, or decides whether a

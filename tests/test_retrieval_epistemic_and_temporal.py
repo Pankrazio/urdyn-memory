@@ -18,7 +18,7 @@ docstrings). These tests exist to verify that construction holds under
 FTS5, not to re-derive it from scratch.
 """
 
-from cortex_memory import Cortex
+from urdyn import Urdyn
 
 _DILUTED_TASK = (
     "I was reviewing the deployment checklist and also wanted to check on how to "
@@ -28,7 +28,7 @@ _DILUTED_TASK = (
 
 
 def test_fts_channel_does_not_surface_unverified_lesson_as_verified(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     lesson = cx.learn("Database connection pool exhaustion happens under sustained load.")
 
     result = cx.preflight(_DILUTED_TASK)
@@ -38,7 +38,7 @@ def test_fts_channel_does_not_surface_unverified_lesson_as_verified(tmp_path):
 
 
 def test_fts_channel_does_not_resurrect_a_superseded_verified_lesson(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     validation = cx.add_evidence("Confirmed via load test.", kind="test_result")
     old_lesson = cx.learn(
         "Database connection pool exhaustion happens under sustained load.",
@@ -64,7 +64,7 @@ def test_fts_channel_does_not_resurrect_a_superseded_verified_lesson(tmp_path):
 
 
 def test_fts_channel_reports_a_candidate_skill_honestly_not_as_verified(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     candidate_lesson = cx.learn("Redis cache connections might need a retry policy under load.")
     candidate_skill = cx.promote(
         candidate_lesson,

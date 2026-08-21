@@ -26,7 +26,7 @@ VALID_OUTCOMES = frozenset({OUTCOME_SUCCEEDED, OUTCOME_FAILED, OUTCOME_PARTIAL})
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class Attempt:
-    """A single recorded attempt at a task, persisted by Cortex.
+    """A single recorded attempt at a task, persisted by Urdyn.
 
     `evidence_ids` is the same provenance mechanism used by `Memory`: the
     ids of `Evidence` supporting what happened (e.g. an error message or a

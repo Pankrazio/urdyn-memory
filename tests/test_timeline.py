@@ -1,16 +1,16 @@
-"""Tests for `Cortex.timeline()`."""
+"""Tests for `Urdyn.timeline()`."""
 
-from cortex_memory import Cortex
+from urdyn import Urdyn
 
 
 def test_timeline_on_empty_workspace_returns_empty_list(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
 
     assert cx.timeline() == []
 
 
 def test_timeline_orders_memories_oldest_first(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     first = cx.remember("first")
     second = cx.remember("second")
     third = cx.remember("third")
@@ -21,7 +21,7 @@ def test_timeline_orders_memories_oldest_first(tmp_path):
 
 
 def test_timeline_filters_by_kind(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     note = cx.remember("a note", kind="note")
     decision = cx.remember("a decision", kind="decision")
 
@@ -33,7 +33,7 @@ def test_timeline_filters_by_kind(tmp_path):
 
 
 def test_timeline_includes_superseded_and_current_memories(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     old = cx.remember("PostgreSQL was selected.", kind="decision")
     new = cx.remember("SQLite was selected for V1.", kind="decision", supersedes=old.memory_id)
 
@@ -43,7 +43,7 @@ def test_timeline_includes_superseded_and_current_memories(tmp_path):
 
 
 def test_timeline_ordering_is_deterministic_across_calls(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     cx.remember("first")
     cx.remember("second")
     cx.remember("third")
@@ -55,12 +55,12 @@ def test_timeline_ordering_is_deterministic_across_calls(tmp_path):
 
 
 def test_timeline_survives_reopening(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     first = cx.remember("first")
     second = cx.remember("second")
     del cx
 
-    reopened = Cortex.open(tmp_path)
+    reopened = Urdyn.open(tmp_path)
     history = reopened.timeline()
 
     assert [m.memory_id for m in history] == [first.memory_id, second.memory_id]
@@ -69,9 +69,9 @@ def test_timeline_survives_reopening(tmp_path):
 def test_timeline_order_is_insertion_order_even_with_identical_timestamps(tmp_path, monkeypatch):
     import datetime as real_dt
 
-    import cortex_memory._workspace as workspace_module
+    import urdyn._workspace as workspace_module
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     frozen_now = real_dt.datetime.now(real_dt.timezone.utc)
 
     # Replace only the `dt` name as seen inside `_workspace`, so `_store`'s

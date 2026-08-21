@@ -1,8 +1,8 @@
 """A43: the Dev profile's automatic filesystem watcher.
 
-Non-vacuity: before this module existed, nothing in Cortex ever
+Non-vacuity: before this module existed, nothing in Urdyn ever
 re-observed a tracked project file on its own -- `Source.observations`
-was updated only by an explicit `cortex seed` call. `test_gap_...` below
+was updated only by an explicit `urdyn seed` call. `test_gap_...` below
 is that exact scenario (enable the watcher, change a tracked file, do
 nothing else) and is the one test in this file that would fail forever
 on the pre-A43 codebase, for a real behavioral reason: no code path
@@ -29,11 +29,11 @@ import time
 
 import pytest
 
-from cortex_memory import Cortex
-from cortex_memory import _watcher
-from cortex_memory._cli import main as cli_main
-from cortex_memory._evidence import EVIDENCE_KIND_DOCUMENT_OBSERVATION
-from cortex_memory._source import compute_digest
+from urdyn import Urdyn
+from urdyn import _watcher
+from urdyn._cli import main as cli_main
+from urdyn._evidence import EVIDENCE_KIND_DOCUMENT_OBSERVATION
+from urdyn._source import compute_digest
 
 
 # -- shared helpers -----------------------------------------------------------
@@ -51,7 +51,7 @@ def _wait_for(predicate, timeout=8.0, interval=0.1):
     return bool(predicate())
 
 
-def _observation_count(cx: Cortex, path: str) -> int:
+def _observation_count(cx: Urdyn, path: str) -> int:
     for source in cx.sources():
         if source.path == path:
             return len(source.observations)
@@ -59,23 +59,23 @@ def _observation_count(cx: Cortex, path: str) -> int:
 
 
 # Process-leak protection lives in `tests/conftest.py` (`_no_leaked_watchers`,
-# autouse, global): `cortex init dev` starts a real background process, so
+# autouse, global): `urdyn init dev` starts a real background process, so
 # the cleanup must cover every test file that might trigger it, not only
 # this one.
 
 
-def _init_dev(tmp_path, **files) -> Cortex:
+def _init_dev(tmp_path, **files) -> Urdyn:
     """A `dev` workspace with the given pre-existing files, watcher NOT
     yet enabled -- callers opt in via `_watcher.enable_and_start`."""
     for name, content in files.items():
         target = tmp_path / name
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
-    return Cortex.init(tmp_path, "dev")
+    return Urdyn.init(tmp_path, "dev")
 
 
-def _running_pid(cx: Cortex) -> int | None:
-    probe = _watcher.probe_lock(cx.path / ".cortex")
+def _running_pid(cx: Urdyn) -> int | None:
+    probe = _watcher.probe_lock(cx.path / ".urdyn")
     if probe.state != _watcher.LOCK_RUNNING:
         return None
     pid = (probe.metadata or {}).get("pid")
@@ -115,7 +115,7 @@ def test_init_dev_new_project_baseline_is_zero_observations(tmp_path):
 
 
 def test_init_dev_existing_project_baseline_is_zero_fake_observations(tmp_path):
-    """An 'existing dev project' HA scenario: files predate Cortex
+    """An 'existing dev project' HA scenario: files predate Urdyn
     entirely. Enabling must not retroactively fabricate history for
     them."""
     cx = _init_dev(
@@ -130,15 +130,15 @@ def test_init_dev_existing_project_baseline_is_zero_fake_observations(tmp_path):
 
 
 def test_init_general_does_not_enable_watcher(tmp_path):
-    cx = Cortex.init(tmp_path, "general")
-    assert not (tmp_path / ".cortex" / _watcher.WATCHER_CONFIG_FILENAME).exists()
+    cx = Urdyn.init(tmp_path, "general")
+    assert not (tmp_path / ".urdyn" / _watcher.WATCHER_CONFIG_FILENAME).exists()
     assert _watcher.status_lines(cx) == []
     assert _watcher.supervise(cx) is None
 
 
 def test_init_lab_does_not_enable_watcher(tmp_path):
-    cx = Cortex.init(tmp_path, "lab")
-    assert not (tmp_path / ".cortex" / _watcher.WATCHER_CONFIG_FILENAME).exists()
+    cx = Urdyn.init(tmp_path, "lab")
+    assert not (tmp_path / ".urdyn" / _watcher.WATCHER_CONFIG_FILENAME).exists()
     assert _watcher.status_lines(cx) == []
     assert _watcher.supervise(cx) is None
 
@@ -266,7 +266,7 @@ def test_no_canonical_memory_promotion_after_watcher_activity(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "excluded_dir", [".cortex", ".git", "__pycache__", "node_modules", "dist", "build"]
+    "excluded_dir", [".urdyn", ".git", "__pycache__", "node_modules", "dist", "build"]
 )
 def test_files_under_excluded_or_uninteresting_dirs_never_observed(tmp_path, excluded_dir):
     """Scope is a bounded allowlist (tracked Sources + a root/docs-only
@@ -336,7 +336,7 @@ def test_repeated_init_dev_does_not_duplicate_watcher(tmp_path, monkeypatch, cap
     (tmp_path / "README.md").write_text("x\n", encoding="utf-8")
     cli_main(["init", "dev"])
     capsys.readouterr()
-    cx = Cortex.open(tmp_path)
+    cx = Urdyn.open(tmp_path)
     first_pid = _running_pid(cx)
     assert first_pid is not None
 
@@ -354,7 +354,7 @@ def test_stop_lifecycle_is_clean(tmp_path):
     action = _watcher.stop_watcher(cx)
     assert action.code == _watcher.ACTION_STOPPED
     assert _running_pid(cx) is None
-    assert _watcher.read_config(cx.path / ".cortex")["enabled"] is False
+    assert _watcher.read_config(cx.path / ".urdyn")["enabled"] is False
 
 
 def test_crash_then_restart_reconciliation_recovers_offline_change(tmp_path):
@@ -371,7 +371,7 @@ def test_crash_then_restart_reconciliation_recovers_offline_change(tmp_path):
     assert pid is not None
 
     os.kill(pid, signal.SIGKILL)
-    assert _wait_for(lambda: _watcher.probe_lock(cx.path / ".cortex").state == _watcher.LOCK_STALE)
+    assert _wait_for(lambda: _watcher.probe_lock(cx.path / ".urdyn").state == _watcher.LOCK_STALE)
 
     (tmp_path / "README.md").write_text("changed while offline\n", encoding="utf-8")
 
@@ -398,7 +398,7 @@ def test_watch_status_does_not_resurrect_a_stale_watcher(tmp_path):
     _watcher.enable_and_start(cx)
     pid = _running_pid(cx)
     os.kill(pid, signal.SIGKILL)
-    assert _wait_for(lambda: _watcher.probe_lock(cx.path / ".cortex").state == _watcher.LOCK_STALE)
+    assert _wait_for(lambda: _watcher.probe_lock(cx.path / ".urdyn").state == _watcher.LOCK_STALE)
 
     for _ in range(2):
         lines = _watcher.status_lines(cx, detailed=True)
@@ -419,9 +419,9 @@ def test_watcher_from_subdirectory_binds_workspace_root(tmp_path, monkeypatch, c
     out = capsys.readouterr().out
     assert "Watcher: running" in out
 
-    cx = Cortex.open(tmp_path)
-    metadata = _watcher.probe_lock(cx.path / ".cortex").metadata
-    assert metadata["cortex_id"] == cx.cortex_id
+    cx = Urdyn.open(tmp_path)
+    metadata = _watcher.probe_lock(cx.path / ".urdyn").metadata
+    assert metadata["urdyn_id"] == cx.urdyn_id
 
 
 def test_watch_start_reports_already_running_with_pid(tmp_path):
@@ -435,7 +435,7 @@ def test_watch_start_reports_already_running_with_pid(tmp_path):
 
 
 def test_watch_start_outside_dev_profile_raises(tmp_path):
-    cx = Cortex.init(tmp_path, "general")
+    cx = Urdyn.init(tmp_path, "general")
     with pytest.raises(ValueError):
         _watcher.enable_and_start(cx)
 
@@ -443,13 +443,13 @@ def test_watch_start_outside_dev_profile_raises(tmp_path):
 # -- 7. safety: symlinks, oversized/binary files ---------------------------------
 
 
-def _log_text(cx: Cortex) -> str:
-    log_path = cx.path / ".cortex" / _watcher.WATCHER_LOG_FILENAME
+def _log_text(cx: Urdyn) -> str:
+    log_path = cx.path / ".urdyn" / _watcher.WATCHER_LOG_FILENAME
     return log_path.read_text(encoding="utf-8") if log_path.exists() else ""
 
 
 def test_symlink_escape_refused(tmp_path):
-    """A path only reaches `Cortex.seed()` (and therefore a logged
+    """A path only reaches `Urdyn.seed()` (and therefore a logged
     'refused') via TWO routes: it is already a tracked Source (no
     re-validation -- `watcher_scope()` trusts canonical data), or it
     freshly matches the discovery allowlist (which DOES re-validate via
@@ -571,4 +571,4 @@ def test_import_and_status_are_safe_without_fcntl(tmp_path, monkeypatch):
     assert action.code == _watcher.ACTION_UNAVAILABLE
     assert _watcher.status_lines(cx) == ["Watcher: unavailable (background watching needs Linux in this release)"]
     assert _watcher.supervise(cx) is None
-    assert not (tmp_path / ".cortex" / _watcher.WATCHER_LOCK_FILENAME).exists()
+    assert not (tmp_path / ".urdyn" / _watcher.WATCHER_LOCK_FILENAME).exists()

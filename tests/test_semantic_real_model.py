@@ -1,6 +1,6 @@
 """Real-model integration test for the A16.3 semantic backend:
 `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` executed
-through ONNX Runtime, against REAL Cortex workspaces built only through
+through ONNX Runtime, against REAL Urdyn workspaces built only through
 the public API.
 
 Skipped entirely -- with an explicit reason, never silently -- unless the
@@ -32,7 +32,7 @@ import os
 
 import pytest
 
-from cortex_memory import Cortex
+from urdyn import Urdyn
 
 os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
 
@@ -43,7 +43,7 @@ def _real_model_available() -> bool:
         import numpy  # noqa: F401
         import onnxruntime  # noqa: F401
 
-        from cortex_memory import _semantic
+        from urdyn import _semantic
     except ImportError:
         return False
     for artifact in (_semantic.preferred_artifact(), _semantic.ARTIFACT_PORTABLE):
@@ -64,7 +64,7 @@ def _real_model_available() -> bool:
 pytestmark = pytest.mark.real_model
 _SKIP_REASON = (
     "the real ONNX semantic model is not cached locally (and/or the 'semantic' "
-    "extra is not installed) -- run 'cortex semantic setup' in a scratch "
+    "extra is not installed) -- run 'urdyn semantic setup' in a scratch "
     "workspace once to populate the Hugging Face cache, then re-run this file; "
     "never downloaded automatically by the test suite itself"
 )
@@ -95,7 +95,7 @@ def _offline():
 # Cross-language workspaces
 # ---------------------------------------------------------------------------
 
-# A recorded experience in Cortex is normally a root cause AND the verified
+# A recorded experience in Urdyn is normally a root cause AND the verified
 # lesson drawn from it, sharing the Evidence that ties them together -- that
 # is the shape `preflight()` is built around, so it is the shape asserted
 # here. (Written with only the prescriptive lesson stored, several of these
@@ -132,7 +132,7 @@ _NOISE = (
 
 
 def _workspace_with(tmp_path, root_cause_text, lesson_text):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     evidence = cx.add_evidence(
         "Reproduced: the same charge was processed twice after a client-side timeout.",
         kind="user_confirmation",
@@ -247,7 +247,7 @@ def test_unverified_contradiction_never_gains_authority(tmp_path):
     never appear as a verified lesson, however well it ranks. Carried
     over from A7.4 unchanged because it must hold for ANY backend."""
     with _offline():
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         verified_evidence = cx.add_evidence("observed session hijack after reusing old token", kind="user_confirmation")
         correct = cx.learn(
             "After rotating a refresh token, reusing the old token is unsafe and can lead to "
@@ -276,7 +276,7 @@ def test_unverified_contradiction_never_gains_authority(tmp_path):
 def test_superseded_memory_is_not_resurrected(tmp_path):
     """Also a system property: supersession outranks similarity."""
     with _offline():
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         old_evidence = cx.add_evidence("initial diagnosis", kind="user_confirmation")
         old = cx.learn(
             "The intermittent timeout is caused by slow DNS resolution in the client.",
@@ -316,7 +316,7 @@ def test_payment_guard_clause_false_positive_stays_rejected(tmp_path):
     Skill is still found when the query genuinely calls for it, so this
     is abstention, not the Skill having become unreachable."""
     with _offline():
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         root_cause_evidence = cx.add_evidence(
             "preflight and guard rely too much on exact query wording.", kind="user_statement"
         )
@@ -361,8 +361,8 @@ def test_setup_records_the_full_effective_identity(tmp_path):
     the exact artifact it was built with -- that triple is what stops it
     from being read back by a different artifact or a different upstream
     revision."""
-    from cortex_memory import _semantic
-    from cortex_memory._semantic_store import SemanticIndexStore
+    from urdyn import _semantic
+    from urdyn._semantic_store import SemanticIndexStore
 
     with _offline():
         cx, _root_cause, _lesson = _workspace_with(tmp_path, _EN_ROOT_CAUSE, _EN_LESSON)
@@ -384,7 +384,7 @@ def test_setup_records_the_full_effective_identity(tmp_path):
 
 @skip_without_model
 def test_offline_after_setup_no_network_required(tmp_path):
-    """`cortex semantic setup` is the only entry point allowed to touch
+    """`urdyn semantic setup` is the only entry point allowed to touch
     the network; every retrieval call after that must work with
     HF_HUB_OFFLINE=1 forced."""
     cx, root_cause, lesson = _workspace_with(tmp_path, _EN_ROOT_CAUSE, _EN_LESSON)  # setup happens with network allowed
@@ -404,7 +404,7 @@ def test_repeated_setup_is_idempotent_and_still_correct(tmp_path):
         result = cx.preflight("Perché il cliente è stato addebitato due volte dopo un timeout?")
         assert _surfaces(result, root_cause, lesson)
 
-        from cortex_memory._semantic_store import SemanticIndexStore
+        from urdyn._semantic_store import SemanticIndexStore
 
         with SemanticIndexStore.create_or_open(cx._semantic_db_path) as store:
             assert store.is_ready()
@@ -418,7 +418,7 @@ def test_oversize_and_malformed_text_stay_data(tmp_path):
     malformed Unicode are bounded by the tokenizer's 128-token truncation
     and must not break setup, retrieval, or canonical storage."""
     with _offline():
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         evidence = cx.add_evidence("bulk import", kind="user_statement")
         huge = cx.remember("payment timeout retry duplicate charge " * 5000, kind="root_cause", evidence=[evidence])
         cx.remember("weird \u200b zero-width, \u202e reversed, \U0001f600 emoji, ünïcödé", kind="note", evidence=[evidence])
@@ -454,7 +454,7 @@ def test_a_clearly_applicable_skill_is_still_admitted(tmp_path):
     """The raised SKILL floor must not have turned the pool off: a query
     that restates what the Skill is for still reaches it."""
     with _offline():
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         skill = _skill_workspace(
             cx,
             "Use an idempotency key for retryable writes",
@@ -472,7 +472,7 @@ def test_a_cross_language_applicable_skill_is_admitted(tmp_path):
     """An Italian Skill answering an English query -- the whole point of
     the A16.3 backend -- survives the A16.3.1 recalibration."""
     with _offline():
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         skill = _skill_workspace(
             cx,
             "Verificare la connessione al database prima del rilascio",
@@ -493,7 +493,7 @@ def test_a_lone_skill_whose_conditions_do_not_hold_is_not_admitted(tmp_path):
     is skipped by design and the absolute floor is the only thing between
     this Skill and an agent being told it applies."""
     with _offline():
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         skill = _skill_workspace(
             cx,
             "Serialize workers with a Postgres advisory lock",
@@ -517,7 +517,7 @@ def test_a_relevant_failed_attempt_is_admitted(tmp_path):
     answering a question about that rule rather than about the ATTEMPT
     pool's calibration."""
     with _offline():
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         attempt = cx.record_attempt(
             task="Debug intermittent 502 responses from the nginx proxy",
             approach="Increased proxy_read_timeout, which did not stop the 502s",
@@ -535,7 +535,7 @@ def test_a_near_miss_attempt_is_not_admitted(tmp_path):
     killed for memory must not be offered for a build that cannot reach
     the registry. Nothing about the two is operationally transferable."""
     with _offline():
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         attempt = cx.record_attempt(
             task="Fix the failing Docker build on CI",
             approach="Raised the container memory limit because the build was OOM killed",
@@ -568,7 +568,7 @@ def test_a_skill_is_rejected_when_its_conditions_name_a_different_runtime(tmp_pa
     floor is where it is, so if someone lowers it to 0.50 this test is
     what says no."""
     with _offline():
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         skill = _skill_workspace(
             cx,
             "Guard the shared counter with an atomic compare-and-swap",
@@ -590,7 +590,7 @@ def test_a_multi_candidate_attempt_pool_admits_the_right_history(tmp_path):
     bears on the task is admitted. Under the old 0.35 margin every
     multi-candidate positive was rejected, so this could not have passed."""
     with _offline():
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         latency = cx.record_attempt(
             task="Reduce the TLS handshake latency for mobile clients",
             approach="Enabled session resumption, which only helped repeat connections",
@@ -617,7 +617,7 @@ def test_an_ambiguous_attempt_pool_still_abstains(tmp_path):
     candidates apart must abstain rather than pick, which is exactly what
     the margin floor is for."""
     with _offline():
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         duplicate = cx.record_attempt(
             task="Correggere l'invio di email duplicate agli utenti",
             approach="Il job veniva rieseguito senza marcare le email già inviate",
@@ -650,7 +650,7 @@ def test_a_multi_candidate_skill_pool_admits_the_right_skill(tmp_path):
     -- it was the shape of case A16.3.2 measured being rejected 8 times
     out of 9 -- and it is the reason the margin was recalibrated."""
     with _offline():
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         covering = _skill_workspace(
             cx,
             "Add a covering index so the query never touches the table",
@@ -681,7 +681,7 @@ def test_a_skill_pool_that_cannot_tell_its_candidates_apart_abstains(tmp_path):
     -- under the margin floor, so nothing is admitted. Admitting rank #1
     regardless is exactly the A7.3 mistake."""
     with _offline():
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         skew = _skill_workspace(
             cx,
             "Allow a small clock skew when validating token expiry",

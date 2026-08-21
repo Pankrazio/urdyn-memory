@@ -51,11 +51,11 @@ import os
 import numpy as np
 import pytest
 
-from cortex_memory import Cortex
-from cortex_memory._semantic import (
+from urdyn import Urdyn
+from urdyn._semantic import (
     LESSON_SEMANTIC_FLOOR, SEMANTIC_POLICY, SET_ADMISSION_LIMIT,
 )
-from cortex_memory._retrieval import ENTITY_MEMORY
+from urdyn._retrieval import ENTITY_MEMORY
 
 _FLOOR = LESSON_SEMANTIC_FLOOR                          # the Lesson pool's own, A23.2
 _MEMORY_FLOOR = SEMANTIC_POLICY[ENTITY_MEMORY].absolute_floor   # untouched by A23
@@ -100,7 +100,7 @@ def scored_semantic(monkeypatch):
     """Install a `_ScoredModel` built from a caller-supplied cosine map.
     Returns the installer so each test states the exact score geometry it
     is about."""
-    import cortex_memory._semantic as semantic
+    import urdyn._semantic as semantic
 
     def install(cosines: dict[str, float]):
         model = _ScoredModel(cosines)
@@ -147,7 +147,7 @@ def test_two_complementary_verified_lessons_inside_the_margin_are_both_admitted(
     b_content = "Reject booleans explicitly before integer validation; bool subclasses int."
     scored_semantic({a_content: 0.3782, b_content: 0.3206})
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     lesson_a = _verified_lesson(cx, a_content)
     lesson_b = _verified_lesson(cx, b_content)
     cx.semantic_setup()
@@ -175,7 +175,7 @@ def test_the_two_strongest_of_three_relevant_lessons_are_admitted(tmp_path, scor
     third = "Register each new numeric option in the permitted-keys list."
     scored_semantic({strongest: 0.55, second: 0.50, third: 0.45})
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     a = _verified_lesson(cx, strongest)
     b = _verified_lesson(cx, second)
     c = _verified_lesson(cx, third)
@@ -207,7 +207,7 @@ def test_semantic_lesson_admission_is_capped_at_the_calibrated_limit(tmp_path, s
     )
     scored_semantic({a: 0.60, b: 0.55, c: 0.50, d: 0.45})
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     lesson_a = _verified_lesson(cx, a)
     lesson_b = _verified_lesson(cx, b)
     lesson_c = _verified_lesson(cx, c)
@@ -236,7 +236,7 @@ def test_capped_admission_is_stable_across_repeated_calls(tmp_path, scored_seman
     }
     scored_semantic(contents)
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     for content in contents:
         _verified_lesson(cx, content)
     cx.semantic_setup()
@@ -262,7 +262,7 @@ def test_a_lesson_below_the_existing_floor_is_never_admitted(tmp_path, scored_se
     # Lesson floor: the band A23.2 measured as almost pure noise.
     scored_semantic({strong: 0.55, weak: 0.27})
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     admitted = _verified_lesson(cx, strong)
     rejected = _verified_lesson(cx, weak)
     cx.semantic_setup()
@@ -279,7 +279,7 @@ def test_a_lesson_below_the_existing_floor_is_never_admitted(tmp_path, scored_se
 def test_a_task_with_no_relevant_lesson_emits_nothing_from_the_noise_band(tmp_path, scored_semantic):
     """[A23.2] The calibration's hard case, as a deterministic regression.
 
-    A task Cortex genuinely has nothing for -- but a workspace full of
+    A task Urdyn genuinely has nothing for -- but a workspace full of
     engineering lessons that all sit in the band this model puts almost
     any prescriptive sentence into. A23.2 measured that band directly: on
     13 scenes whose correct answer was to emit nothing, a 0.20 floor
@@ -299,7 +299,7 @@ def test_a_task_with_no_relevant_lesson_emits_nothing_from_the_noise_band(tmp_pa
     }
     scored_semantic(contents)
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     for content in contents:
         _verified_lesson(cx, content)
     cx.semantic_setup()
@@ -325,7 +325,7 @@ def test_an_unrelated_workspace_still_surfaces_nothing(tmp_path, scored_semantic
     }
     scored_semantic(contents)
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     for content in contents:
         _verified_lesson(cx, content)
     cx.semantic_setup()
@@ -346,7 +346,7 @@ def test_an_unverified_lesson_is_not_admitted_by_a_high_score(tmp_path, scored_s
     verified = "Reject booleans explicitly when validating integers."
     scored_semantic({candidate: 1.0, verified: 0.55})
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     unverified = cx.learn(candidate)  # user_asserted, not verified
     trusted = _verified_lesson(cx, verified)
     cx.semantic_setup()
@@ -365,7 +365,7 @@ def test_a_superseded_lesson_is_not_admitted_by_a_high_score(tmp_path, scored_se
     new_content = "Reject non-numeric configuration strings instead of coercing them."
     scored_semantic({old_content: 0.95, new_content: 0.40})
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     old = _verified_lesson(cx, old_content)
     new = _verified_lesson(cx, new_content, supersedes=old.memory_id)
     cx.semantic_setup()
@@ -391,7 +391,7 @@ def test_a_lesson_admitted_both_lexically_and_semantically_appears_once(tmp_path
     content = "normalize environment values before numeric validation"
     scored_semantic({content: 0.9, "normalize environment values": 1.0})
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     lesson = _verified_lesson(cx, content)
     cx.semantic_setup()
 
@@ -417,7 +417,7 @@ def test_the_semantic_cap_does_not_truncate_lexically_relevant_lessons(tmp_path,
     ]
     scored_semantic({})  # nothing scores at all: the lexical channel alone must carry this
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     lessons = [_verified_lesson(cx, content) for content in contents]
     cx.semantic_setup()
 
@@ -432,7 +432,7 @@ def test_without_a_semantic_index_lexical_preflight_is_unchanged(tmp_path):
     all -- no fake model, no index -- preflight behaves exactly as it did
     before: the lexical channel works, and the semantic channel
     contributes nothing rather than raising."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     lesson = _verified_lesson(cx, "environment values numeric validation normalize")
     _verified_lesson(cx, "unrelated stylesheet button colour tokens")
 
@@ -466,7 +466,7 @@ def test_a_root_cause_does_not_consume_lesson_set_capacity(tmp_path, scored_sema
     }
     scored_semantic({root_cause_content: 0.99, **lessons})
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     evidence = cx.add_evidence("observed at load time", kind="error_observation")
     root_cause = cx.remember(
         root_cause_content, kind="root_cause", epistemic_state="inferred", evidence=[evidence]
@@ -489,7 +489,7 @@ def test_lesson_set_admission_does_not_disturb_the_pending_pool(tmp_path, scored
     lesson_b = "Reject booleans explicitly when validating integers."
     scored_semantic({pending_content: 0.60, lesson_a: 0.55, lesson_b: 0.52})
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     pending = cx.remember(pending_content, kind="pending")
     a = _verified_lesson(cx, lesson_a)
     b = _verified_lesson(cx, lesson_b)
@@ -508,7 +508,7 @@ def test_lesson_set_admission_does_not_disturb_the_invalidation_pool(tmp_path, s
     lesson_b = "Reject booleans explicitly when validating integers."
     scored_semantic({invalidation_content: 0.60, lesson_a: 0.55, lesson_b: 0.52})
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     invalidation = cx.remember(invalidation_content, kind="invalidation")
     a = _verified_lesson(cx, lesson_a)
     b = _verified_lesson(cx, lesson_b)
@@ -529,7 +529,7 @@ def test_two_contradictory_lessons_surface_together_with_their_conflict(tmp_path
     """A23 measured that the margin, faced with two genuinely
     contradictory lessons, admitted one and hid the other -- presenting
     one side of a contradiction as the only truth. That was never a
-    design requirement: `_conflict.py` is explicit that Cortex never
+    design requirement: `_conflict.py` is explicit that Urdyn never
     chooses a side, and `open_conflicts` exists to disclose both.
 
     Set admission does not adjudicate either. It surfaces both eligible
@@ -541,7 +541,7 @@ def test_two_contradictory_lessons_surface_together_with_their_conflict(tmp_path
     strict_content = "Never coerce configuration values; reject non-numeric strings."
     scored_semantic({coerce_content: 0.55, strict_content: 0.50})
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     coerce_lesson = _verified_lesson(cx, coerce_content)
     strict_lesson = _verified_lesson(cx, strict_content)
     cx.record_conflict(coerce_lesson, strict_lesson)
@@ -592,7 +592,7 @@ def test_an_isolated_below_floor_lesson_is_not_admitted_through_the_memory_pool(
     weak = "Prefer descriptive commit messages when touching shared modules."
     scored_semantic({weak: 0.25})
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     _verified_lesson(cx, weak)
     cx.semantic_setup()
 
@@ -618,7 +618,7 @@ def test_a_below_floor_lesson_cannot_establish_relevance_for_its_root_cause_sibl
     weak_root_cause = "The release notes were generated from the wrong branch."
     scored_semantic({weak_lesson: 0.25, weak_root_cause: 0.05})
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     evidence = cx.add_evidence("observed during the release", kind="error_observation")
     validation = cx.add_evidence("pytest -q :: passed", kind="test_result")
     cx.learn(weak_lesson, evidence=[evidence], supporting_evidence=[validation], verified=True)
@@ -648,7 +648,7 @@ def test_a_strong_root_cause_still_rescues_its_low_scoring_lesson_sibling(
     lesson_content = "Wrap multi-statement migrations in a single transaction."
     scored_semantic({root_cause_content: 0.70, lesson_content: 0.0})
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     evidence = cx.add_evidence("observed at deploy time", kind="error_observation")
     validation = cx.add_evidence("pytest -q :: passed", kind="test_result")
     root_cause = cx.remember(
@@ -678,7 +678,7 @@ def test_a_lesson_clearing_its_own_floor_still_rescues_its_weak_root_cause_sibli
     root_cause_content = "The migration applied half its statements before failing."
     scored_semantic({lesson_content: 0.70, root_cause_content: 0.05})
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     evidence = cx.add_evidence("observed at deploy time", kind="error_observation")
     validation = cx.add_evidence("pytest -q :: passed", kind="test_result")
     lesson = cx.learn(
@@ -708,7 +708,7 @@ def test_a_shared_evidence_cluster_of_lessons_cannot_bypass_the_lesson_floor(
     second = "Keep the changelog entry in the same commit as the change."
     scored_semantic({first: 0.25, second: 0.24})
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     evidence = cx.add_evidence("observed during the release", kind="error_observation")
     validation = cx.add_evidence("pytest -q :: passed", kind="test_result")
     for content in (first, second):
@@ -736,7 +736,7 @@ def test_a_shared_evidence_cluster_of_lessons_cannot_bypass_the_semantic_cap(
     }
     scored_semantic(contents)
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     evidence = cx.add_evidence("observed at deploy time", kind="error_observation")
     validation = cx.add_evidence("pytest -q :: passed", kind="test_result")
     by_content = {
@@ -779,11 +779,11 @@ def test_the_calibrated_lesson_floor_is_anchored_on_both_sides(tmp_path, scored_
     below = "Keep the changelog entry in the same commit as the change."
     scored_semantic({above: 0.3010, below: 0.2990})
 
-    admitting = Cortex.init(tmp_path / "above", "dev")
+    admitting = Urdyn.init(tmp_path / "above", "dev")
     admitted = _verified_lesson(admitting, above)
     admitting.semantic_setup()
 
-    rejecting = Cortex.init(tmp_path / "below", "dev")
+    rejecting = Urdyn.init(tmp_path / "below", "dev")
     _verified_lesson(rejecting, below)
     rejecting.semantic_setup()
 
@@ -803,7 +803,7 @@ def test_the_memory_floor_still_admits_a_non_lesson_in_the_same_band(tmp_path, s
     root_cause_content = "The loader accepted a boolean where an integer was expected."
     scored_semantic({root_cause_content: 0.25})
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     evidence = cx.add_evidence("observed at load time", kind="error_observation")
     root_cause = cx.remember(
         root_cause_content, kind="root_cause", epistemic_state="inferred", evidence=[evidence]
@@ -816,12 +816,12 @@ def test_the_memory_floor_still_admits_a_non_lesson_in_the_same_band(tmp_path, s
 
 
 # ---------------------------------------------------------------------------
-# The policy function itself, isolated from Cortex
+# The policy function itself, isolated from Urdyn
 # ---------------------------------------------------------------------------
 
 
 def test_set_admitted_ids_applies_its_own_floor_and_no_margin():
-    from cortex_memory._semantic import set_admitted_ids
+    from urdyn._semantic import set_admitted_ids
 
     ranked = [("a", 0.3782), ("b", 0.3206), ("c", 0.27)]
 
@@ -829,7 +829,7 @@ def test_set_admitted_ids_applies_its_own_floor_and_no_margin():
 
 
 def test_set_admitted_ids_caps_and_handles_degenerate_input():
-    from cortex_memory._semantic import set_admitted_ids
+    from urdyn._semantic import set_admitted_ids
 
     ranked = [("a", 0.6), ("b", 0.55), ("c", 0.5), ("d", 0.45)]
 
@@ -844,7 +844,7 @@ def test_the_lesson_floor_is_not_the_memory_floor():
     """[A23.2] The two floors answer different questions and are
     calibrated separately; wiring the Lesson pool back onto the MEMORY
     constant would silently undo this calibration."""
-    from cortex_memory._semantic import set_admitted_ids
+    from urdyn._semantic import set_admitted_ids
 
     ranked = [("noise", 0.27)]
 
@@ -857,7 +857,7 @@ def test_the_single_winner_policy_is_untouched():
     """The global winner+margin helper must still behave exactly as it
     did: A23.1 adds an alternative policy, it does not modify the one the
     MEMORY, ATTEMPT and SKILL pools still rely on."""
-    from cortex_memory._semantic import semantic_admitted_id
+    from urdyn._semantic import semantic_admitted_id
 
     thin = [("a", 0.3782), ("b", 0.3206)]
     wide = [("a", 0.60), ("b", 0.20)]
@@ -881,7 +881,7 @@ def _real_model_available() -> bool:
         import numpy  # noqa: F401
         import onnxruntime  # noqa: F401
 
-        from cortex_memory import _semantic
+        from urdyn import _semantic
     except ImportError:
         return False
     for artifact in (_semantic.preferred_artifact(), _semantic.ARTIFACT_PORTABLE):
@@ -901,7 +901,7 @@ def _real_model_available() -> bool:
 
 _SKIP_REASON = (
     "the real ONNX semantic model is not cached locally (and/or the 'semantic' "
-    "extra is not installed) -- run 'cortex semantic setup' in a scratch "
+    "extra is not installed) -- run 'urdyn semantic setup' in a scratch "
     "workspace once to populate the Hugging Face cache, then re-run this file; "
     "never downloaded automatically by the test suite itself"
 )
@@ -957,7 +957,7 @@ def test_real_model_complementary_lessons_survive_together(tmp_path):
     together, and that the unrelated one still does not.
     """
     with _offline():
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         lesson_a, lesson_b, unrelated = _real_workspace(cx)
         cx.semantic_setup()
 
@@ -983,7 +983,7 @@ def test_real_model_unrelated_task_still_abstains(tmp_path):
     is for).
     """
     with _offline():
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         _verified_lesson(cx, _REAL_LESSON_A)
         _verified_lesson(cx, _REAL_LESSON_B)
         cx.semantic_setup()
@@ -1015,7 +1015,7 @@ def test_real_model_cross_language_recovers_a_lesson_without_the_old_false_posit
     thing an absolute floor reliably does.
     """
     with _offline():
-        cx = Cortex.init(tmp_path, "dev")
+        cx = Urdyn.init(tmp_path, "dev")
         lesson_a, lesson_b, unrelated = _real_workspace(cx)
         cx.semantic_setup()
 

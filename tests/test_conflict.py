@@ -2,7 +2,7 @@
 
 A `Conflict` is a symmetric, explicit, structural statement that two
 Memories cannot both be treated as a coherent description of the same
-state. It is NOT a judgment: Cortex never chooses a side, never mutates
+state. It is NOT a judgment: Urdyn never chooses a side, never mutates
 either Memory, never changes an `epistemic_state`, and never implies
 invalidation or supersession (see `_conflict.py`'s module docstring).
 
@@ -20,14 +20,14 @@ import sqlite3
 
 import pytest
 
-from cortex_memory import Conflict, Cortex
+from urdyn import Conflict, Urdyn
 
 
 # -- 1. basic recording ------------------------------------------------------
 
 
 def test_record_basic_conflict(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     a = cx.remember("Migration strategy A is safe.", kind="decision")
     b = cx.remember("Migration strategy A is unsafe.", kind="decision")
 
@@ -42,7 +42,7 @@ def test_record_basic_conflict(tmp_path):
 
 
 def test_conflict_memory_ids_are_canonically_ordered(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     a = cx.remember("Migration strategy A is safe.", kind="decision")
     b = cx.remember("Migration strategy A is unsafe.", kind="decision")
 
@@ -56,7 +56,7 @@ def test_conflict_memory_ids_are_canonically_ordered(tmp_path):
 
 
 def test_self_conflict_is_rejected(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     a = cx.remember("Migration strategy A is safe.", kind="decision")
 
     with pytest.raises(ValueError):
@@ -67,7 +67,7 @@ def test_self_conflict_is_rejected(tmp_path):
 
 
 def test_duplicate_declaration_is_idempotent(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     a = cx.remember("Migration strategy A is safe.", kind="decision")
     b = cx.remember("Migration strategy A is unsafe.", kind="decision")
 
@@ -79,7 +79,7 @@ def test_duplicate_declaration_is_idempotent(tmp_path):
 
 
 def test_reverse_duplicate_declaration_is_idempotent(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     a = cx.remember("Migration strategy A is safe.", kind="decision")
     b = cx.remember("Migration strategy A is unsafe.", kind="decision")
 
@@ -91,7 +91,7 @@ def test_reverse_duplicate_declaration_is_idempotent(tmp_path):
 
 
 def test_duplicate_declaration_does_not_change_recorded_at(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     a = cx.remember("Migration strategy A is safe.", kind="decision")
     b = cx.remember("Migration strategy A is unsafe.", kind="decision")
 
@@ -106,7 +106,7 @@ def test_duplicate_declaration_does_not_change_recorded_at(tmp_path):
 
 
 def test_verified_vs_verified_conflict_is_allowed(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     evidence_a = cx.add_evidence("Test suite passed under strategy A.", kind="test_result")
     evidence_b = cx.add_evidence("Test suite failed under strategy A.", kind="test_result")
     a = cx.learn("Migration strategy A is safe.", supporting_evidence=[evidence_a], verified=True)
@@ -118,7 +118,7 @@ def test_verified_vs_verified_conflict_is_allowed(tmp_path):
 
 
 def test_both_memories_remain_current_after_conflict(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     a = cx.remember("Migration strategy A is safe.", kind="decision")
     b = cx.remember("Migration strategy A is unsafe.", kind="decision")
 
@@ -130,7 +130,7 @@ def test_both_memories_remain_current_after_conflict(tmp_path):
 
 
 def test_epistemic_states_are_unchanged_by_conflict(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     evidence = cx.add_evidence("Checked directly.", kind="test_result")
     a = cx.learn("Migration strategy A is safe.", supporting_evidence=[evidence], verified=True)
     b = cx.remember("Migration strategy A is unsafe.", kind="decision")
@@ -144,7 +144,7 @@ def test_epistemic_states_are_unchanged_by_conflict(tmp_path):
 
 
 def test_user_asserted_vs_verified_conflict_is_allowed(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     evidence = cx.add_evidence("Checked directly.", kind="test_result")
     a = cx.remember("Migration strategy A is safe.", kind="decision")
     b = cx.learn("Migration strategy A is unsafe.", supporting_evidence=[evidence], verified=True)
@@ -158,7 +158,7 @@ def test_user_asserted_vs_verified_conflict_is_allowed(tmp_path):
 
 
 def test_cross_kind_conflict_is_allowed(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     decision = cx.remember("Use SQLite.", kind="decision")
     invariant = cx.remember("Runtime must support concurrent multi-writer access.", kind="invariant")
 
@@ -171,7 +171,7 @@ def test_cross_kind_conflict_is_allowed(tmp_path):
 
 
 def test_conflict_with_non_current_participant_is_accepted(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     a = cx.remember("Python 3.12 is required.", kind="environment")
     cx.remember("Python 3.13 is required.", kind="environment", supersedes=a.memory_id)
     b = cx.remember("Node 18 is required.", kind="environment")
@@ -182,7 +182,7 @@ def test_conflict_with_non_current_participant_is_accepted(tmp_path):
 
 
 def test_historical_conflict_is_excluded_from_open(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     a = cx.remember("Python 3.12 is required.", kind="environment")
     cx.remember("Python 3.13 is required.", kind="environment", supersedes=a.memory_id)
     b = cx.remember("Node 18 is required.", kind="environment")
@@ -197,7 +197,7 @@ def test_historical_conflict_is_excluded_from_open(tmp_path):
 
 
 def test_supersession_closes_open_projection_but_preserves_history(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     a = cx.remember("Migration strategy A is safe.", kind="decision")
     b = cx.remember("Migration strategy A is unsafe.", kind="decision")
     cx.record_conflict(a, b)
@@ -210,7 +210,7 @@ def test_supersession_closes_open_projection_but_preserves_history(tmp_path):
 
 
 def test_invalidation_closes_open_projection_but_preserves_history(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     a = cx.remember("Migration strategy A is safe.", kind="decision")
     b = cx.remember("Migration strategy A is unsafe.", kind="decision")
     cx.record_conflict(a, b)
@@ -230,7 +230,7 @@ def test_invalidation_closes_open_projection_but_preserves_history(tmp_path):
 
 
 def test_conflict_history_survives_resolution_of_both_sides(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     a = cx.remember("Migration strategy A is safe.", kind="decision")
     b = cx.remember("Migration strategy A is unsafe.", kind="decision")
     original = cx.record_conflict(a, b)
@@ -247,13 +247,13 @@ def test_conflict_history_survives_resolution_of_both_sides(tmp_path):
 
 
 def test_conflict_survives_reopening(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     a = cx.remember("Migration strategy A is safe.", kind="decision")
     b = cx.remember("Migration strategy A is unsafe.", kind="decision")
     original = cx.record_conflict(a, b)
     del cx
 
-    reopened = Cortex.open(tmp_path)
+    reopened = Urdyn.open(tmp_path)
 
     assert reopened.conflicts() == [original]
     assert reopened.open_conflicts() == [original]
@@ -266,16 +266,16 @@ def test_conflict_survives_a_copied_workspace(tmp_path):
     import shutil
 
     source = tmp_path / "source"
-    cx = Cortex.init(source, "dev")
+    cx = Urdyn.init(source, "dev")
     a = cx.remember("Migration strategy A is safe.", kind="decision")
     b = cx.remember("Migration strategy A is unsafe.", kind="decision")
     cx.record_conflict(a, b)
     del cx
 
     destination = tmp_path / "copy"
-    shutil.copytree(source / ".cortex", destination / ".cortex")
+    shutil.copytree(source / ".urdyn", destination / ".urdyn")
 
-    copied = Cortex.open(destination)
+    copied = Urdyn.open(destination)
     assert len(copied.conflicts()) == 1
     assert len(copied.open_conflicts()) == 1
 
@@ -284,7 +284,7 @@ def test_conflict_survives_a_copied_workspace(tmp_path):
 
 
 def test_conflicts_are_ordered_deterministically_by_recorded_at(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     a = cx.remember("A", kind="note")
     b = cx.remember("B", kind="note")
     c = cx.remember("C", kind="note")
@@ -302,10 +302,10 @@ def test_conflicts_are_ordered_deterministically_by_recorded_at(tmp_path):
 
 
 def test_conflict_with_unknown_memory_id_is_rejected(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     a = cx.remember("Migration strategy A is safe.", kind="decision")
 
-    from cortex_memory import Memory
+    from urdyn import Memory
 
     forged = Memory(
         memory_id="0" * 32,
@@ -325,10 +325,10 @@ def test_forged_memory_object_cannot_bypass_canonical_lookup(tmp_path):
     conflict with a memory that never existed under a different id. Only
     `memory_id` is trusted -- the same discipline `promote()` already
     applies to `lesson.memory_id`."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     a = cx.remember("Migration strategy A is safe.", kind="decision")
 
-    from cortex_memory import Memory
+    from urdyn import Memory
 
     forged_but_nonexistent_id = Memory(
         memory_id="f" * 32,
@@ -425,7 +425,7 @@ def _table_exists(connection, name):
 
 
 def test_v5_database_migrates_to_v6_and_memory_survives(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     memory_id = _build_v5_database(cx._db_path)
 
     results = cx.recall("legacy v5 memory")
@@ -435,7 +435,7 @@ def test_v5_database_migrates_to_v6_and_memory_survives(tmp_path):
 
 
 def test_v5_migration_reaches_current_schema_and_adds_memory_conflicts_table(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     _build_v5_database(cx._db_path)
 
     cx.recall("legacy")  # triggers the v5->v6->v7 migration chain
@@ -452,7 +452,7 @@ def test_v5_migration_reaches_current_schema_and_adds_memory_conflicts_table(tmp
 
 
 def test_v5_migrated_memories_can_participate_in_a_new_conflict(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     a_id = _build_v5_database(cx._db_path, content="legacy claim A")
     b_id = _build_v5_database(cx._db_path, content="legacy claim B")
 
@@ -464,7 +464,7 @@ def test_v5_migrated_memories_can_participate_in_a_new_conflict(tmp_path):
 
 
 def test_v5_migration_is_repeatable(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     memory_id = _build_v5_database(cx._db_path)
 
     first = cx.recall("legacy v5 memory")
@@ -480,9 +480,9 @@ def test_v5_migration_does_not_destroy_data_on_failure(tmp_path):
     pre-creating a colliding table by hand, forcing SQLite to reject the
     migration partway through its own transaction. The schema version
     must not advance and the pre-existing canonical row must survive."""
-    from cortex_memory import CortexStorageError
+    from urdyn import UrdynStorageError
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     memory_id = _build_v5_database(cx._db_path, content="must survive a failed migration")
 
     connection = sqlite3.connect(cx._db_path)
@@ -494,7 +494,7 @@ def test_v5_migration_does_not_destroy_data_on_failure(tmp_path):
     finally:
         connection.close()
 
-    with pytest.raises(CortexStorageError):
+    with pytest.raises(UrdynStorageError):
         cx.recall("must survive")
 
     connection = sqlite3.connect(cx._db_path)
@@ -513,7 +513,7 @@ def test_v5_migration_does_not_destroy_data_on_failure(tmp_path):
 def test_v1_to_current_full_migration_chain_still_works(tmp_path):
     """The pre-existing v1->v5 chain must keep working unmodified with the
     new v5->v6 step appended after it."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     connection = sqlite3.connect(cx._db_path)
     try:
         with connection:
@@ -531,7 +531,7 @@ def test_v1_to_current_full_migration_chain_still_works(tmp_path):
     finally:
         connection.close()
 
-    reopened = Cortex.open(tmp_path)
+    reopened = Urdyn.open(tmp_path)
     results = reopened.recall("v1-era memory")
 
     connection = sqlite3.connect(reopened._db_path)
@@ -550,7 +550,7 @@ def test_v1_to_current_full_migration_chain_still_works(tmp_path):
 
 
 def test_no_event_is_emitted_by_conflict_declaration(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     a = cx.remember("Migration strategy A is safe.", kind="decision")
     b = cx.remember("Migration strategy A is unsafe.", kind="decision")
 
@@ -575,7 +575,7 @@ def test_no_event_is_emitted_by_conflict_declaration(tmp_path):
 
 
 def test_memory_objects_are_unchanged_by_conflict_declaration(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     a = cx.remember("Migration strategy A is safe.", kind="decision")
     b = cx.remember("Migration strategy A is unsafe.", kind="decision")
     a_before, b_before = a, b
@@ -594,7 +594,7 @@ def test_memory_objects_are_unchanged_by_conflict_declaration(tmp_path):
 
 
 def test_store_schema_version_is_7(tmp_path):
-    from cortex_memory._store import STORE_SCHEMA_VERSION
+    from urdyn._store import STORE_SCHEMA_VERSION
 
     assert STORE_SCHEMA_VERSION == 7
 
@@ -606,11 +606,11 @@ def test_user_version_6_with_missing_memory_conflicts_table_raises_cleanly(tmp_p
     """`PRAGMA user_version == 6` alone must not be trusted as proof the
     schema is actually shaped like v6: if `memory_conflicts` is missing
     (a corrupted or incomplete upgrade), opening the store fails loudly as
-    `CortexStorageError` -- no auto-repair, no silent recreation, same
+    `UrdynStorageError` -- no auto-repair, no silent recreation, same
     standard already applied to every other version in `_ensure_schema`."""
-    from cortex_memory import CortexStorageError
+    from urdyn import UrdynStorageError
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     original = cx.remember("seed content that must survive", kind="note")
 
     connection = sqlite3.connect(cx._db_path)
@@ -620,8 +620,8 @@ def test_user_version_6_with_missing_memory_conflicts_table_raises_cleanly(tmp_p
     finally:
         connection.close()
 
-    reopened = Cortex.open(tmp_path)
-    with pytest.raises(CortexStorageError):
+    reopened = Urdyn.open(tmp_path)
+    with pytest.raises(UrdynStorageError):
         reopened.recall("seed")
 
     connection = sqlite3.connect(cx._db_path)
@@ -642,9 +642,9 @@ def test_orphan_conflict_raises_cleanly_instead_of_being_returned(tmp_path):
     recorded -- and `open_conflicts()` would then silently drop it (a
     nonexistent id is never current), making corruption look exactly
     like the legitimate "no longer open" answer."""
-    from cortex_memory import CortexStorageError
+    from urdyn import UrdynStorageError
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     a = cx.remember("Migration strategy A is safe.", kind="decision")
     b = cx.remember("Migration strategy A is unsafe.", kind="decision")
     cx.record_conflict(a, b)
@@ -662,9 +662,9 @@ def test_orphan_conflict_raises_cleanly_instead_of_being_returned(tmp_path):
     finally:
         connection.close()
 
-    with pytest.raises(CortexStorageError):
+    with pytest.raises(UrdynStorageError):
         cx.conflicts()
-    with pytest.raises(CortexStorageError):
+    with pytest.raises(UrdynStorageError):
         cx.open_conflicts()
 
 
@@ -673,7 +673,7 @@ def test_storage_rejects_a_non_canonically_ordered_pair(tmp_path):
     the table itself (`CHECK (memory_id_a < memory_id_b)`), not only in
     the Python write path, so a reversed pair cannot exist in the store
     even if written by something other than `record_conflict()`."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     a = cx.remember("Migration strategy A is safe.", kind="decision")
     b = cx.remember("Migration strategy A is unsafe.", kind="decision")
     lo, hi = sorted([a.memory_id, b.memory_id])
@@ -692,7 +692,7 @@ def test_storage_rejects_a_non_canonically_ordered_pair(tmp_path):
 def test_storage_rejects_a_self_referential_pair(tmp_path):
     """[A13.1.1] `a == a` fails `a < b` too, so self-conflict is
     impossible at the storage level as well as in `record_conflict()`."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     a = cx.remember("Migration strategy A is safe.", kind="decision")
 
     connection = sqlite3.connect(cx._db_path)
@@ -711,13 +711,13 @@ def test_idempotency_does_not_silence_a_non_duplicate_constraint_violation(tmp_p
     the canonical pair, never any other constraint failure. Simulates a
     future internal call path that reaches SQL without canonicalizing
     (by making `canonical_pair` return a reversed pair): that violates
-    the table's CHECK, and must surface as a clean `CortexStorageError`
+    the table's CHECK, and must surface as a clean `UrdynStorageError`
     rather than being swallowed the way a blanket `INSERT OR IGNORE`
     would swallow it."""
-    from cortex_memory import CortexStorageError
-    from cortex_memory import _store as store_module
+    from urdyn import UrdynStorageError
+    from urdyn import _store as store_module
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     a = cx.remember("Migration strategy A is safe.", kind="decision")
     b = cx.remember("Migration strategy A is unsafe.", kind="decision")
 
@@ -728,7 +728,7 @@ def test_idempotency_does_not_silence_a_non_duplicate_constraint_violation(tmp_p
     original = store_module.canonical_pair
     store_module.canonical_pair = _reversed_pair
     try:
-        with pytest.raises(CortexStorageError):
+        with pytest.raises(UrdynStorageError):
             cx.record_conflict(a, b)
     finally:
         store_module.canonical_pair = original
@@ -742,11 +742,11 @@ def test_idempotency_does_not_silence_a_non_duplicate_constraint_violation(tmp_p
 
 def test_conflict_recorded_at_matches_the_canonical_temporal_type(tmp_path):
     """[A13.1.1] `Conflict.recorded_at` must be the same public temporal
-    representation every other canonical Cortex primitive uses -- a
+    representation every other canonical Urdyn primitive uses -- a
     timezone-aware `datetime`, not an ISO string or a naive datetime.
     Compared here against a real `Memory` rather than asserted in the
     abstract, so this test fails if EITHER model drifts."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     a = cx.remember("Migration strategy A is safe.", kind="decision")
     b = cx.remember("Migration strategy A is unsafe.", kind="decision")
 
@@ -763,13 +763,13 @@ def test_conflict_recorded_at_round_trips_exactly_through_storage(tmp_path):
     byte-identical to the one returned at write time, `recorded_at`
     included (no precision loss, no tz drift), so `==` is a reliable
     identity check across processes."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     a = cx.remember("Migration strategy A is safe.", kind="decision")
     b = cx.remember("Migration strategy A is unsafe.", kind="decision")
     original = cx.record_conflict(a, b)
     del cx
 
-    (reloaded,) = Cortex.open(tmp_path).conflicts()
+    (reloaded,) = Urdyn.open(tmp_path).conflicts()
 
     assert reloaded == original
     assert reloaded.recorded_at == original.recorded_at
@@ -780,7 +780,7 @@ def test_conflict_recorded_at_supports_ordering_against_memory_timestamps(tmp_pa
     """`recorded_at` is directly comparable with other canonical
     primitives' timestamps -- it would not be if Conflict had introduced
     a different temporal type or a naive datetime."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     a = cx.remember("Migration strategy A is safe.", kind="decision")
     b = cx.remember("Migration strategy A is unsafe.", kind="decision")
 
@@ -795,13 +795,13 @@ def test_duplicate_recorded_at_is_stable_across_a_reopen(tmp_path):
     processes, not just within one: a reversed re-declaration issued by a
     freshly reopened workspace returns the ORIGINAL `recorded_at` and
     still leaves exactly one canonical row."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     a = cx.remember("Migration strategy A is safe.", kind="decision")
     b = cx.remember("Migration strategy A is unsafe.", kind="decision")
     original = cx.record_conflict(a, b)
     del cx
 
-    reopened = Cortex.open(tmp_path)
+    reopened = Urdyn.open(tmp_path)
     (reloaded_a,) = [m for m in reopened.timeline() if m.memory_id == a.memory_id]
     (reloaded_b,) = [m for m in reopened.timeline() if m.memory_id == b.memory_id]
     again = reopened.record_conflict(reloaded_b, reloaded_a)  # reversed, new process
@@ -815,7 +815,7 @@ def test_corrupted_conflict_pair_ordering_raises_cleanly(tmp_path):
     """A `memory_conflicts` row with `memory_id_a >= memory_id_b` must not
     be silently accepted as a valid, differently-ordered pair -- that
     would break the deduplication/idempotency guarantee the ordering
-    exists to provide. It must raise `CortexStorageError`.
+    exists to provide. It must raise `UrdynStorageError`.
 
     [A13.1.1] The READ path enforces this independently of the table's
     own `CHECK (memory_id_a < memory_id_b)`, so the sabotage here first
@@ -825,9 +825,9 @@ def test_corrupted_conflict_pair_ordering_raises_cleanly(tmp_path):
     the storage layer; this covers the reconstruction layer. Both must
     hold on their own: that is what makes it defence in depth rather
     than one check written twice."""
-    from cortex_memory import CortexStorageError
+    from urdyn import UrdynStorageError
 
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     a = cx.remember("Migration strategy A is safe.", kind="decision")
     b = cx.remember("Migration strategy A is unsafe.", kind="decision")
     cx.record_conflict(a, b)
@@ -848,5 +848,5 @@ def test_corrupted_conflict_pair_ordering_raises_cleanly(tmp_path):
     finally:
         connection.close()
 
-    with pytest.raises(CortexStorageError):
+    with pytest.raises(UrdynStorageError):
         cx.conflicts()

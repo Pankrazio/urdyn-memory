@@ -1,13 +1,13 @@
-"""CLI tests for A9.1: `cortex status` current-kind counts and the
-`cortex preflight` INVARIANTS section.
+"""CLI tests for A9.1: `urdyn status` current-kind counts and the
+`urdyn preflight` INVARIANTS section.
 
-`cortex status` must stay "git status of memory": real current counts,
+`urdyn status` must stay "git status of memory": real current counts,
 no generated narrative, no health score, no suggestions.
 """
 
 import pytest
 
-from cortex_memory._cli import main
+from urdyn._cli import main
 
 
 def test_cli_status_reports_zero_counts_on_empty_workspace(tmp_path, monkeypatch, capsys):
@@ -74,14 +74,14 @@ def _last_remembered_id(capsys) -> str:
 def test_cli_preflight_shows_invariants_section_when_unrelated_to_task(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     main(["init", "dev"])
-    main(["remember", ".cortex/ must remain gitignored.", "--kind", "invariant"])
+    main(["remember", ".urdyn/ must remain gitignored.", "--kind", "invariant"])
 
     exit_code = main(["preflight", "Optimize database connection pooling."])
     captured = capsys.readouterr()
 
     assert exit_code == 0
     assert "INVARIANTS" in captured.out
-    assert ".cortex/ must remain gitignored." in captured.out
+    assert ".urdyn/ must remain gitignored." in captured.out
 
 
 def test_cli_preflight_omits_invariants_section_when_none_recorded(tmp_path, monkeypatch, capsys):

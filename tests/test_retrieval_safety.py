@@ -15,10 +15,10 @@ raw string concatenation would be caught at both levels.
 
 import pytest
 
-from cortex_memory import Cortex
-from cortex_memory._relevance import tokens
-from cortex_memory._retrieval import ENTITY_MEMORY
-from cortex_memory._store import MemoryStore
+from urdyn import Urdyn
+from urdyn._relevance import tokens
+from urdyn._retrieval import ENTITY_MEMORY
+from urdyn._store import MemoryStore
 
 
 @pytest.mark.parametrize(
@@ -37,7 +37,7 @@ from cortex_memory._store import MemoryStore
     ],
 )
 def test_preflight_and_guard_never_raise_on_pathological_task_text(tmp_path, task):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     cx.record_attempt(
         task="Fix login bug near the session handler", approach="Patch it", outcome="failed"
     )
@@ -50,7 +50,7 @@ def test_preflight_and_guard_never_raise_on_pathological_task_text(tmp_path, tas
 
 
 def test_search_candidates_returns_empty_for_empty_token_set(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     cx.remember("Something searchable.", kind="note")
 
     store = MemoryStore.open_if_exists(cx._db_path)
@@ -63,7 +63,7 @@ def test_search_candidates_handles_a_token_that_is_an_fts5_operator_keyword(tmp_
     ordinary tokens (quoted, never concatenated raw) they must behave
     like any other literal word, matching content that contains them
     and never raising."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     cx.remember("The bug is near the login screen.", kind="note")
 
     store = MemoryStore.open_if_exists(cx._db_path)
@@ -84,10 +84,10 @@ def test_search_candidates_query_containing_double_quote_character_is_impossible
 def test_preflight_on_unicode_only_task_returns_empty_not_error(tmp_path):
     """A task with no ASCII alphanumeric content tokenizes to nothing.
     Both channels admit nothing for an empty token set; the call
-    returns a normal empty `Preflight`, not an exception -- Cortex
+    returns a normal empty `Preflight`, not an exception -- Urdyn
     cannot yet tokenize non-ASCII scripts, and that is a known,
     gracefully-handled limitation, not a crash."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     cx.remember("Something in the workspace.", kind="note")
 
     result = cx.preflight("修复登录错误")

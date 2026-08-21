@@ -3,16 +3,16 @@ plus brute-force cosine similarity, used to widen candidate recall in
 `preflight()`/`guard()` the same way `_retrieval.py`'s FTS5/BM25 channel
 already does.
 
-This module is the ONLY place in Cortex that imports `onnxruntime`,
+This module is the ONLY place in Urdyn that imports `onnxruntime`,
 `tokenizers`, `huggingface_hub` or `numpy`. It is never imported from
 `__init__.py`, `_workspace.py` at module scope, or any other module
-reachable from a plain `import cortex_memory` -- callers
+reachable from a plain `import urdyn` -- callers
 (`_workspace.py`, `_cli.py`) import it lazily, inside functions, wrapped
 in `try/except ImportError`, so a base install without the
-`cortex-memory[semantic]` extra never even attempts to load them and
+`urdyn-memory[semantic]` extra never even attempts to load them and
 behaves exactly as it did before A7.4. Nothing outside this module ever
 sees an `InferenceSession`, a `Tokenizer`, an artifact filename or a
-Hugging Face cache path: the rest of Cortex only ever gets
+Hugging Face cache path: the rest of Urdyn only ever gets
 `embed(model, texts) -> normalized vectors`.
 
 [A16.3] BACKEND: `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`
@@ -25,7 +25,7 @@ retrievals and no authority leakage. A16.2.1 additionally verified,
 numerically, that driving the OFFICIAL fp32 artifact through the recipe
 below reproduces the reference implementation exactly (per-text cosine
 1.00000, top-1 agreement 1.000, rank correlation 1.000), which is why
-Cortex owns this small encoder instead of taking a heavier third-party
+Urdyn owns this small encoder instead of taking a heavier third-party
 runtime dependency that would have added ~200 MB of RSS for the same
 vectors.
 
@@ -40,7 +40,7 @@ it always has, which is what keeps cosine similarity a plain dot
 product.
 
 `SEMANTIC_MAX_SEQ_LENGTH` is pinned here as a constant rather than read
-from the repository at runtime ON PURPOSE: it is part of Cortex's
+from the repository at runtime ON PURPOSE: it is part of Urdyn's
 embedding contract, and a value silently changed upstream must not be
 able to silently change the vector space of an already-indexed
 workspace. The same reasoning pins the model revision (see
@@ -50,7 +50,7 @@ the real artifacts at setup instead of trusted.
 
 Two loading entry points exist on purpose:
   - `load_model_for_setup` allows a network download if the artifact is
-    not yet cached (used only by `cortex semantic setup`).
+    not yet cached (used only by `urdyn semantic setup`).
   - `load_model_for_retrieval` passes `local_files_only=True`, so a
     normal `preflight()`/`guard()` call can never trigger a network
     request: a missing artifact raises, and every caller in
@@ -161,7 +161,7 @@ TOKENIZER_FILENAME = "tokenizer.json"
 # usable on a normal laptop rather than only on a small workspace.
 SEMANTIC_ENCODE_BATCH_SIZE = 32
 
-# Official artifacts published by the model repository itself. Cortex
+# Official artifacts published by the model repository itself. Urdyn
 # picks one internally; there is deliberately no user-facing choice.
 ARTIFACT_PORTABLE = "onnx/model.onnx"
 ARTIFACT_X86_64 = "onnx/model_quint8_avx2.onnx"
@@ -189,7 +189,7 @@ class PoolPolicy:
 # operating point can be audited and re-derived.
 #
 # Originally calibrated in A7.4 on the frozen A7.3 corpus. Scores are a
-# property of the MODEL, not of Cortex, so a backend change invalidates
+# property of the MODEL, not of Urdyn, so a backend change invalidates
 # these numbers until they are re-measured pool by pool.
 # ATTEMPT: absolute floor unchanged since A7.4 and re-validated twice --
 #   it sits just above the highest false candidate seen in either corpus
@@ -377,7 +377,7 @@ def model_identity_for(artifact: str) -> str:
 
 
 def preferred_artifact(machine: str | None = None) -> str:
-    """The artifact Cortex will try FIRST on this machine.
+    """The artifact Urdyn will try FIRST on this machine.
 
     Deliberately keyed on the machine ARCHITECTURE only -- never on the
     operating system, and never on individual CPU feature flags. The
@@ -400,7 +400,7 @@ def preferred_artifact(machine: str | None = None) -> str:
     return ARTIFACT_PORTABLE
 
 
-# The identity this build of Cortex would create a NEW index with. An
+# The identity this build of Urdyn would create a NEW index with. An
 # EXISTING index is always read through `artifact_for_index` instead,
 # which obeys whatever artifact that index actually recorded.
 SEMANTIC_MODEL_ID = model_identity_for(preferred_artifact())
@@ -408,7 +408,7 @@ SEMANTIC_MODEL_ID = model_identity_for(preferred_artifact())
 
 def artifact_for_index(meta: "SemanticMeta") -> str | None:
     """The ONNX artifact an existing index must be queried with, or None
-    if the index is not compatible with this build of Cortex at all
+    if the index is not compatible with this build of Urdyn at all
     (different provider, different model repository, different upstream
     revision, different normalization, or an artifact this build does not
     know how to load).
@@ -416,7 +416,7 @@ def artifact_for_index(meta: "SemanticMeta") -> str | None:
     Returning the RECORDED artifact rather than this machine's preferred
     one is what makes the A16.2.1 mixing hazard structurally impossible:
     the query is always encoded with the same artifact the stored vectors
-    were, or the index is refused and Cortex degrades to lexical/FTS.
+    were, or the index is refused and Urdyn degrades to lexical/FTS.
     That also means an index whose build fell back to the portable
     artifact stays usable here, instead of being permanently rejected for
     disagreeing with a machine-derived preference."""
@@ -442,7 +442,7 @@ def artifact_for_index(meta: "SemanticMeta") -> str | None:
 
 
 class _OnnxTextEncoder:
-    """The whole ONNX surface of Cortex, kept behind one `encode()`.
+    """The whole ONNX surface of Urdyn, kept behind one `encode()`.
 
     Reproduces the model's published SentenceTransformer recipe: its own
     tokenizer, truncation at `SEMANTIC_MAX_SEQ_LENGTH`, padding with the
@@ -525,7 +525,7 @@ def _build_encoder(artifact: str, *, local_files_only: bool) -> _OnnxTextEncoder
 
 def load_model_for_setup() -> _OnnxTextEncoder:
     """Load the semantic model, downloading the pinned artifacts if they
-    are not already cached. Only ever called from `cortex semantic setup`
+    are not already cached. Only ever called from `urdyn semantic setup`
     -- the one entry point allowed to touch the network.
 
     Falls back ONCE, from this machine's preferred artifact to the
@@ -574,7 +574,7 @@ def artifacts_available(meta: "SemanticMeta") -> bool:
     This resolves cache paths (`local_files_only=True`, so it can never
     reach the network) and stops there: no `InferenceSession`, no
     tokenizer, none of the seconds `_build_encoder` costs. That is what
-    lets `cortex status` distinguish "this index is fine" from "this
+    lets `urdyn status` distinguish "this index is fine" from "this
     index cannot be queried on this machine" while staying an
     observation, and lets `preflight()` report the same condition without
     paying for a model it is not going to use.
@@ -613,7 +613,7 @@ def model_dimensions(model: Any) -> int:
     """Read the real output dimensionality off the loaded model instead
     of trusting a constant -- the one number an artifact swap could
     change without anything else noticing."""
-    return int(model.encode(["_cortex_semantic_dimension_probe_"]).shape[1])
+    return int(model.encode(["_urdyn_semantic_dimension_probe_"]).shape[1])
 
 
 def resolve_local_revision() -> str:
@@ -749,7 +749,7 @@ def set_admitted_ids(
     questions. What is shared with `semantic_admitted_id` is the ranking
     and the model -- nothing else. The difference in what a pool may
     return is a property of the CONSUMING category, not of the
-    similarity engine (see `Cortex._preflight_lesson_semantic_admitted`
+    similarity engine (see `Urdyn._preflight_lesson_semantic_admitted`
     for the one caller, and A23 for why Lesson is such a category).
 
     Why the margin is deliberately absent here rather than merely

@@ -1,4 +1,4 @@
-"""The Cortex workspace: identity, profile, and lifecycle."""
+"""The Urdyn workspace: identity, profile, and lifecycle."""
 
 from __future__ import annotations
 
@@ -12,11 +12,11 @@ from ._attempt import OUTCOME_FAILED, VALID_OUTCOMES, Attempt
 from ._conflict import Conflict
 from ._context import DEFAULT_CONTEXT_BUDGET, CompiledContext, compile_context
 from ._errors import (
-    CortexAlreadyInitializedError,
-    CortexManifestError,
-    CortexNotFoundError,
-    CortexSemanticUnavailableError,
-    CortexStorageError,
+    UrdynAlreadyInitializedError,
+    UrdynManifestError,
+    UrdynNotFoundError,
+    UrdynSemanticUnavailableError,
+    UrdynStorageError,
 )
 from ._event import (
     EVENT_KIND_ATTEMPT_RECORDED,
@@ -28,7 +28,14 @@ from ._event import (
 from ._evidence import DEFAULT_EVIDENCE_KIND, VALID_EVIDENCE_KINDS, VERIFICATION_EVIDENCE_KINDS, Evidence
 from ._gitignore import ensure_gitignore_entry
 from ._guard import GuardResult, build_guard_result
-from ._manifest import CANONICAL_PROFILES, PROFILE_DEV, SCHEMA_VERSION, read_manifest, write_manifest
+from ._manifest import (
+    CANONICAL_PROFILES,
+    LEGACY_WORKSPACE_ID_KEY,
+    PROFILE_DEV,
+    SCHEMA_VERSION,
+    read_manifest,
+    write_manifest,
+)
 from ._memory import (
     DEFAULT_KIND,
     EPISTEMIC_USER_ASSERTED,
@@ -77,7 +84,7 @@ from ._source import (
 )
 from ._store import MemoryStore, db_path_for
 
-CORTEX_DIRNAME = ".cortex"
+URDYN_DIRNAME = ".urdyn"
 DEFAULT_RECALL_LIMIT = 20
 
 
@@ -86,13 +93,13 @@ def _no_store_evidence_lookup(evidence_id: str) -> Evidence:
     practice, since an empty candidate set never cites any Evidence id,
     but fails loudly rather than silently if that invariant is ever
     violated."""
-    raise CortexStorageError(f"Evidence {evidence_id!r} was requested but this workspace has no store")
+    raise UrdynStorageError(f"Evidence {evidence_id!r} was requested but this workspace has no store")
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class _ExperienceMaterial:
     """Everything `preflight()` and `context()` (A29.1) both need from
-    one call to `Cortex._gather_experience`: current-state-filtered
+    one call to `Urdyn._gather_experience`: current-state-filtered
     candidate lists, already-admitted semantic id sets, and the
     retrieval-lifecycle state that call produced. Purely an internal
     hand-off between that method and its two callers -- never returned
@@ -141,7 +148,7 @@ class _ExperienceMaterial:
 def _open_conflicts_projection(conflicts: list[Conflict], current_ids: set[str]) -> list[Conflict]:
     """The A13 definition of "open", in exactly one place: a `Conflict`
     is open iff BOTH memories it names are current. Shared by
-    `Cortex.open_conflicts()` and `Cortex.preflight()` so the rule is
+    `Urdyn.open_conflicts()` and `Urdyn.preflight()` so the rule is
     never reimplemented a second time for whichever caller happens to
     already have a store/`current_ids` open of its own."""
     return [
@@ -162,7 +169,7 @@ def _semantic_pool_entries(
     which canonical records feed it, and with which text.
 
     One definition, three consumers -- `semantic_setup()` (which builds
-    the index), `Cortex.semantic_state()` (which decides whether it is
+    the index), `Urdyn.semantic_state()` (which decides whether it is
     still current) and the incremental refresh (which repairs it). Before
     A27 this lived inline inside `semantic_setup()` and had exactly one
     reader, which was fine while nothing else needed to know what
@@ -199,7 +206,7 @@ def _semantic_pool_entries(
 def _load_semantic_module():
     """Lazily import the optional semantic channel (`onnxruntime`,
     `tokenizers`, `huggingface_hub`, `numpy`). Returns None -- never
-    raises -- if the `cortex-memory[semantic]` extra is not installed, so
+    raises -- if the `urdyn-memory[semantic]` extra is not installed, so
     every caller in this module degrades to lexical/FTS-only exactly as
     if A7.4 did not exist. This is the ONLY place outside `_semantic.py`
     itself that imports it."""
@@ -212,7 +219,7 @@ def _load_semantic_module():
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class SemanticSetupResult:
-    """Report returned by `Cortex.semantic_setup()`. Not a `Memory`, not
+    """Report returned by `Urdyn.semantic_setup()`. Not a `Memory`, not
     canonical data -- purely a summary of what the (re)build just did."""
 
     provider: str
@@ -225,13 +232,13 @@ class SemanticSetupResult:
     skill_count: int
 
 
-class Cortex:
-    """A discovered or newly initialized Cortex workspace."""
+class Urdyn:
+    """A discovered or newly initialized Urdyn workspace."""
 
-    def __init__(self, path: Path, profile: str, cortex_id: str) -> None:
+    def __init__(self, path: Path, profile: str, urdyn_id: str) -> None:
         self._path = path
         self._profile = profile
-        self._cortex_id = cortex_id
+        self._urdyn_id = urdyn_id
 
     @property
     def path(self) -> Path:
@@ -242,64 +249,68 @@ class Cortex:
         return self._profile
 
     @property
-    def cortex_id(self) -> str:
-        return self._cortex_id
+    def urdyn_id(self) -> str:
+        return self._urdyn_id
 
     def __repr__(self) -> str:
-        return f"Cortex(path={str(self._path)!r}, profile={self._profile!r})"
+        return f"Urdyn(path={str(self._path)!r}, profile={self._profile!r})"
 
     @classmethod
-    def init(cls, path: str | Path = ".", profile: str = "general") -> "Cortex":
-        """Initialize (or safely re-open) a Cortex workspace at `path`."""
+    def init(cls, path: str | Path = ".", profile: str = "general") -> "Urdyn":
+        """Initialize (or safely re-open) a Urdyn workspace at `path`."""
         if profile not in CANONICAL_PROFILES:
             raise ValueError(f"Unknown profile {profile!r}; expected one of {sorted(CANONICAL_PROFILES)}")
 
         workspace = Path(path).resolve()
-        cortex_dir = workspace / CORTEX_DIRNAME
+        urdyn_dir = workspace / URDYN_DIRNAME
 
-        if cortex_dir.exists() and not cortex_dir.is_dir():
-            raise CortexManifestError(f"{cortex_dir} exists but is not a directory")
+        if urdyn_dir.exists() and not urdyn_dir.is_dir():
+            raise UrdynManifestError(f"{urdyn_dir} exists but is not a directory")
 
-        if cortex_dir.is_dir():
-            data = read_manifest(cortex_dir)
+        if urdyn_dir.is_dir():
+            data = read_manifest(urdyn_dir)
             if data["profile"] != profile:
-                raise CortexAlreadyInitializedError(
-                    f"Cortex workspace at {workspace} is already initialized with profile "
+                raise UrdynAlreadyInitializedError(
+                    f"Urdyn workspace at {workspace} is already initialized with profile "
                     f"{data['profile']!r}; refusing to switch to {profile!r}. "
-                    f"Remove {cortex_dir} to reinitialize."
+                    f"Remove {urdyn_dir} to reinitialize."
                 )
             ensure_gitignore_entry(workspace)
-            return cls(workspace, data["profile"], data["cortex_id"])
+            return cls(workspace, data["profile"], data[LEGACY_WORKSPACE_ID_KEY])
 
-        cortex_dir.mkdir(parents=True)
-        cortex_id = uuid.uuid4().hex
-        data = {"schema_version": SCHEMA_VERSION, "cortex_id": cortex_id, "profile": profile}
-        write_manifest(cortex_dir, data)
+        urdyn_dir.mkdir(parents=True)
+        urdyn_id = uuid.uuid4().hex
+        data = {
+            "schema_version": SCHEMA_VERSION,
+            LEGACY_WORKSPACE_ID_KEY: urdyn_id,
+            "profile": profile,
+        }
+        write_manifest(urdyn_dir, data)
         ensure_gitignore_entry(workspace)
-        return cls(workspace, profile, cortex_id)
+        return cls(workspace, profile, urdyn_id)
 
     @classmethod
-    def open(cls, path: str | Path = ".") -> "Cortex":
-        """Open a Cortex workspace whose root is exactly `path`."""
+    def open(cls, path: str | Path = ".") -> "Urdyn":
+        """Open a Urdyn workspace whose root is exactly `path`."""
         workspace = Path(path).resolve()
-        cortex_dir = workspace / CORTEX_DIRNAME
-        if not cortex_dir.is_dir():
-            raise CortexNotFoundError(f"No Cortex workspace found at {workspace}")
-        data = read_manifest(cortex_dir)
-        return cls(workspace, data["profile"], data["cortex_id"])
+        urdyn_dir = workspace / URDYN_DIRNAME
+        if not urdyn_dir.is_dir():
+            raise UrdynNotFoundError(f"No Urdyn workspace found at {workspace}")
+        data = read_manifest(urdyn_dir)
+        return cls(workspace, data["profile"], data[LEGACY_WORKSPACE_ID_KEY])
 
     @classmethod
-    def discover(cls, start: str | Path | None = None) -> "Cortex":
-        """Locate the nearest Cortex workspace, walking upward from `start`."""
+    def discover(cls, start: str | Path | None = None) -> "Urdyn":
+        """Locate the nearest Urdyn workspace, walking upward from `start`."""
         current = Path(start if start is not None else Path.cwd()).resolve()
         for candidate in (current, *current.parents):
-            cortex_dir = candidate / CORTEX_DIRNAME
-            if cortex_dir.is_dir():
-                data = read_manifest(cortex_dir)
-                return cls(candidate, data["profile"], data["cortex_id"])
-        raise CortexNotFoundError(
-            f"No Cortex workspace found in {current} or any parent directory. "
-            "Run 'cortex init' to create one."
+            urdyn_dir = candidate / URDYN_DIRNAME
+            if urdyn_dir.is_dir():
+                data = read_manifest(urdyn_dir)
+                return cls(candidate, data["profile"], data[LEGACY_WORKSPACE_ID_KEY])
+        raise UrdynNotFoundError(
+            f"No Urdyn workspace found in {current} or any parent directory. "
+            "Run 'urdyn init' to create one."
         )
 
     def remember(
@@ -314,11 +325,11 @@ class Cortex:
     ) -> Memory:
         """Persist a new canonical memory and return it.
 
-        `content` is recorded verbatim; Cortex does not interpret,
+        `content` is recorded verbatim; Urdyn does not interpret,
         summarize, or verify it. Rejects empty or whitespace-only input.
 
         (A17) Recording the same canonical memory twice is idempotent: if
-        Cortex already holds a CURRENT memory exactly equivalent to this
+        Urdyn already holds a CURRENT memory exactly equivalent to this
         one -- same `content` (byte-for-byte), `kind`, `epistemic_state`,
         `supersedes`, and same provenance (`evidence`/
         `supporting_evidence`) -- that existing memory is returned
@@ -358,13 +369,13 @@ class Cortex:
         (`user_statement`) or a bare file reference is not enough, and
         neither is a qualifying-kind Evidence cited only as generic
         `evidence` without being explicitly designated supporting.
-        Cortex refuses to accept a verified claim resting on nothing,
+        Urdyn refuses to accept a verified claim resting on nothing,
         refuses one resting only on an unchecked assertion, and refuses
         one whose only qualifying Evidence was never explicitly asserted
         as support for THIS memory.
 
         This designation is a structural requirement, not a semantic
-        guarantee: Cortex does not judge whether the designated Evidence
+        guarantee: Urdyn does not judge whether the designated Evidence
         actually is relevant to `content`, nor its direction (e.g. a
         FAILED test explicitly designated as supporting is still
         accepted) -- only that the caller made an explicit, auditable
@@ -398,8 +409,8 @@ class Cortex:
         carry: whether this call actually recorded a NEW memory (True) or
         collapsed onto an already-current exact equivalent (False).
 
-        Internal to the `cortex remember` CLI command, exactly like
-        `_count_memories` is internal to `cortex status`. "Was this call
+        Internal to the `urdyn remember` CLI command, exactly like
+        `_count_memories` is internal to `urdyn status`. "Was this call
         the one that recorded it?" is a property of the CALL, not of the
         canonical Memory -- a Memory reloaded tomorrow by `state()` or
         `timeline()` could not answer it, and would have to answer it
@@ -532,7 +543,7 @@ class Cortex:
 
     def state(self, *, kind: str | None = None) -> list[Memory]:
         """Return only the currently-valid memories, oldest first, optionally
-        filtered by `kind`. This is the history projected onto "what Cortex
+        filtered by `kind`. This is the history projected onto "what Urdyn
         currently considers true": superseded memories are excluded."""
         if kind is not None and kind not in VALID_KINDS:
             raise ValueError(f"Unknown memory kind {kind!r}; expected one of {sorted(VALID_KINDS)}")
@@ -550,7 +561,7 @@ class Cortex:
         `Conflict`.
 
         This is a structural assertion, not a semantic judgment (A13):
-        Cortex does not evaluate whether `memory_a` and `memory_b` are
+        Urdyn does not evaluate whether `memory_a` and `memory_b` are
         actually incompatible, only records that the caller says so. It
         never mutates either Memory, never changes an `epistemic_state`,
         and never implies invalidation or supersession -- both memories
@@ -655,18 +666,18 @@ class Cortex:
         file's stable Source identity. No Memory is created, nothing
         becomes `verified` (a `document_observation` is not a qualifying
         kind -- reading a document does not check that its claims are
-        true, see `_evidence.py`), and Cortex never interprets what the
+        true, see `_evidence.py`), and Urdyn never interprets what the
         file says. Turning a document into a belief stays an explicit
         act: `remember(..., evidence=[result.evidence])`.
 
         The Evidence holds the document's TEXT VERBATIM, so a later
-        reader can still see what Cortex observed after the file has
+        reader can still see what Urdyn observed after the file has
         changed or is gone; the SHA-256 digest, the size on disk and the
         moment of observation are structured columns alongside it (see
-        `_source.py`). `.cortex/` therefore keeps a local copy of every
+        `_source.py`). `.urdyn/` therefore keeps a local copy of every
         document it was asked to observe.
 
-        Per file, `SeedResult.status` is `added` (a Source Cortex did not
+        Per file, `SeedResult.status` is `added` (a Source Urdyn did not
         track yet), `unchanged` (the digest still matches the last
         observation -- nothing is written at all), or `changed` (a new
         observation is appended, and the previous ones are kept). Each
@@ -674,7 +685,7 @@ class Cortex:
 
         Every path is validated and read BEFORE anything is persisted, so
         one unacceptable path in the list cannot leave the others
-        half-recorded. Raises `CortexSourceError` for a path that escapes
+        half-recorded. Raises `UrdynSourceError` for a path that escapes
         the workspace, is not a regular UTF-8 text file, exceeds the size
         limit, or matches the credential denylist -- see
         `resolve_seed_path` for the full policy, which applies to
@@ -688,7 +699,7 @@ class Cortex:
         # Validate and hash everything first: a typo in the third path
         # must not leave the first two recorded.
         candidates = [
-            read_seed_candidate(self._path, resolve_seed_path(self._path, CORTEX_DIRNAME, raw))
+            read_seed_candidate(self._path, resolve_seed_path(self._path, URDYN_DIRNAME, raw))
             for raw in paths
         ]
         if not candidates:
@@ -710,11 +721,11 @@ class Cortex:
         return results
 
     def sources(self) -> list[Source]:
-        """Every project file Cortex tracks, ordered by path, each with its
+        """Every project file Urdyn tracks, ordered by path, each with its
         full observation history (oldest first).
 
         Reads the recorded observations only: it does not re-hash the
-        files on disk, so it reports what Cortex saw, not what is there
+        files on disk, so it reports what Urdyn saw, not what is there
         now. Deciding whether a tracked file has since changed or
         disappeared is deliberately left to a caller (or a future
         watcher) that re-seeds -- `seed()` answering `unchanged` or
@@ -733,21 +744,21 @@ class Cortex:
 
         Pure suggestion: reads no file content, writes nothing, and
         creates no store. The allowlist is deliberately narrow and
-        non-recursive (see `_source.py`) -- Cortex proposes the handful of
+        non-recursive (see `_source.py`) -- Urdyn proposes the handful of
         files that conventionally describe a project, and the caller
         decides which of them, if any, to actually seed.
 
         Raises `ValueError` outside the `dev` profile: automatic project
         discovery is this profile's behaviour, and silently returning
         nothing elsewhere would look like "this project has no
-        documentation" rather than "Cortex did not look".
+        documentation" rather than "Urdyn did not look".
         """
         if self._profile != PROFILE_DEV:
             raise ValueError(
                 f"Project context discovery is only available in the {PROFILE_DEV!r} profile; "
                 f"this workspace is {self._profile!r}. Seed explicit paths instead."
             )
-        return discover_candidate_paths(self._path, CORTEX_DIRNAME)
+        return discover_candidate_paths(self._path, URDYN_DIRNAME)
 
     def watcher_scope(self) -> frozenset[str]:
         """Workspace-relative paths the Dev watcher may observe:
@@ -761,7 +772,7 @@ class Cortex:
         new allowlist match joins the scope the moment it exists.
         """
         tracked = {source.path for source in self.sources()}
-        discoverable = set(discover_candidate_paths(self._path, CORTEX_DIRNAME))
+        discoverable = set(discover_candidate_paths(self._path, URDYN_DIRNAME))
         return frozenset(tracked | discoverable)
 
     def learn(
@@ -891,7 +902,7 @@ class Cortex:
             # why `preflight()` bypasses the lexical/FTS/semantic channels
             # for this list. `context()` (A29.1) does NOT inherit that
             # bypass: it filters this same list for task relevance itself
-            # (see `Cortex.context`), which is the whole point of keeping
+            # (see `Urdyn.context`), which is the whole point of keeping
             # it as one materialized list here rather than pre-deciding
             # its treatment inside this method.
             invariant_memories = [m for m in current_memories if m.kind == KIND_INVARIANT]
@@ -919,7 +930,7 @@ class Cortex:
             # of which one a given call turns out to be.
             decision_memories = [m for m in current_memories if m.kind == KIND_DECISION]
             # [A14.1] Every OPEN conflict (see `_open_conflicts_projection`
-            # -- the SAME definition `Cortex.open_conflicts()` uses, over
+            # -- the SAME definition `Urdyn.open_conflicts()` uses, over
             # the SAME `current_ids` already computed above). Relevance
             # filtering happens inside `build_preflight`, not here.
             open_conflict_list = _open_conflicts_projection(store.list_conflicts(), current_ids)
@@ -947,7 +958,7 @@ class Cortex:
             for evidence_id in evidence_ids_to_resolve:
                 evidence = store.get_evidence(evidence_id)
                 if evidence is None:
-                    raise CortexStorageError(
+                    raise UrdynStorageError(
                         f"Evidence {evidence_id!r} is referenced by recorded experience but "
                         "missing from the store"
                     )
@@ -956,7 +967,7 @@ class Cortex:
             def _must_get_evidence(evidence_id: str) -> Evidence:
                 evidence = evidence_by_id.get(evidence_id)
                 if evidence is None:
-                    raise CortexStorageError(
+                    raise UrdynStorageError(
                         f"Evidence {evidence_id!r} is referenced by recorded experience but "
                         "missing from the store"
                     )
@@ -1137,7 +1148,7 @@ class Cortex:
         Answers "what should an agent know before attempting this?" by
         surfacing known failures (matching failed attempts), root causes,
         verified lessons, still-open pending work, and any test/command
-        evidence recommended as validation — each only if Cortex has
+        evidence recommended as validation — each only if Urdyn has
         something relevant on record. This is lexical and deterministic,
         not a search engine: it will not return everything, and it will
         not return nothing just because the wording differs slightly.
@@ -1170,7 +1181,7 @@ class Cortex:
 
     def context(self, task: str, *, budget: int = DEFAULT_CONTEXT_BUDGET) -> CompiledContext:
         """Compile the smallest budgeted working context relevant to
-        `task` -- not "what does Cortex know" (`preflight()`), but "what
+        `task` -- not "what does Urdyn know" (`preflight()`), but "what
         must an agent respect right now to start this task safely".
 
         Shares its ENTIRE retrieval pipeline with `preflight()`
@@ -1296,14 +1307,14 @@ class Cortex:
 
         Promotion is never automatic and never implicit: it always names
         the Lesson it comes from (`lesson`, whose `memory_id` must belong
-        to an existing lesson memory Cortex actually has on record) and
+        to an existing lesson memory Urdyn actually has on record) and
         always requires the caller to write the procedure out (`steps`)
         rather than reusing the lesson's own sentence as-is.
 
         `lesson` only supplies which memory_id to promote from. Nothing
         else about the object the caller passed in is trusted: the
         resulting Skill's `verification_state` and `evidence_ids` are
-        derived from the CANONICAL Lesson Cortex has actually persisted
+        derived from the CANONICAL Lesson Urdyn has actually persisted
         under that id, not from `lesson.epistemic_state` or
         `lesson.evidence_ids` as given here. A `Memory` object that
         happens to share a real Lesson's `memory_id` but disagrees with
@@ -1388,7 +1399,7 @@ class Cortex:
         matches `action`; lexical relevance to a failed attempt alone is
         not enough to produce a guard warning the way it is for
         `preflight()`. This is advisory only: it never blocks, mutates,
-        or executes anything, only reports what Cortex found.
+        or executes anything, only reports what Urdyn found.
         """
         if not isinstance(action, str) or not action.strip():
             raise ValueError("Guard action must not be empty or whitespace-only")
@@ -1409,7 +1420,7 @@ class Cortex:
             def _must_get_evidence(evidence_id: str) -> Evidence:
                 evidence = store.get_evidence(evidence_id)
                 if evidence is None:
-                    raise CortexStorageError(
+                    raise UrdynStorageError(
                         f"Evidence {evidence_id!r} is referenced by a recorded skill but "
                         "missing from the store"
                     )
@@ -1466,7 +1477,7 @@ class Cortex:
     def _count_memories(self) -> int:
         """Return the number of persisted memories, or 0 if none exist yet.
 
-        Internal to the `cortex status` CLI command. Not part of the public
+        Internal to the `urdyn status` CLI command. Not part of the public
         API: the future semantics of "count" (current vs. superseded vs.
         invalidated memories) are not yet stable enough to commit to.
         """
@@ -1478,11 +1489,11 @@ class Cortex:
 
     @property
     def _db_path(self) -> Path:
-        return db_path_for(self._path / CORTEX_DIRNAME)
+        return db_path_for(self._path / URDYN_DIRNAME)
 
     @property
     def _semantic_db_path(self) -> Path:
-        return semantic_db_path_for(self._path / CORTEX_DIRNAME)
+        return semantic_db_path_for(self._path / URDYN_DIRNAME)
 
     # -- semantic retrieval (A7.4, optional) -------------------------------
 
@@ -1495,7 +1506,7 @@ class Cortex:
         scratch every time (idempotent), which is also how a stale or
         model-mismatched index gets fixed.
 
-        Raises `CortexSemanticUnavailableError` if the `[semantic]` extra
+        Raises `UrdynSemanticUnavailableError` if the `[semantic]` extra
         is not installed, or if the semantic model itself cannot be
         acquired or loaded -- this is the one semantic entry point allowed
         to fail loudly and to touch the network (to download the model if
@@ -1511,16 +1522,16 @@ class Cortex:
         """
         semantic = _load_semantic_module()
         if semantic is None:
-            raise CortexSemanticUnavailableError(
+            raise UrdynSemanticUnavailableError(
                 "Semantic retrieval requires the 'semantic' optional dependency. "
-                "Install it with: pip install 'cortex-memory[semantic]'"
+                "Install it with: pip install 'urdyn-memory[semantic]'"
             )
 
         try:
             model = semantic.load_model_for_setup()
             dimensions = semantic.model_dimensions(model)
         except Exception as exc:  # onnxruntime/tokenizers/hub failures are not ours to leak
-            raise CortexSemanticUnavailableError(
+            raise UrdynSemanticUnavailableError(
                 f"Could not load the semantic model: {exc}"
             ) from exc
         revision = semantic.resolve_local_revision()
@@ -1583,7 +1594,7 @@ class Cortex:
         OBSERVATIONAL AND CHEAP, by contract: it never loads the
         embedding model, never embeds anything, never touches the
         network, and never writes -- not to canonical storage and not to
-        the derived index. `cortex status` calls exactly this, so those
+        the derived index. `urdyn status` calls exactly this, so those
         properties are what let a state line exist at all. The most
         expensive thing it does is resolve two cached file paths (see
         `_semantic.artifacts_available`), and only in a workspace that
@@ -1626,7 +1637,7 @@ class Cortex:
         """
         try:
             index = SemanticIndexStore.open_if_exists(self._semantic_db_path)
-        except CortexStorageError:
+        except UrdynStorageError:
             return SemanticState(status=SEMANTIC_UNAVAILABLE, detail=DETAIL_INDEX_UNREADABLE)
         if index is None:
             return SemanticState(status=SEMANTIC_DISABLED, detail=DETAIL_NOT_SET_UP)
@@ -1637,7 +1648,7 @@ class Cortex:
                     entity_type: index.indexed_ids(entity_type)
                     for entity_type in (ENTITY_ATTEMPT, ENTITY_MEMORY, ENTITY_SKILL)
                 }
-        except CortexStorageError:
+        except UrdynStorageError:
             return SemanticState(status=SEMANTIC_UNAVAILABLE, detail=DETAIL_INDEX_UNREADABLE)
 
         indexed_count = sum(len(ids) for ids in indexed.values())
@@ -1703,7 +1714,7 @@ class Cortex:
         which is local-cache-only by construction (A7.4's
         `local_files_only=True` path). A `preflight()` can therefore
         never trigger a download -- that stays the exclusive privilege of
-        `cortex semantic setup`. This is structural, not a convention the
+        `urdyn semantic setup`. This is structural, not a convention the
         tests happen to respect.
 
         THE INDEX'S OWN MODEL, not this machine's preferred one. The

@@ -2,7 +2,7 @@
 `invalidation` Memory through `preflight()`.
 
 Before A11.3, an agent calling `cx.preflight(task)` could not distinguish
-"Cortex has nothing on record about this" from "Cortex had something on
+"Urdyn has nothing on record about this" from "Urdyn had something on
 record and explicitly withdrew its authority". This file locks down the
 new field's contract and, most importantly, the SEMANTIC COMPETITION GATE
 (A11.2's original proposal -- sharing the root-cause/lesson semantic
@@ -17,7 +17,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from cortex_memory import Cortex
+from urdyn import Urdyn
 
 # ---------------------------------------------------------------------------
 # Fake deterministic embedding backend -- identical technique to
@@ -46,7 +46,7 @@ class _FakeStaticModel:
 
 @pytest.fixture
 def fake_semantic(monkeypatch):
-    import cortex_memory._semantic as semantic
+    import urdyn._semantic as semantic
 
     fake_model = _FakeStaticModel()
     monkeypatch.setattr(semantic, "load_model_for_setup", lambda model_id=None: fake_model)
@@ -73,9 +73,9 @@ def test_semantic_competition_gate_naive_shared_pool_would_suppress_root_cause(t
     in test_a7_8_regression.py, which already proves the same mechanism
     suppresses one ordinary lesson in favor of a stronger unrelated one;
     this test proves an unrelated invalidation can do the exact same harm
-    if allowed into the same pool. Does NOT exercise `Cortex.preflight()`'s
+    if allowed into the same pool. Does NOT exercise `Urdyn.preflight()`'s
     real code path -- that is proven safe separately, below."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     ev = cx.add_evidence("observed failure", kind="error_observation")
     # weak candidate: "alpha beta" scores ~0.707 against a pure "alpha" query
     root_cause = cx.remember("alpha beta", kind="root_cause", epistemic_state="inferred", evidence=[ev])
@@ -108,11 +108,11 @@ def test_semantic_competition_gate_naive_shared_pool_would_suppress_root_cause(t
 
 
 def test_semantic_competition_gate_real_preflight_preserves_root_cause_admission(tmp_path, fake_semantic):
-    """The real `Cortex.preflight()` code path, using disjoint pools,
+    """The real `Urdyn.preflight()` code path, using disjoint pools,
     does NOT reproduce the regression above: the root cause is still
     admitted, and the invalidation is independently admitted into its
     own field, because the two are never in the same race."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     ev = cx.add_evidence("observed failure", kind="error_observation")
     root_cause = cx.remember("alpha beta", kind="root_cause", epistemic_state="inferred", evidence=[ev])
     unrelated_env = cx.remember("some environment fact", kind="environment")
@@ -128,7 +128,7 @@ def test_semantic_competition_gate_real_preflight_preserves_root_cause_admission
 def test_semantic_competition_gate_preserves_verified_lesson_admission(tmp_path, fake_semantic):
     """Same gate, exercised against `verified_lessons` instead of
     `root_causes`, since both pools feed the same shared machinery."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     ev = cx.add_evidence("observed failure", kind="error_observation")
     validation = cx.add_evidence("checked", kind="test_result")
     lesson = cx.learn("alpha beta", evidence=[ev], supporting_evidence=[validation], verified=True)
@@ -151,7 +151,7 @@ def test_preflight_regression_existing_fields_unaffected_by_irrelevant_and_close
     `recommended_validation` before and after (A) an irrelevant current
     invalidation and (B) a semantically-close-but-operationally-different
     current invalidation are added to the workspace."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     ev = cx.add_evidence("observed failure", kind="error_observation")
     root_cause = cx.remember("alpha beta", kind="root_cause", epistemic_state="inferred", evidence=[ev])
     validation = cx.add_evidence("checked", kind="test_result")
@@ -191,7 +191,7 @@ def test_preflight_regression_existing_fields_unaffected_by_irrelevant_and_close
 
 
 def test_open_invalidations_north_star_environment(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     old_env = cx.remember("Python 3.12 is required for this project.", kind="environment")
     invalidation = cx.remember(
         "The Python 3.12 runtime requirement must be revalidated.",
@@ -209,7 +209,7 @@ def test_open_invalidations_north_star_environment(tmp_path):
 
 
 def test_open_invalidations_negative_control_unrelated_css_task(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     old_env = cx.remember("Python 3.12 is required for this project.", kind="environment")
     cx.remember(
         "The Python 3.12 runtime requirement must be revalidated.",
@@ -223,7 +223,7 @@ def test_open_invalidations_negative_control_unrelated_css_task(tmp_path):
 
 
 def test_open_invalidations_negative_control_unrelated_payment_task(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     old_decision = cx.remember("Use SQLite for V1 storage.", kind="decision")
     cx.remember(
         "The SQLite storage decision is no longer settled; database migration strategy is not trusted.",
@@ -237,7 +237,7 @@ def test_open_invalidations_negative_control_unrelated_payment_task(tmp_path):
 
 
 def test_two_invalidations_only_the_relevant_one_surfaces(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     old_env = cx.remember("Python 3.12 is required for this project.", kind="environment")
     relevant = cx.remember(
         "The Python 3.12 runtime requirement must be revalidated.",
@@ -260,7 +260,7 @@ def test_ordering_of_multiple_relevant_invalidations_is_oldest_first(tmp_path):
     """Same ordering convention already used for `root_causes`/
     `verified_lessons`: the order `store.timeline(kind)` recorded them
     in, not a new ranking score."""
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     old_env = cx.remember("Python 3.12 is required for this project.", kind="environment")
     first = cx.remember(
         "The Python 3.12 runtime requirement must be revalidated.",
@@ -288,8 +288,8 @@ def test_invalidated_invariant_does_not_inherit_always_include_policy(tmp_path):
     """Negative control (mandatory): an invalidation superseding an
     invariant must NOT be auto-included the way the invariant itself
     would have been -- it goes through ordinary relevance matching."""
-    cx = Cortex.init(tmp_path, "dev")
-    invariant = cx.remember(".cortex/ must remain gitignored.", kind="invariant")
+    cx = Urdyn.init(tmp_path, "dev")
+    invariant = cx.remember(".urdyn/ must remain gitignored.", kind="invariant")
     cx.remember(
         "This invariant is no longer trusted and must be revalidated.",
         kind="invalidation",
@@ -303,22 +303,22 @@ def test_invalidated_invariant_does_not_inherit_always_include_policy(tmp_path):
 
 
 def test_invalidated_invariant_surfaces_when_relevant(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
-    invariant = cx.remember(".cortex/ must remain gitignored.", kind="invariant")
+    cx = Urdyn.init(tmp_path, "dev")
+    invariant = cx.remember(".urdyn/ must remain gitignored.", kind="invariant")
     invalidation = cx.remember(
-        "The .cortex gitignore invariant is no longer trusted.",
+        "The .urdyn gitignore invariant is no longer trusted.",
         kind="invalidation",
         supersedes=invariant.memory_id,
     )
 
-    result = cx.preflight("Is the .cortex gitignore invariant still trusted?")
+    result = cx.preflight("Is the .urdyn gitignore invariant still trusted?")
 
     assert invariant.memory_id not in {m.memory_id for m in result.invariants}
     assert {m.memory_id for m in result.open_invalidations} == {invalidation.memory_id}
 
 
 def test_invalidated_verified_lesson_disappears_and_invalidation_surfaces(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     validation = cx.add_evidence("Authentication tests passed.", kind="test_result")
     lesson = cx.learn(
         "Update authentication refresh logic by using only the newly issued refresh token.",
@@ -341,7 +341,7 @@ def test_invalidated_verified_lesson_disappears_and_invalidation_surfaces(tmp_pa
 
 
 def test_invalidated_decision_surfaces_in_open_invalidations(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     decision = cx.remember("Use SQLite for V1 storage.", kind="decision")
     invalidation = cx.remember(
         "The SQLite storage decision is no longer settled; persistence design must be reconsidered.",
@@ -363,7 +363,7 @@ def test_invalidated_decision_surfaces_in_open_invalidations(tmp_path):
 
 
 def test_standalone_invalidation_surfaces_when_relevant(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     standalone = cx.remember(
         "An external assumption about payment gateway idempotency is no longer trusted.",
         kind="invalidation",
@@ -375,7 +375,7 @@ def test_standalone_invalidation_surfaces_when_relevant(tmp_path):
 
 
 def test_closed_invalidation_disappears_from_open_invalidations(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     old = cx.remember("Python 3.12 is required for this project.", kind="environment")
     invalidation = cx.remember(
         "The Python 3.12 runtime requirement must be revalidated.",
@@ -394,7 +394,7 @@ def test_closed_invalidation_disappears_from_open_invalidations(tmp_path):
 
 
 def test_chained_invalidation_only_current_head_surfaces(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     old = cx.remember("Python 3.12 is required for this project.", kind="environment")
     first = cx.remember(
         "The Python 3.12 runtime requirement must be revalidated.",
@@ -413,7 +413,7 @@ def test_chained_invalidation_only_current_head_surfaces(tmp_path):
 
 
 def test_open_invalidations_admits_user_asserted(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     old_api = cx.remember("Service X endpoint supports API v2.", kind="note")
     invalidation = cx.remember(
         "Do not trust the old Service X API v2 endpoint anymore.",
@@ -428,7 +428,7 @@ def test_open_invalidations_admits_user_asserted(tmp_path):
 
 
 def test_open_invalidations_admits_verified(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     old_decision = cx.remember("Use SQLite for V1 storage.", kind="decision")
     ci_evidence = cx.add_evidence("CI now shows the SQLite backend failing under load.", kind="command_output")
     invalidation = cx.remember(
@@ -451,7 +451,7 @@ def test_open_invalidations_admits_verified(tmp_path):
 
 
 def test_is_empty_is_false_when_only_open_invalidations_is_populated(tmp_path):
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     old_env = cx.remember("Python 3.12 is required for this project.", kind="environment")
     cx.remember(
         "The Python 3.12 runtime requirement must be revalidated.",
@@ -473,10 +473,10 @@ def test_is_empty_is_false_when_only_open_invalidations_is_populated(tmp_path):
 def test_open_invalidations_works_without_the_semantic_extra(tmp_path, monkeypatch):
     """Lexical/FTS admission alone must be sufficient for a clear case --
     semantic is optional widening, never a requirement."""
-    from cortex_memory import _workspace
+    from urdyn import _workspace
 
     monkeypatch.setattr(_workspace, "_load_semantic_module", lambda: None)
-    cx = Cortex.init(tmp_path, "dev")
+    cx = Urdyn.init(tmp_path, "dev")
     old_env = cx.remember("Python 3.12 is required for this project.", kind="environment")
     invalidation = cx.remember(
         "The Python 3.12 runtime requirement must be revalidated.",
@@ -498,7 +498,7 @@ def test_store_schema_version_still_unchanged(tmp_path):
     """A11.3 itself introduced no schema change, same reasoning as
     `test_invalidation.py`'s equivalent anchor -- see there for why the
     literal below now reflects A19.1's legitimate v7 bump instead."""
-    from cortex_memory._store import STORE_SCHEMA_VERSION
+    from urdyn._store import STORE_SCHEMA_VERSION
 
     assert STORE_SCHEMA_VERSION == 7
 
@@ -521,7 +521,7 @@ def test_guard_result_has_no_invalidation_field(tmp_path):
     field does not read as an invalidation regression."""
     import dataclasses
 
-    from cortex_memory import GuardResult
+    from urdyn import GuardResult
 
     field_names = {f.name for f in dataclasses.fields(GuardResult)}
 
@@ -541,7 +541,7 @@ def test_guard_result_has_no_invalidation_field(tmp_path):
 
 
 def test_cli_preflight_shows_open_invalidations_section_when_present(tmp_path, monkeypatch, capsys):
-    from cortex_memory._cli import main
+    from urdyn._cli import main
 
     monkeypatch.chdir(tmp_path)
     main(["init", "dev"])
@@ -569,7 +569,7 @@ def test_cli_preflight_shows_open_invalidations_section_when_present(tmp_path, m
 
 
 def test_cli_preflight_omits_open_invalidations_section_when_empty(tmp_path, monkeypatch, capsys):
-    from cortex_memory._cli import main
+    from urdyn._cli import main
 
     monkeypatch.chdir(tmp_path)
     main(["init", "dev"])

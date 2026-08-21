@@ -1,11 +1,11 @@
-"""(A20) `cortex remember --evidence EVIDENCE_ID`: the CLI half of the
+"""(A20) `urdyn remember --evidence EVIDENCE_ID`: the CLI half of the
 Evidence -> Knowledge boundary.
 
-A19.1 gave Cortex the ability to observe a project document
+A19.1 gave Urdyn the ability to observe a project document
 (`Source` -> `SourceObservation` -> `document_observation` Evidence)
 without believing a word of it. What it deliberately did NOT give was any
 way, from the CLI, to say "I have read that observation and I now claim
-this" -- `Cortex.remember(evidence=[...])` had accepted provenance since
+this" -- `Urdyn.remember(evidence=[...])` had accepted provenance since
 long before, but only a Python caller could reach it.
 
 A20 closes exactly that gap and nothing else. The contract these tests
@@ -32,10 +32,10 @@ from __future__ import annotations
 
 import pytest
 
-from cortex_memory import Cortex
-from cortex_memory._cli import main
-from cortex_memory._evidence import EVIDENCE_KIND_DOCUMENT_OBSERVATION
-from cortex_memory._memory import EPISTEMIC_USER_ASSERTED
+from urdyn import Urdyn
+from urdyn._cli import main
+from urdyn._evidence import EVIDENCE_KIND_DOCUMENT_OBSERVATION
+from urdyn._memory import EPISTEMIC_USER_ASSERTED
 
 ARCHITECTURE_DOC = """# Architecture
 
@@ -62,9 +62,9 @@ def _seed_architecture_doc(workspace, text: str = ARCHITECTURE_DOC) -> str:
     return the `evidence_id` of the observation that seed recorded.
 
     Reads the id back from the canonical record rather than from the seed
-    output, so the tests below are not coupled to `cortex seed`'s
+    output, so the tests below are not coupled to `urdyn seed`'s
     formatting -- what they care about is the id a user would copy out of
-    `cortex sources <path>`.
+    `urdyn sources <path>`.
     """
     docs = workspace / "docs"
     docs.mkdir(exist_ok=True)
@@ -72,12 +72,12 @@ def _seed_architecture_doc(workspace, text: str = ARCHITECTURE_DOC) -> str:
 
     assert main(["seed", "docs/architecture.md"]) == 0
 
-    (source,) = [s for s in Cortex.open(workspace).sources() if s.path == "docs/architecture.md"]
+    (source,) = [s for s in Urdyn.open(workspace).sources() if s.path == "docs/architecture.md"]
     return source.latest_observation.evidence_id
 
 
 def _memories(workspace):
-    return Cortex.open(workspace).timeline()
+    return Urdyn.open(workspace).timeline()
 
 
 def test_remember_accepts_one_evidence_and_persists_it(tmp_path, monkeypatch, capsys):
@@ -103,7 +103,7 @@ def test_remember_accepts_one_evidence_and_persists_it(tmp_path, monkeypatch, ca
 def test_remember_accepts_repeated_evidence_in_order(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     main(["init", "dev"])
-    cx = Cortex.open(tmp_path)
+    cx = Urdyn.open(tmp_path)
     first = cx.add_evidence("pytest -q -> 1011 passed", kind="test_result")
     second = cx.add_evidence("The user confirmed the 15-minute expiry.", kind="user_confirmation")
     capsys.readouterr()
@@ -174,7 +174,7 @@ def test_document_observation_evidence_does_not_produce_a_verified_memory(
     exit_code = main(["remember", "Tests pass on Windows.", "--evidence", evidence_id])
 
     assert exit_code == 0
-    cx = Cortex.open(tmp_path)
+    cx = Urdyn.open(tmp_path)
     (memory,) = cx.timeline()
     assert memory.epistemic_state == EPISTEMIC_USER_ASSERTED
     assert memory.epistemic_state != "verified"
@@ -229,7 +229,7 @@ def test_evidence_id_from_another_workspace_is_unknown_here(tmp_path, monkeypatc
     other.mkdir()
     monkeypatch.chdir(other)
     main(["init", "dev"])
-    foreign = Cortex.open(other).add_evidence("Recorded somewhere else entirely.")
+    foreign = Urdyn.open(other).add_evidence("Recorded somewhere else entirely.")
 
     here = tmp_path / "here"
     here.mkdir()
@@ -253,7 +253,7 @@ def test_error_for_a_hostile_evidence_id_is_terminal_safe(tmp_path, monkeypatch,
     main(["init", "dev"])
     capsys.readouterr()
 
-    hostile = "\x1b[2Jcortex: Remembered\x07"
+    hostile = "\x1b[2Jurdyn: Remembered\x07"
     exit_code = main(["remember", CLAIM, "--evidence", hostile])
 
     captured = capsys.readouterr()
@@ -327,7 +327,7 @@ def test_source_to_evidence_to_memory_journey(tmp_path, monkeypatch, capsys):
     main(["init", "dev"])
     evidence_id = _seed_architecture_doc(tmp_path)
 
-    # The id the user copies is the one `cortex sources <path>` prints.
+    # The id the user copies is the one `urdyn sources <path>` prints.
     capsys.readouterr()
     assert main(["sources", "docs/architecture.md"]) == 0
     assert evidence_id in capsys.readouterr().out
@@ -348,7 +348,7 @@ def test_source_to_evidence_to_memory_journey(tmp_path, monkeypatch, capsys):
     assert memory.evidence_ids == (evidence_id,)
     # Provenance resolves to the observation of the document, and the
     # observation still holds the text verbatim.
-    provenance = Cortex.open(tmp_path).get_evidence(evidence_id)
+    provenance = Urdyn.open(tmp_path).get_evidence(evidence_id)
     assert provenance.kind == EVIDENCE_KIND_DOCUMENT_OBSERVATION
     assert "Access tokens expire after 15 minutes." in provenance.content
 
@@ -372,7 +372,7 @@ def test_later_seed_does_not_rewrite_existing_provenance(tmp_path, monkeypatch, 
     assert after.memory_id == before.memory_id
     assert after.evidence_ids == (evidence_a,)
     assert after.supersedes is None
-    cx = Cortex.open(tmp_path)
+    cx = Urdyn.open(tmp_path)
     # No automatic supersession, invalidation or conflict was invented.
     assert [m.memory_id for m in cx.state()] == [before.memory_id]
     assert cx.conflicts() == []
@@ -401,7 +401,7 @@ def test_deleting_the_document_does_not_break_memory_or_provenance(
     (memory,) = _memories(tmp_path)
     assert memory.evidence_ids == (evidence_id,)
     # The canonical Evidence holds the text; nothing re-opens the file.
-    evidence = Cortex.open(tmp_path).get_evidence(evidence_id)
+    evidence = Urdyn.open(tmp_path).get_evidence(evidence_id)
     assert "Access tokens expire after 15 minutes." in evidence.content
 
     # And the historical observation is still citable for a NEW claim,
@@ -455,7 +455,7 @@ def test_evidence_composes_with_kind_and_supersedes(tmp_path, monkeypatch, capsy
     assert exit_code == 0
     assert original.memory_id in captured.out
 
-    cx = Cortex.open(tmp_path)
+    cx = Urdyn.open(tmp_path)
     (current,) = cx.state(kind="environment")
     assert current.content == CLAIM
     assert current.kind == "environment"

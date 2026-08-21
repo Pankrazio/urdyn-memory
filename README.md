@@ -1,12 +1,12 @@
-# Cortex Memory Engine
+# Urdyn Memory Engine
 
 A local-first, persistent, structured, model-independent memory engine for humans, AI systems, and agents.
 
 Models are replaceable. Memory should remain portable.
 
-## Why Cortex
+## Why Urdyn
 
-AI sessions, models, and tools change constantly — a new session starts, a model gets swapped, a different agent picks up the work. What should not be lost every time that happens is the project's actual accumulated knowledge: decisions made and why, root causes found, lessons verified against real evidence, and the record of what was tried and failed. Cortex is a small, independent store for that knowledge, so it outlives any single tool or model.
+AI sessions, models, and tools change constantly — a new session starts, a model gets swapped, a different agent picks up the work. What should not be lost every time that happens is the project's actual accumulated knowledge: decisions made and why, root causes found, lessons verified against real evidence, and the record of what was tried and failed. Urdyn is a small, independent store for that knowledge, so it outlives any single tool or model.
 
 ## Core principles
 
@@ -19,15 +19,26 @@ AI sessions, models, and tools change constantly — a new session starts, a mod
 
 ## Installation
 
+From PyPI, once the package is published:
+
 ```bash
-pip install cortex-memory
+pip install urdyn-memory
+```
+
+From an existing local source checkout:
+
+```bash
+cd /path/to/urdyn-memory
+python -m pip install .
 ```
 
 Semantic retrieval is an optional extra (see [Semantic retrieval](#semantic-retrieval)):
 
 ```bash
-pip install "cortex-memory[semantic]"
+pip install "urdyn-memory[semantic]"
 ```
+
+For a local source checkout, use `python -m pip install ".[semantic]"` instead.
 
 Requires Python 3.12+.
 
@@ -35,103 +46,103 @@ Requires Python 3.12+.
 
 ```bash
 mkdir my-project && cd my-project
-cortex init dev
+urdyn init dev
 ```
 
 Record something worth remembering, backed by real evidence:
 
 ```bash
-cortex evidence add "Migration 042 failed halfway through on staging, leaving the schema partially updated." --kind error_observation
+urdyn evidence add "Migration 042 failed halfway through on staging, leaving the schema partially updated." --kind error_observation
 
-cortex evidence add "Rerunning the migration inside a single transaction on staging: confirmed no partial schema state after a forced failure." --kind user_confirmation
+urdyn evidence add "Rerunning the migration inside a single transaction on staging: confirmed no partial schema state after a forced failure." --kind user_confirmation
 
-cortex learn "Always wrap multi-step schema migrations in a single transaction so a failure leaves the schema unchanged." \
+urdyn learn "Always wrap multi-step schema migrations in a single transaction so a failure leaves the schema unchanged." \
   --supporting-evidence <evidence-id-from-the-user_confirmation-step> --verified
 ```
 
-Before starting related work later, check what Cortex already knows:
+Before starting related work later, check what Urdyn already knows:
 
 ```bash
-cortex preflight "wrap a multi-step schema migration in a single transaction"
+urdyn preflight "wrap a multi-step schema migration in a single transaction"
 ```
 
 Compile a budgeted working context for the same task:
 
 ```bash
-cortex context "wrap a multi-step schema migration in a single transaction"
+urdyn context "wrap a multi-step schema migration in a single transaction"
 ```
 
 Export that same context in a portable form:
 
 ```bash
-cortex export "wrap a multi-step schema migration in a single transaction"
+urdyn export "wrap a multi-step schema migration in a single transaction"
 ```
 
-Run `cortex --help` for the full command list (`remember`, `recall`, `timeline`, `attempt`, `skills`, `guard`, and more).
+Run `urdyn --help` for the full command list (`remember`, `recall`, `timeline`, `attempt`, `skills`, `guard`, and more).
 
-## Using Cortex with your AI assistant
+## Using Urdyn with your AI assistant
 
-You don't need to memorize the `cortex` command set yourself. Any coding agent or AI tool that has shell access to your project workspace can drive the `cortex` CLI directly — this is a generic CLI integration path, not a provider-specific adapter. It works the same way with any agent capable of running shell commands, because it is just the same public CLI a human would type.
+You don't need to memorize the `urdyn` command set yourself. Any coding agent or AI tool that has shell access to your project workspace can drive the `urdyn` CLI directly — this is a generic CLI integration path, not a provider-specific adapter. It works the same way with any agent capable of running shell commands, because it is just the same public CLI a human would type.
 
-The agent should stick to the public CLI/API surface and never edit `.cortex/` directly — `cortex --help` and each subcommand's `--help` are enough for it to pick the right primitive (`remember`, `learn`, `evidence add`, `preflight`, `context`, `export`, and so on).
+The agent should stick to the public CLI/API surface and never edit `.urdyn/` directly — `urdyn --help` and each subcommand's `--help` are enough for it to pick the right primitive (`remember`, `learn`, `evidence add`, `preflight`, `context`, `export`, and so on).
 
 A simple instruction to your AI assistant is enough to establish this, for example:
 
-> Use Cortex as the persistent memory for this project. Use the `cortex` CLI and never edit `.cortex/` directly. Before significant work, consult the relevant Cortex context. During work, record meaningful evidence, attempts, and durable project knowledge when appropriate. After verified outcomes, preserve reusable lessons. Use `cortex --help` when needed.
+> Use Urdyn as the persistent memory for this project. Use the `urdyn` CLI and never edit `.urdyn/` directly. Before significant work, consult the relevant Urdyn context. During work, record meaningful evidence, attempts, and durable project knowledge when appropriate. After verified outcomes, preserve reusable lessons. Use `urdyn --help` when needed.
 
 If the model you're working with has no shell access, you can instead compile the context yourself and pass it along:
 
 ```bash
-cortex export "<task description>"
+urdyn export "<task description>"
 ```
 
 and give the resulting portable, compiled context to the model as part of your prompt.
 
-This is a plain CLI integration boundary, not a native integration: Cortex does not ship Claude/Codex/ChatGPT-specific adapters, MCP support, autonomous memory curation, or automatic invocation, and using an AI assistant to drive it does not imply the memory ends up organized any better than if a human had typed the same commands. The boundary is always:
+This is a plain CLI integration boundary, not a native integration: Urdyn does not ship Claude/Codex/ChatGPT-specific adapters, MCP support, autonomous memory curation, or automatic invocation, and using an AI assistant to drive it does not imply the memory ends up organized any better than if a human had typed the same commands. The boundary is always:
 
 ```
-AI / tool -> Cortex public CLI/API -> Cortex validation/policies -> .cortex/
+AI / tool -> Urdyn public CLI/API -> Urdyn validation/policies -> .urdyn/
 ```
 
-The model interacts only through the public CLI/API; it never manipulates the storage or internal files of `.cortex/` directly.
+The model interacts only through the public CLI/API; it never manipulates the storage or internal files of `.urdyn/` directly.
 
 ## Existing projects
 
-`cortex seed` (available in the `dev` profile) lets Cortex become aware of files already in your project:
+`urdyn seed` (available in the `dev` profile) lets Urdyn become aware of files already in your project:
 
 ```bash
-cortex seed                    # no paths: list discovery candidates, record nothing
-cortex seed README.md src/     # record specific paths
+urdyn seed                    # no paths: list discovery candidates, record nothing
+urdyn seed README.md src/     # record specific paths
 ```
 
-Seeded files become **Source / Evidence observations** — a record of what a file contained and when it was observed. They do not silently become canonical truth: seeding a file adds provenance Cortex can later cite, it does not create a verified memory on its own.
+Seeded files become **Source / Evidence observations** — a record of what a file contained and when it was observed. They do not silently become canonical truth: seeding a file adds provenance Urdyn can later cite, it does not create a verified memory on its own.
 
 ## Project watcher (dev profile)
 
-`cortex init dev` also enables a local background process that keeps tracked project documents up to date automatically, so you do not have to remember to re-run `cortex seed` after every edit:
+`urdyn init dev` also enables a local background process that keeps tracked project documents up to date automatically, so you do not have to remember to re-run `urdyn seed` after every edit:
 
 ```bash
-cortex watch status   # state, pid, last observation, tracked sources missing on disk
-cortex watch start    # enable + start (also what "init dev" does)
-cortex watch stop     # stop the process and disable it persistently
+urdyn watch status   # state, pid, last observation, tracked sources missing on disk
+urdyn watch start    # enable + start (also what "init dev" does)
+urdyn watch stop     # stop the process and disable it persistently
 ```
 
-It only ever watches paths that are already a tracked Source, plus the same discovery allowlist `cortex seed` uses — never a scan of the whole project. It never creates a Memory or any other canonical belief; it produces the same Source/Evidence observations `cortex seed` does, and nothing leaves this machine. Three known V1 limits: file deletions and renames are not tracked (a deleted file's existing history is kept, and a renamed file starts a new one); the watcher does not restart on its own after a reboot — the next `cortex` command in that workspace restarts it and re-checks every already-tracked file for changes it missed; and a file created while the watcher was not running is picked up only the next time it changes, not retroactively at restart. Validated on Linux; on other platforms `cortex watch status` reports it as unavailable rather than claiming support that has not been tested there.
+It only ever watches paths that are already a tracked Source, plus the same discovery allowlist `urdyn seed` uses — never a scan of the whole project. It never creates a Memory or any other canonical belief; it produces the same Source/Evidence observations `urdyn seed` does, and nothing leaves this machine. Three known V1 limits: file deletions and renames are not tracked (a deleted file's existing history is kept, and a renamed file starts a new one); the watcher does not restart on its own after a reboot — the next `urdyn` command in that workspace restarts it and re-checks every already-tracked file for changes it missed; and a file created while the watcher was not running is picked up only the next time it changes, not retroactively at restart. Validated on Linux; on other platforms `urdyn watch status` reports it as unavailable rather than claiming support that has not been tested there.
 
 ## Context compilation
 
 ```bash
-cortex context "<task description>"
+urdyn context "<task description>"
 ```
 
-Given a task description, Cortex retrieves the memories, lessons, and evidence relevant to it and compiles them into a single working context under a character budget (`--budget`, default 4000), prioritizing the most relevant and canonical material first.
+Given a task description, Urdyn retrieves the memories, lessons, and evidence relevant to it and compiles them into a single working context under a character budget (`--budget`, default 4000), prioritizing the most relevant and canonical material first.
 
 ## Portable generic export
 
 ```bash
-cortex export "<task description>"
-cortex export "<task description>" > context.txt
-cortex export "<task description>" | some-other-tool
+urdyn export "<task description>"
+urdyn export "<task description>" > context.txt
+urdyn export "<task description>" | some-other-tool
 ```
 
 `export` compiles the same kind of task-aware working context as `context`, formatted as a portable, generic block of text (`--for generic`, currently the only export target) meant to be piped or redirected into another tool or prompt. It is a compiled, task-scoped context — not a full memory archive or database export.
@@ -143,37 +154,37 @@ Semantic (embedding-based) retrieval is **optional**. The base engine works full
 To enable it for a workspace:
 
 ```bash
-pip install "cortex-memory[semantic]"
-cortex semantic setup
+pip install "urdyn-memory[semantic]"
+urdyn semantic setup
 ```
 
-This downloads and pins a specific sentence-transformers model on first use and builds a local semantic index next to your memory store. The index is derived, rebuildable, and safe to delete — Cortex falls back to lexical-only retrieval if it is missing.
+This downloads and pins a specific sentence-transformers model on first use and builds a local semantic index next to your memory store. The index is derived, rebuildable, and safe to delete — Urdyn falls back to lexical-only retrieval if it is missing.
 
 ## Privacy
 
-- Memory is stored locally, in a workspace directory (`.cortex/`) on your machine.
+- Memory is stored locally, in a workspace directory (`.urdyn/`) on your machine.
 - No account or sign-up is required.
 - No cloud service is required for base operation (recording, search, preflight, context compilation, export).
 - No LLM or AI model is required for base operation.
-- `cortex init` adds `.cortex/` to the workspace's `.gitignore` automatically, so your memory store is not committed to the project's own repository by default.
+- `urdyn init` adds `.urdyn/` to the workspace's `.gitignore` automatically, so your memory store is not committed to the project's own repository by default.
 
 Enabling the optional semantic extra downloads a model from Hugging Face on first setup; base operation does not.
 
 ## Profiles
 
 ```bash
-cortex init [general|dev|lab]
+urdyn init [general|dev|lab]
 ```
 
-- **`dev`** — the profile with the most concrete behavior today: it enables `cortex seed` project-file discovery and starts the [background project watcher](#project-watcher-dev-profile). It is also the profile most exercised by the test suite.
-- **`general`** — the default profile for non-development use of Cortex; behaves like the core engine without automatic project-file discovery.
+- **`dev`** — the profile with the most concrete behavior today: it enables `urdyn seed` project-file discovery and starts the [background project watcher](#project-watcher-dev-profile). It is also the profile most exercised by the test suite.
+- **`general`** — the default profile for non-development use of Urdyn; behaves like the core engine without automatic project-file discovery.
 - **`lab`** — a canonical profile identifier reserved for experimental or exploratory use; currently behaves the same as `general`.
 
-All three profiles share the same canonical store, retrieval, preflight, context, and export behavior. The profile currently affects two things: whether `cortex seed` (with no paths) can discover project files automatically, and whether the background project watcher runs.
+All three profiles share the same canonical store, retrieval, preflight, context, and export behavior. The profile currently affects two things: whether `urdyn seed` (with no paths) can discover project files automatically, and whether the background project watcher runs.
 
 ## Current scope / limitations
 
-Cortex v1 does not include:
+Urdyn v1 does not include:
 
 - MCP integration
 - Cloud sync

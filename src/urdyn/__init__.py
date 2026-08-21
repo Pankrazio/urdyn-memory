@@ -1,16 +1,16 @@
-"""Cortex Memory Engine.
+"""Urdyn Memory Engine.
 
 A standalone, local-first, persistent, model-independent memory engine.
 """
 
 from ._errors import (
-    CortexAlreadyInitializedError,
-    CortexError,
-    CortexManifestError,
-    CortexNotFoundError,
-    CortexSemanticUnavailableError,
-    CortexSourceError,
-    CortexStorageError,
+    UrdynAlreadyInitializedError,
+    UrdynError,
+    UrdynManifestError,
+    UrdynNotFoundError,
+    UrdynSemanticUnavailableError,
+    UrdynSourceError,
+    UrdynStorageError,
 )
 from ._attempt import Attempt
 from ._conflict import Conflict
@@ -22,10 +22,10 @@ from ._preflight import Preflight, PreflightConflict
 from ._semantic_store import SemanticState
 from ._skill import Skill
 from ._source import SeedResult, Source, SourceObservation
-from ._workspace import Cortex, SemanticSetupResult
+from ._workspace import Urdyn, SemanticSetupResult
 
 __all__ = [
-    "Cortex",
+    "Urdyn",
     "Memory",
     "Evidence",
     "Attempt",
@@ -43,11 +43,11 @@ __all__ = [
     "Source",
     "SourceObservation",
     "SeedResult",
-    "CortexError",
-    "CortexNotFoundError",
-    "CortexAlreadyInitializedError",
-    "CortexManifestError",
-    "CortexStorageError",
-    "CortexSourceError",
-    "CortexSemanticUnavailableError",
+    "UrdynError",
+    "UrdynNotFoundError",
+    "UrdynAlreadyInitializedError",
+    "UrdynManifestError",
+    "UrdynStorageError",
+    "UrdynSourceError",
+    "UrdynSemanticUnavailableError",
 ]

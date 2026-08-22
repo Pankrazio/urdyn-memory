@@ -1,213 +1,208 @@
-# Urdyn Memory Engine
+# 🧠 Urdyn
 
-Un motore di memoria locale, persistente, strutturato e indipendente dal modello, pensato per persone, sistemi AI e agenti.
+> **I modelli sono sostituibili. La memoria dovrebbe restare portabile.**
 
-I modelli sono sostituibili. La memoria dovrebbe restare portabile.
+Urdyn è un motore di memoria local-first e privato per impostazione predefinita, pensato per progetti, persone e agenti AI. Conserva decisioni, evidenze, tentativi, lezioni e contesto di progetto durevoli in `.urdyn/`, indipendentemente da qualsiasi modello o provider.
 
-## Perché Urdyn
+## ⚡ Avvio rapido
 
-Le sessioni AI, i modelli e gli strumenti cambiano di continuo — parte una nuova sessione, un modello viene sostituito, un agente diverso riprende il lavoro. Ciò che non dovrebbe andare perso ogni volta è la conoscenza reale accumulata sul progetto: le decisioni prese e il perché, le cause radice individuate, le lezioni verificate contro evidenze reali, e la traccia di cosa è stato provato e non ha funzionato. Urdyn è un archivio piccolo e indipendente per questa conoscenza, così da sopravvivere a qualsiasi singolo strumento o modello.
-
-## Principi fondamentali
-
-- **Local-first** — la memoria vive in una directory di workspace sul disco, sotto il tuo controllo.
-- **Privata di default** — nulla lascia la macchina durante il funzionamento normale; non serve un account e non serve il cloud.
-- **Indipendente dal modello** — l'archivio canonico, il recupero delle informazioni e la compilazione del contesto funzionano tutti senza alcun modello AI. Il recupero semantico è un'aggiunta opzionale, non un requisito.
-- **L'evidenza non è verità canonica** — l'Evidence registra ciò che è stato osservato (l'output di un comando, la conferma di un utente, il contenuto di un file); la Memory registra ciò che si ritiene vero. Una memory diventa `verified` solo se cita evidenza di supporto di un tipo sufficientemente solido da giustificarlo (un gate deliberato, non una formalità).
-- **La storia canonica è preservata** — le memorie possono essere superate o invalidate, ma la storia di cosa è stato registrato, e quando, non viene mai riscritta silenziosamente.
-- **Nessun LLM richiesto** — il motore di base (registrazione, ricerca, preflight, compilazione del contesto, export) funziona con puro recupero lessicale/full-text, senza alcun download di modelli.
-
-## Installazione
-
-Da PyPI, quando il pacchetto sarà pubblicato:
+`urdyn-memory` non è ancora pubblicato su PyPI. Quando sarà disponibile, installa la distribuzione con:
 
 ```bash
 pip install urdyn-memory
 ```
 
-Da un checkout locale dei sorgenti già disponibile:
+Fino ad allora, installa da un checkout locale dei sorgenti già disponibile:
 
 ```bash
 cd /percorso/a/urdyn-memory
 python -m pip install .
 ```
 
-Il recupero semantico è un extra opzionale (vedi [Recupero semantico](#recupero-semantico)):
+Poi inizializza Urdyn all'interno di un progetto:
 
 ```bash
-pip install "urdyn-memory[semantic]"
-```
-
-Per un checkout locale dei sorgenti, usa invece `python -m pip install ".[semantic]"`.
-
-Richiede Python 3.12+.
-
-## Avvio rapido
-
-```bash
-mkdir mio-progetto && cd mio-progetto
+cd mio-progetto
 urdyn init dev
+urdyn status
 ```
 
-Registra qualcosa di rilevante, sostenuto da evidenza reale:
+Il motore base richiede Python 3.12+, dichiara zero dipendenze runtime obbligatorie e non necessita di alcun modello o API key.
+
+## Perché Urdyn?
+
+La cronologia del provider appartiene a un provider e a una sessione. Quando la sessione termina, il modello cambia o subentra un altro strumento, la conoscenza operativa del progetto non dovrebbe scomparire con essi.
+
+**Il modello è sostituibile. La memoria è persistente.**
+
+Urdyn non è un archivio di conversazioni. Conserva record espliciti e strutturati, con provenienza e regole per lo stato corrente, poi recupera il materiale rilevante per il task in corso. Una nuova sessione AI può ricostruire il contesto di progetto utile senza dipendere dalla trascrizione di un provider precedente.
+
+## 🧠 Cosa ricorda Urdyn
+
+Urdyn mantiene separati tipi di informazione diversi, invece di appiattire tutto in testo di chat:
+
+| Concetto | Cosa rappresenta |
+| --- | --- |
+| **Memory** | Note, decisioni, cause radice, lavoro in sospeso, domande, invarianti, fatti d'ambiente e lezioni |
+| **Evidence** | Dichiarazioni o conferme dell'utente, output di comandi/test/strumenti, errori osservati, riferimenti a file e osservazioni di documenti |
+| **Attempt** | Cosa è stato provato, in che modo e se il risultato è stato positivo, negativo o parziale |
+| **Skill** | Una procedura ordinata promossa deliberatamente da una Lesson; non viene mai creata automaticamente |
+| **Source** | L'identità di un file di progetto con una storia append-only delle osservazioni |
+| **Stato corrente** | La proiezione corrente delle Memory dopo l'esclusione dei record superati; la storia completa resta disponibile |
+
+Questo preserva decisioni, fallimenti, provenienza e lezioni come record distinti, senza fingere che abbiano tutti la stessa autorità.
+
+## 🔒 Local-first e privato per impostazione predefinita
+
+- I dati canonici vivono dentro `.urdyn/` nel tuo workspace.
+- Il motore base non richiede account, servizi cloud o API key.
+- Il funzionamento base non carica automaticamente dati all'esterno e non scarica modelli.
+- `urdyn init` aggiunge automaticamente `.urdyn/` al `.gitignore` del progetto.
+- Il seed di un documento conserva localmente in `.urdyn/` il contenuto osservato; non lo invia altrove.
+
+L'extra semantico opzionale è l'eccezione esplicita all'assenza di download: il suo setup scarica da Hugging Face un modello di embedding con versione fissata.
+
+## 🤖 Funziona con gli strumenti AI
+
+Qualunque strumento AI o coding agent con accesso alla shell può usare Urdyn attraverso la CLI pubblica. Gli strumenti senza accesso alla shell possono ricevere il contesto che esporti e fornisci loro manualmente.
+
+```text
+AI / strumento
+   │
+   ▼
+CLI pubblica / API Python di Urdyn
+   │
+   ▼
+validazione · provenienza · regole della memoria
+   │
+   ▼
+.urdyn/
+```
+
+Questo è un confine di integrazione generico, non un'integrazione automatica con i provider. Urdyn 0.1.0 non include adapter specifici per provider, supporto MCP, curatela autonoma o invocazione automatica. Gli strumenti AI devono usare la CLI/API pubblica e non modificare mai direttamente `.urdyn/`.
+
+## File di progetti esistenti
+
+Il seed esplicito dei file funziona in ogni profilo. In un workspace `dev`, `urdyn seed` senza percorsi elenca candidati di scoperta conservativi e non registra nulla. Indica esplicitamente file di testo UTF-8 regolari per osservarli:
 
 ```bash
-urdyn evidence add "La migrazione 042 è fallita a metà su staging, lasciando lo schema parzialmente aggiornato." --kind error_observation
-
-urdyn evidence add "Rieseguendo la migrazione in un'unica transazione su staging: confermata l'assenza di stato di schema parziale dopo un fallimento forzato." --kind user_confirmation
-
-urdyn learn "Racchiudere sempre le migrazioni di schema multi-step in un'unica transazione, così un fallimento lascia lo schema invariato." \
-  --supporting-evidence <id-evidence-dello-step-user_confirmation> --verified
-```
-
-Prima di iniziare un lavoro correlato in seguito, verifica cosa Urdyn già sa:
-
-```bash
-urdyn preflight "racchiudere una migrazione di schema multi-step in un'unica transazione"
-```
-
-Compila un contesto di lavoro con budget per lo stesso task:
-
-```bash
-urdyn context "racchiudere una migrazione di schema multi-step in un'unica transazione"
-```
-
-Esporta lo stesso contesto in forma portabile:
-
-```bash
-urdyn export "racchiudere una migrazione di schema multi-step in un'unica transazione"
-```
-
-Esegui `urdyn --help` per l'elenco completo dei comandi (`remember`, `recall`, `timeline`, `attempt`, `skills`, `guard` e altri).
-
-## Usare Urdyn con il tuo assistente AI
-
-Non è necessario memorizzare tutti i comandi di `urdyn`. Qualunque coding agent o strumento AI che disponga di accesso shell al workspace del progetto può usare direttamente la CLI `urdyn` — questo è un percorso di integrazione CLI generico, non un adapter specifico per un provider. Funziona allo stesso modo con qualsiasi agente in grado di eseguire comandi shell, perché è semplicemente la stessa CLI pubblica che digiteresti tu.
-
-L'agente dovrebbe attenersi esclusivamente alla superficie pubblica CLI/API e non modificare mai direttamente `.urdyn/` — `urdyn --help` e l'help di ogni subcommand sono sufficienti per scegliere il primitive giusto (`remember`, `learn`, `evidence add`, `preflight`, `context`, `export` e così via).
-
-Una semplice istruzione al tuo assistente AI è sufficiente per stabilire questo comportamento, ad esempio:
-
-> Use Urdyn as the persistent memory for this project. Use the `urdyn` CLI and never edit `.urdyn/` directly. Before significant work, consult the relevant Urdyn context. During work, record meaningful evidence, attempts, and durable project knowledge when appropriate. After verified outcomes, preserve reusable lessons. Use `urdyn --help` when needed.
-
-Se il modello con cui lavori non ha accesso alla shell, puoi invece compilare tu stesso il contesto e passarlo direttamente:
-
-```bash
-urdyn export "<descrizione del task>"
-```
-
-e fornire al modello il contesto compilato e portabile risultante come parte del tuo prompt.
-
-Questo è un confine di integrazione CLI generico, non un'integrazione nativa: Urdyn non include adapter specifici per Claude/Codex/ChatGPT, supporto MCP, curatela autonoma della memoria o invocazione automatica, e usare un assistente AI per guidarlo non implica che la memoria finisca organizzata meglio di quanto farebbe una persona digitando gli stessi comandi. Il confine è sempre:
-
-```
-AI / strumento -> CLI/API pubblica di Urdyn -> validazione/policy di Urdyn -> .urdyn/
-```
-
-Il modello interagisce solo attraverso la CLI/API pubblica; non manipola mai direttamente l'archivio o i file interni di `.urdyn/`.
-
-## Progetti esistenti
-
-`urdyn seed` (disponibile nel profilo `dev`) permette a Urdyn di prendere conoscenza dei file già presenti nel progetto:
-
-```bash
-urdyn seed                    # senza percorsi: elenca i candidati, non registra nulla
+urdyn seed                           # elenca i candidati; non registra nulla
 urdyn seed README.md pyproject.toml  # registra file specifici
 ```
 
-I file sottoposti a seed diventano osservazioni **Source / Evidence** — un record di cosa conteneva un file e quando è stato osservato. Non diventano silenziosamente verità canonica: il seed di un file aggiunge provenienza che Urdyn potrà citare in seguito, non crea di per sé una memory verificata.
+Ogni file sottoposto a seed diventa una Source con un record Evidence di tipo osservazione del documento. Urdyn conserva testo osservato, digest, dimensione e timestamp, ma non tratta le affermazioni del documento come conoscenza verificata.
 
-## Watcher di progetto (profilo dev)
+## 👀 Watcher di progetto
 
-`urdyn init dev` abilita anche un processo locale in background che mantiene automaticamente aggiornati i documenti di progetto tracciati, così non serve ricordarsi di rilanciare `urdyn seed` dopo ogni modifica:
+Il profilo `dev` può mantenere aggiornate in background le osservazioni dei documenti di progetto:
 
 ```bash
-urdyn watch status   # stato, pid, ultima osservazione, source tracciate mancanti su disco
-urdyn watch start    # abilita + avvia (è anche ciò che fa "init dev")
-urdyn watch stop     # ferma il processo e lo disabilita in modo persistente
+urdyn watch status
+urdyn watch start
+urdyn watch stop
 ```
 
-Osserva soltanto percorsi già tracciati come Source, più la stessa allowlist di scoperta usata da `urdyn seed` — mai una scansione dell'intero progetto. Non crea mai una Memory né altra conoscenza canonica: produce le stesse osservazioni Source/Evidence di `urdyn seed`, e nulla lascia questa macchina. Tre limiti noti della V1: le cancellazioni e i rinomini di file non sono tracciati (la storia di un file cancellato resta, e un file rinominato ne inizia una nuova); il watcher non si riavvia da solo dopo un riavvio del sistema — il comando `urdyn` successivo in quel workspace lo riavvia e ricontrolla ogni file già tracciato per le modifiche perse; e un file creato mentre il watcher non era in esecuzione viene recuperato solo alla sua modifica successiva, non retroattivamente al riavvio. Validato su Linux; su altre piattaforme `urdyn watch status` lo segnala come non disponibile invece di dichiarare un supporto mai testato lì.
+`urdyn init dev` abilita e avvia il watcher. Osserva soltanto le Source già tracciate e la stessa allowlist di scoperta conservativa usata da `urdyn seed`; non scansiona mai l'intero progetto. Le modifiche creano record Source/Observation/Evidence, mai Memory automatica o altra conoscenza canonica, e restano locali. `urdyn watch stop` lo ferma e lo disabilita in modo persistente.
 
-## Compilazione del contesto
+Il watcher è validato e supportato su Linux in questa release. Limiti noti della 0.1.0:
+
+- Cancellazioni e rinomini non sono tracciati. La storia esistente viene conservata e un file rinominato inizia una nuova storia Source.
+- Non è un servizio di avvio del sistema. Dopo un riavvio, il successivo comando `urdyn` normale riavvia un watcher abilitato e ricontrolla i file già tracciati.
+- Un file creato per la prima volta mentre il watcher non è in esecuzione viene scoperto soltanto dopo una sua modifica successiva, non retroattivamente al riavvio.
+
+## Evidence ≠ Knowledge
+
+**Evidence registra ciò che è stato osservato. Memory registra ciò che chi usa Urdyn gli chiede di trattare come conoscenza, con uno stato epistemico esplicito.**
+
+Registrare Evidence non crea mai automaticamente Memory, Lesson o Skill. Un README sottoposto a seed è evidenza fedele di ciò che il file affermava in quel momento; non è una prova che il README sia corretto. Una nuova Memory può essere `user_asserted`, `inferred` o `verified`, e `verified` richiede Evidence di supporto, indicata esplicitamente e di un tipo idoneo. Urdyn applica questo gate strutturale, ma non afferma di comprendere se l'evidenza dimostri davvero la conclusione.
+
+## 🧩 Profili
 
 ```bash
-urdyn context "<descrizione del task>"
+urdyn init [general|dev|lab]
 ```
 
-Data una descrizione di task, Urdyn recupera le memorie, le lezioni e le evidenze rilevanti e le compila in un unico contesto di lavoro entro un budget di caratteri (`--budget`, default 4000), dando priorità al materiale più rilevante e canonico.
+| Profilo | Comportamento implementato |
+| --- | --- |
+| **`general`** | Motore base; il seed esplicito funziona, ma discovery senza percorsi e watcher non sono disponibili |
+| **`dev`** | Aggiunge la scoperta dei file di progetto senza percorsi e il watcher in background validato su Linux |
+| **`lab`** | Identificatore di profilo canonico riservato; attualmente si comporta come `general` |
 
-## Export generico portabile
+Tutti i profili condividono archivio canonico, recupero, preflight, context ed export. Oggi il profilo cambia soltanto la scoperta seed senza percorsi e la disponibilità del watcher.
+
+## 📦 API Python
+
+La distribuzione è `urdyn-memory`, il package importabile è `urdyn` e la classe pubblica del workspace è `Urdyn`:
+
+```python
+from urdyn import Urdyn
+
+ud = Urdyn.discover()
+ud.remember("SQLite è l'archivio canonico del progetto.", kind="decision")
+
+for memory in ud.recall("SQLite è l'archivio canonico del progetto"):
+    print(memory.content)
+```
+
+L'API Python e la CLI `urdyn` condividono le regole core di validazione e persistenza. Questo README mostra soltanto i punti di ingresso essenziali; per integrare la libreria usa i tipi pubblici esportati da `urdyn`.
+
+## Compilazione ed export del contesto
+
+Prima di iniziare un lavoro, chiedi a Urdyn l'esperienza pregressa rilevante:
 
 ```bash
-urdyn export "<descrizione del task>"
+urdyn preflight "racchiudere una migrazione multi-step in un'unica transazione"
+urdyn context "racchiudere una migrazione multi-step in un'unica transazione"
+urdyn export "racchiudere una migrazione multi-step in un'unica transazione"
+```
+
+`context` compila un contesto di lavoro relativo al task e limitato da un budget di caratteri. `export` rende lo stesso tipo di contesto come testo generico portabile, adatto a redirezione o pipe:
+
+```bash
 urdyn export "<descrizione del task>" > context.txt
-urdyn export "<descrizione del task>" | altro-strumento
 ```
 
-`export` compila lo stesso tipo di contesto di lavoro task-aware di `context`, formattato come blocco di testo portabile e generico (`--for generic`, l'unico target di export attuale), pensato per essere reindirizzato o passato in pipe verso un altro strumento o prompt. È un contesto compilato e limitato al task — non un export completo dell'archivio di memoria.
+Questo export è un contesto limitato al task, non un backup completo né un export dell'intero archivio di memoria.
 
 ## Recupero semantico
 
-Il recupero semantico (basato su embedding) è **opzionale**. Il motore di base funziona interamente offline con ricerca lessicale/full-text e non richiede alcun download di modelli.
-
-Per abilitarlo su un workspace:
+Il motore base funziona offline con recupero lessicale/full-text. Il recupero semantico è opzionale:
 
 ```bash
 pip install "urdyn-memory[semantic]"
 urdyn semantic setup
 ```
 
-Questo scarica e fissa una specifica versione di un modello sentence-transformers al primo utilizzo e costruisce un indice semantico locale accanto all'archivio di memoria. L'indice è derivato, ricostruibile e può essere eliminato in sicurezza — Urdyn torna al recupero solo lessicale se non è presente.
+Il setup scarica un modello di embedding con versione fissata e costruisce un indice locale derivato accanto all'archivio canonico. L'indice è ricostruibile; quando il recupero semantico non è disponibile, i dati canonici restano intatti e Urdyn torna al recupero lessicale.
 
-## Privacy
+## 🛠 Ambito attuale e limiti
 
-- La memoria è archiviata localmente, in una directory di workspace (`.urdyn/`) sulla tua macchina.
-- Non è richiesto alcun account o registrazione.
-- Non è richiesto alcun servizio cloud per il funzionamento di base (registrazione, ricerca, preflight, compilazione del contesto, export).
-- Non è richiesto alcun LLM o modello AI per il funzionamento di base.
-- `urdyn init` aggiunge automaticamente `.urdyn/` al `.gitignore` del workspace, così l'archivio di memoria non viene per default incluso nel repository del progetto.
+Urdyn 0.1.0 è una release alpha. Attualmente non include:
 
-Abilitare l'extra semantico opzionale scarica un modello da Hugging Face al primo setup; il funzionamento di base no.
+- sincronizzazione cloud;
+- GUI o applicazione desktop;
+- adapter nativi per provider o integrazione MCP;
+- curatela autonoma della memoria guidata dall'AI;
+- acquisizione automatica delle conversazioni;
+- import/export completo dell'archivio di memoria.
 
-## Profili
-
-```bash
-urdyn init [general|dev|lab]
-```
-
-- **`dev`** — il profilo con il comportamento più concreto oggi: abilita la scoperta automatica dei file di progetto con `urdyn seed` e avvia il [watcher di progetto in background](#watcher-di-progetto-profilo-dev). È anche il profilo più esercitato dalla suite di test.
-- **`general`** — il profilo predefinito per un uso non di sviluppo di Urdyn; si comporta come il motore di base, senza scoperta automatica dei file di progetto.
-- **`lab`** — un identificatore di profilo canonico riservato a un uso sperimentale/esplorativo; oggi si comporta come `general`.
-
-Tutti e tre i profili condividono lo stesso archivio canonico e lo stesso comportamento di recupero, preflight, context ed export. Al momento il profilo influisce su due cose: la possibilità che `urdyn seed` (senza percorsi) scopra automaticamente i file di progetto, e l'avvio del watcher di progetto in background.
-
-## Ambito attuale / limiti
-
-Urdyn v1 non include:
-
-- Integrazione MCP
-- Sincronizzazione cloud
-- Una GUI o un'app desktop
-- Adapter integrati per provider AI
-- Curatela autonoma della memoria guidata da AI
-- Import/export completo dell'intero archivio di memoria (solo l'`export` task-scoped descritto sopra)
+Il confine CLI/API è deliberato: Urdyn fornisce il motore di memoria e le sue regole, mentre una persona o uno strumento esterno decide cosa registrare e quando consultarlo.
 
 ## Sviluppo
 
 ```bash
 uv sync
-uv run pytest                          # suite di test completa
-uv run pytest -m real_model            # test che richiedono il modello semantico già in cache (altrimenti skippati)
-uv build                               # build di wheel + sdist
+uv run pytest
+uv run pytest -m real_model  # richiede che il modello semantico sia già nella cache locale
+uv build
 ```
 
-Richiede Python 3.12+ e [uv](https://docs.astral.sh/uv/).
+Lo sviluppo richiede Python 3.12+ e [uv](https://docs.astral.sh/uv/).
 
 ## Licenza
 
 Apache License 2.0. Vedi [LICENSE](LICENSE).
 
-## Documentazione in inglese
+## 🌍 Lingue
 
-Vedi [README.md](README.md) per la versione inglese di questo documento.
+Questo documento è in italiano. Vedi [README.md](README.md) per la versione inglese.

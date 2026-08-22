@@ -6,13 +6,12 @@ Urdyn is a local-first, private-by-default memory engine for projects, people, a
 
 ## ⚡ Quick start
 
-`urdyn-memory` is not published on PyPI yet. Once it is available, install the distribution with:
+Install Urdyn from PyPI:
 
 ```bash
 pip install urdyn-memory
-```
 
-Until then, install from an existing local source checkout:
+Or install it from a local source checkout:
 
 ```bash
 cd /path/to/urdyn-memory

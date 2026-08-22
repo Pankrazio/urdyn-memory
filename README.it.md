@@ -191,11 +191,12 @@ Il confine CLI/API è deliberato: Urdyn fornisce il motore di memoria e le sue r
 ## Sviluppo
 
 ```bash
-uv sync
+uv sync --extra semantic
 uv run pytest
-uv run pytest -m real_model  # richiede che il modello semantico sia già nella cache locale
+HF_HUB_OFFLINE=1 uv run pytest -m real_model
 uv build
 ```
+La suite completa esercita anche il backend semantico opzionale, quindi l’ambiente di sviluppo installa l’extra semantic. Il pacchetto base continua a non avere dipendenze runtime obbligatorie.
 
 Lo sviluppo richiede Python 3.12+ e [uv](https://docs.astral.sh/uv/).
 

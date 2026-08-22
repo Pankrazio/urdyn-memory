@@ -112,7 +112,7 @@ The model interacts only through the public CLI/API; it never manipulates the st
 
 ```bash
 urdyn seed                    # no paths: list discovery candidates, record nothing
-urdyn seed README.md src/     # record specific paths
+urdyn seed README.md pyproject.toml  # record specific files
 ```
 
 Seeded files become **Source / Evidence observations** — a record of what a file contained and when it was observed. They do not silently become canonical truth: seeding a file adds provenance Urdyn can later cite, it does not create a verified memory on its own.

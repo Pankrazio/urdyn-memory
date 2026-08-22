@@ -112,7 +112,7 @@ Il modello interagisce solo attraverso la CLI/API pubblica; non manipola mai dir
 
 ```bash
 urdyn seed                    # senza percorsi: elenca i candidati, non registra nulla
-urdyn seed README.md src/     # registra percorsi specifici
+urdyn seed README.md pyproject.toml  # registra file specifici
 ```
 
 I file sottoposti a seed diventano osservazioni **Source / Evidence** — un record di cosa conteneva un file e quando è stato osservato. Non diventano silenziosamente verità canonica: il seed di un file aggiunge provenienza che Urdyn potrà citare in seguito, non crea di per sé una memory verificata.

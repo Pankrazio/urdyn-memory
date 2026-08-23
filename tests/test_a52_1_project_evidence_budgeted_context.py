@@ -1,31 +1,12 @@
-"""A52.1: PROJECT EVIDENCE candidates that individually exceed a realistic
-budget -- the gap A52 left open.
+"""Regression coverage for budgeted PROJECT EVIDENCE from long documents.
 
-Real-world dogfooding of the A52 checkout inside a pre-existing workspace
-(`urdyn-platform`, originally seeded under `urdyn-memory 0.1.0`, no reseed,
-no manual migration) reproduced a second-order gap: `urdyn context --budget
-6000 "<query genuinely covered by the seeded docs>"` now found 6 relevant
-PROJECT EVIDENCE candidates (A52's fix), but the compiled context still read
-"No compiled items fit within the budget." -- 0 of 6 selected; 6 omitted for
-budget.
-
-Root cause, verified against the unmodified A52 HEAD (`4f33b66`) before any
-fix in this module: `compile_context` represents a PROJECT EVIDENCE
-candidate as the ENTIRE current-observation `Evidence.content`, verbatim,
-one candidate per Source (see `_context.py`'s module docstring, "never
-truncated"). A real architecture document a few KB long, easily admitted by
-`evidence_is_relevant` (lexical majority over the WHOLE document, or FTS, or
-a semantic embedding computed over its own leading ~128 tokens), costs more
-CHARACTERS on its own than a 6000-character budget has room for -- and
-`compile_context`'s admission is a deterministic PREFIX scan that stops at
-the first candidate that does not fit (A29.1's "prefix monotonicity"), so
-once every candidate individually exceeds the residual budget, all of them
-are counted "omitted for budget" and none is ever tried.
-
-The fix (`_chunk.py`) introduces a purely DERIVED, never-persisted retrieval
-representation: `Evidence.content` is deterministically split into
-paragraph-aware chunks, recomputed fresh on every `context()` call directly
-from canonical `Evidence.content` (so it can never go stale across a Source
+Representing a PROJECT EVIDENCE candidate as an entire current-observation
+`Evidence.content` can leave every relevant document individually larger than
+the available context budget. `_chunk.py` therefore provides a purely derived,
+never-persisted retrieval representation. `Evidence.content` is
+deterministically split into paragraph-aware chunks and recomputed fresh on
+every `context()` call directly from canonical `Evidence.content` (so it can
+never go stale across a Source
 update, and needs no "rebuild" step -- there is nothing cached to rebuild).
 Chunks of an ALREADY task-relevant document (the existing `evidence_is_relevant`
 gate is unchanged) are ranked by their OWN lexical overlap with the query, so
@@ -48,10 +29,8 @@ from urdyn._relevance import tokens as _tokens
 
 real_model = pytest.mark.real_model
 
-# Mirrors the exact query from the real `urdyn-platform` dogfood session
-# (A52.1's session brief), with the same deliberately rich, multi-concept
-# vocabulary that made a real seeded architecture document score as
-# relevant on its own leading paragraph.
+# A deliberately rich, multi-concept query that makes the relevant leading
+# paragraph of a seeded architecture document score on its own.
 _QUERY = (
     "What architectural constraints should an implementation of a Firefox browser adapter respect "
     "regarding canonical memory authority, dependency direction, component orthogonality, failure "
@@ -68,8 +47,8 @@ def _project_evidence_items(result):
 
 def _relevant_paragraph(topic: str) -> str:
     # Deliberately reuses the query's own significant vocabulary, the same
-    # "controlled lexical overlap" style `test_a52_project_evidence_retrieval.py`
-    # already relies on -- this is the paragraph a real reader would call
+    # controlled lexical-overlap style used by the companion retrieval tests;
+    # this is the paragraph a real reader would call
     # "the part that answers the question".
     return (
         f"# {topic}\n\n"
@@ -97,8 +76,7 @@ def _irrelevant_filler(paragraph_count: int, seed: int) -> str:
 def _long_relevant_doc(topic: str, *, filler_paragraphs: int = 40, seed: int = 0) -> str:
     """A realistic-sized architecture document: one genuinely relevant
     section followed by enough irrelevant filler to push the WHOLE
-    document past a 6000-character budget on its own -- the exact shape
-    the real `urdyn-platform` dogfood reproduced."""
+    document past a 6000-character budget on its own."""
     doc = _relevant_paragraph(topic) + "\n\n" + _irrelevant_filler(filler_paragraphs, seed)
     assert len(doc) > 6000, "fixture must reproduce the real oversized-candidate shape"
     return doc
@@ -117,8 +95,8 @@ def _seed(cx, tmp_path, relative_path: str, content: str):
 
 
 # ---------------------------------------------------------------------------
-# Exact reproduction of the reported dogfood symptom: 6 relevant, oversized
-# candidates, budget=6000, 0 selected before the fix.
+# Regression shape: six relevant oversized candidates under a 6000-character
+# budget must still yield useful Project Evidence.
 # ---------------------------------------------------------------------------
 
 
@@ -171,7 +149,7 @@ def test_project_evidence_never_exceeds_the_stated_budget(tmp_path):
 
 # ---------------------------------------------------------------------------
 # Small documents are completely unaffected: single-chunk pass-through,
-# byte-identical to A52 behavior.
+# byte-identical to the unchunked behavior.
 # ---------------------------------------------------------------------------
 
 

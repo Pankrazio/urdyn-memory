@@ -198,14 +198,12 @@ def _semantic_pool_entries(
     A7.4 -- the same representations `_relevance.py` already derives for
     FTS, no new canonical field.
 
-    [A52] `ENTITY_SOURCE` is the fourth pool: the CURRENT (latest-
+    `ENTITY_SOURCE` is the fourth pool: the current (latest-
     observation) Evidence of every seeded Source, keyed by that
     Evidence's own id (see `MemoryStore.list_current_source_evidence`).
-    This REVISES the pre-A52 policy, which excluded Evidence/Sources
-    entirely on the grounds that "writing them cannot make this index
-    stale" -- true only because nothing consulted them. Superseding a
-    Source now DOES make this index stale for the new observation's
-    Evidence, exactly like recording a new Memory does; the old
+    Evidence/Sources must be included because retrieval now consults
+    them: superseding a Source makes this index stale for the new
+    observation's Evidence, exactly like recording a new Memory does; the old
     observation's Evidence is simply no longer in this pool; it is not
     unindexed retroactively (search_index/the semantic vector store are
     both append-only derived data, see `observe_source`) -- it is
@@ -1004,7 +1002,7 @@ class Urdyn:
             query_tokens = frozenset(_tokens(task))
             attempt_fts_candidates = store.search_candidates(query_tokens, ENTITY_ATTEMPT)
             memory_fts_candidates = store.search_candidates(query_tokens, ENTITY_MEMORY)
-            # [A52] The current (latest-observation) Evidence of every
+            # The current (latest-observation) Evidence of every
             # seeded Source -- read once here, alongside the other
             # single-read materializations this method already does, and
             # handed to both `_semantic_pool_entries` (below) and
@@ -1242,12 +1240,12 @@ class Urdyn:
         - an Attempt sharing Evidence with an already-relevant RootCause
           is cited on that RootCause's line instead of costing a line of
           its own;
-        - [A52] a seeded Source's CURRENT observation surfaces, task-
+        - a seeded Source's CURRENT observation surfaces, task-
           relevance permitting, as PROJECT EVIDENCE -- raw, unverified
           document text, never a Memory (`Source != Evidence != Memory`
           holds all the way to this method's output; see
           `_context.compile_context`'s docstring). `preflight()` never
-          reads Source/Evidence at all. [A52.1] A document too large to
+          reads Source/Evidence at all. A document too large to
           admit whole is offered as its own relevance-ranked PARAGRAPHS
           instead (see `_preflight.relevant_evidence_chunks`/`_chunk.py`),
           a purely derived, never-persisted view of the SAME current
@@ -1313,7 +1311,7 @@ class Urdyn:
         decision_eligible_ids = frozenset(m.memory_id for m in material.decision_memories)
         decision_semantic_admitted = self._semantic_widen(task, ENTITY_MEMORY, eligible_ids=decision_eligible_ids)
 
-        # [A52] A fifth DISJOINT pool: the current-observation Evidence of
+        # A fifth disjoint pool: the current-observation Evidence of
         # every seeded Source, restricted to the current-observation ids
         # `_gather_experience` already computed (BEFORE ranking, A7.7) so
         # a superseded observation can never win a slot here.
@@ -1573,7 +1571,7 @@ class Urdyn:
     def semantic_setup(self) -> SemanticSetupResult:
         """(Re)build the derived semantic index for this workspace from
         canonical data: attempts (task+approach), all memories (content),
-        skills (name+purpose+conditions), and [A52] the current
+        skills (name+purpose+conditions), and the current
         observation of every seeded Source (its Evidence content) -- see
         `_semantic_pool_entries` for the exact definition. Always safe to
         call again: fully rebuilds from scratch every time (idempotent),
@@ -2043,7 +2041,7 @@ class Urdyn:
     def _context_evidence_semantic_admitted(
         self, task: str, *, evidence_eligible_ids: frozenset[str]
     ) -> frozenset[str]:
-        """[A52] Semantic admission for `context()`'s PROJECT EVIDENCE
+        """Semantic admission for `context()`'s PROJECT EVIDENCE
         pool: a bounded SET, not a single winner -- the same shape as
         `_context_invariant_semantic_admitted` and for the same reason:
         several seeded documents can each cover a distinct, co-relevant

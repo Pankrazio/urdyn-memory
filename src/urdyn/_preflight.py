@@ -99,7 +99,7 @@ def evidence_is_relevant(
     fts_admitted_ids: frozenset[str],
     semantic_admitted_ids: frozenset[str],
 ) -> bool:
-    """[A52] Whether a seeded document's current-observation `evidence`
+    """Whether a seeded document's current-observation `evidence`
     clears any of the three independent relevance channels described in
     the module docstring: lexical majority overlap over its own
     `content`, FTS5/BM25 widening, or semantic admission.
@@ -126,7 +126,7 @@ def relevant_evidence_chunks(
     semantic_admitted_ids: frozenset[str],
     max_chars: int = DEFAULT_CHUNK_MAX_CHARS,
 ) -> tuple[EvidenceChunk, ...]:
-    """[A52.1] The chunks of `evidence` worth offering `context()`'s
+    """The chunks of `evidence` worth offering `context()`'s
     PROJECT EVIDENCE pool, in priority order -- empty if `evidence` itself
     is not relevant at all.
 
@@ -215,7 +215,7 @@ def build_relevance_context(
     consumers can never silently disagree about which attempts are
     relevant to `task` or which Evidence a provenance rescue may cite.
 
-    [A52] `source_evidence_fts_candidates`/`source_evidence_fts_admitted`
+    `source_evidence_fts_candidates`/`source_evidence_fts_admitted`
     follow the same shape as the attempt/memory FTS pair, computed here
     for the same reason (one tokenization of `task`, shared by every
     consumer) even though only `Urdyn.context()`'s PROJECT EVIDENCE pool

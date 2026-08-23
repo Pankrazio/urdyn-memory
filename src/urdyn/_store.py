@@ -844,7 +844,7 @@ class MemoryStore:
                     "VALUES (?, ?, ?, ?, ?)",
                     (source_id, candidate_evidence_id, digest, size_bytes, observed_at.isoformat()),
                 )
-                # [A52] Index this observation's Evidence for lexical/FTS
+                # Index this observation's Evidence for lexical/FTS
                 # widening, in the same transaction as the canonical
                 # writes above -- exactly the pattern `add()`/`add_attempt`/
                 # `add_skill` already use. Every observation is indexed,
@@ -887,7 +887,7 @@ class MemoryStore:
             raise UrdynStorageError(f"Failed to read Urdyn source store: {exc}") from exc
 
     def list_current_source_evidence(self) -> list[tuple[Source, Evidence]]:
-        """[A52] Every tracked Source paired with its LATEST observation's
+        """Every tracked Source paired with its latest observation's
         Evidence -- the current, retrievable text of each seeded
         document, one pair per Source.
 
@@ -1951,7 +1951,7 @@ def _rebuild_search_index(connection: sqlite3.Connection) -> None:
             (ENTITY_SKILL, skill_id, skill_search_text(name, purpose, conditions)),
         )
 
-    # [A52] Every observation of every Source, not just the current one --
+    # Every observation of every Source, not just the current one --
     # matching the `memories` loop above, which also indexes superseded
     # rows. `list_current_source_evidence` is where "current" filtering
     # happens, not here.

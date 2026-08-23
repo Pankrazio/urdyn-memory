@@ -1,11 +1,10 @@
-"""[A52.1] Retrieval chunks: a DERIVED, never-persisted view of a Source's
+"""Retrieval chunks: a derived, never-persisted view of a Source's
 current-observation `Evidence.content`, split into candidate segments a
 budgeted `compile_context` can admit or reject individually.
 
-WHY THIS EXISTS. A52 made a seeded Source's current Evidence participate in
-`context()` retrieval, but represented each candidate as the ENTIRE document,
-verbatim, one candidate per Source (see `_context.py`'s module docstring:
-"never truncated"). That is correct for the CANONICAL record -- Evidence
+Seeded Sources participate in `context()` retrieval, but their canonical
+Evidence can contain an entire document. Representing each candidate as the
+whole document, verbatim, would be correct for the canonical record -- Evidence
 holds the document's full text, and nothing here ever changes that -- but it
 made every real, multi-paragraph project document compete for budget as one
 indivisible unit. A document a few KB long, easily admitted as task-relevant
@@ -55,9 +54,9 @@ import re
 from ._evidence import Evidence
 from ._relevance import tokens as _tokens
 
-# [A52.1] Chosen so that several relevant chunks from DIFFERENT documents
-# can coexist under a typical `context()` budget (the reported dogfood
-# session used 6000) alongside CONSTRAINTS/OPEN RISKS/LESSONS/DECISIONS,
+# Chosen so that several relevant chunks from different documents can
+# coexist under a typical `context()` budget alongside
+# CONSTRAINTS/OPEN RISKS/LESSONS/DECISIONS,
 # while staying large enough that a chunk is still a coherent, readable
 # unit of a real document (a paragraph or a small group of them), not a
 # sentence fragment. Not derived from `DEFAULT_CONTEXT_BUDGET` (4000) in
@@ -78,8 +77,8 @@ class EvidenceChunk:
     single-chunk document (`chunk_count == 1`) always has `text` equal to
     the ENTIRE `evidence.content`, byte for byte: `chunk_text_spans`
     special-cases text under `max_chars` to skip paragraph splitting
-    entirely, so a small seeded document renders identically to how A52
-    already rendered it.
+    entirely, so a small seeded document renders identically to the
+    unchunked representation.
     """
 
     evidence_id: str

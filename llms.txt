@@ -18,9 +18,9 @@ Urdyn stores project knowledge (decisions, root causes, verified lessons, eviden
 
 - **Canonical memory** — durable, typed records (`decision`, `lesson`, `root_cause`, `invariant`, `note`, and more) that can be superseded or invalidated but never silently rewritten.
 - **Evidence** — an observation (command output, test result, user confirmation, file content, ...) a memory can cite as support. A memory is only `verified` when backed by evidence of a kind strong enough to justify it.
-- **Context compiler** — given a task description, retrieves and compiles the relevant memories, lessons, and evidence into a single budgeted working context (`urdyn context`).
+- **Context compiler** — given a task description, retrieves and compiles relevant memories, lessons, and Project Evidence into a single budgeted working context (`urdyn context`). Large seeded documents contribute task-relevant portions rather than having to fit as a whole.
 - **Generic export** — a portable, task-scoped compiled context suitable for piping into another tool or prompt (`urdyn export`); not a full memory-archive export.
-- **Seed** — records existing project files as Source/Evidence observations (`urdyn seed`), available in the `dev` profile. Seeded content is provenance, not automatically canonical truth.
+- **Seed** — records existing project files as Source/Evidence observations (`urdyn seed`); explicit paths work in every profile, while no-path discovery is a `dev` feature. Seeded content can participate in lexical and optional semantic context retrieval as Project Evidence, but remains document evidence rather than verified Memory; retrieval never promotes it to Memory.
 
 ## License
 

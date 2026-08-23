@@ -78,7 +78,7 @@ Entity type strings (`ENTITY_MEMORY`/`ENTITY_ATTEMPT`/`ENTITY_SKILL`/
 module, `_store.py`'s FTS index, and `_semantic.py`'s pool policy;
 nothing about them is part of the public API.
 
-[A52] `ENTITY_SOURCE` widens the same lexical/FTS admission this module
+`ENTITY_SOURCE` widens the same lexical/FTS admission this module
 already provides to the CURRENT (latest-observation) Evidence of a
 seeded Source -- see `_workspace.py`'s `_semantic_pool_entries` and
 `Urdyn.context()`. It is deliberately the fourth pool, not a

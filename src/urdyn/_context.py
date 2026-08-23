@@ -99,7 +99,7 @@ SECTION_VALIDATION = "VALIDATION"
 # second, unbudgeted command. No cross-category score: this ordering IS
 # the priority, applied once, top to bottom.
 #
-# [A52] PROJECT EVIDENCE sits right after DECISIONS and before HISTORY:
+# PROJECT EVIDENCE sits right after DECISIONS and before HISTORY:
 # every category above it is either verified experience or a committed
 # Memory, and all of them keep outranking raw, unverified document text
 # for budget -- the authority ordering `Source != Evidence != Memory`
@@ -146,7 +146,7 @@ class ContextItem:
     together -- never a marker with no item to explain it, and never an
     item that hides a contradiction Urdyn already knows about.
 
-    [A52] `source_path` is set only for a PROJECT EVIDENCE item (a
+    `source_path` is set only for a PROJECT EVIDENCE item (a
     seeded document's current-observation Evidence): the workspace-
     relative path of the Source it came from. `entity_id` is that
     Evidence's own id, not human-readable on its own, so this is what
@@ -156,12 +156,12 @@ class ContextItem:
     item) and reusing `provenance` would render it as "from attempt
     [...]", which is simply false for a document.
 
-    [A52.1] `chunk_index`/`chunk_count` are set only when a PROJECT
+    `chunk_index`/`chunk_count` are set only when a PROJECT
     EVIDENCE item's `content` is one PIECE of a larger document (see
     `_chunk.py`) rather than the whole thing -- `None` for every other
     kind, and `None` for a document small enough to be its own single
-    chunk, so a small seeded document renders EXACTLY as A52 already
-    rendered it. `entity_id` still names the parent Evidence's real,
+    chunk, so a small seeded document keeps the unchunked rendering.
+    `entity_id` still names the parent Evidence's real,
     canonical id: multiple chunks of the same document share one
     `entity_id` and are told apart only by this pair, never by a chunk
     id of their own (chunks are never looked up on their own -- see
@@ -434,7 +434,7 @@ def compile_context(
     away, or one that only a non-displayed relevant success attempt
     cited, does not itself earn a place.
 
-    [A52] `project_evidence` is one entry per CANDIDATE SEGMENT of a
+    `project_evidence` is one entry per candidate segment of a
     seeded Source's current observation, already filtered for task
     relevance by the caller (`evidence_is_relevant`, see `_preflight.py`)
     and restricted to each Source's CURRENT observation only (see
@@ -448,12 +448,12 @@ def compile_context(
     verified Memory, preserving `Source != Evidence != Memory` in the
     OUTPUT, not just in how it was retrieved.
 
-    [A52.1] Each entry is `(evidence, source_path, chunk)`: `evidence` and
-    `source_path` name WHICH document and WHERE it came from (unchanged
-    from A52), and `chunk` (see `_chunk.py`) is the specific, already
+    Each entry is `(evidence, source_path, chunk)`: `evidence` and
+    `source_path` name which document and where it came from, and `chunk`
+    (see `_chunk.py`) is the specific, already
     relevance-RANKED slice of `evidence.content` this candidate offers --
     a whole small document is exactly one chunk covering all of `content`,
-    so nothing here changes for a document that already fit under A52. A
+    so chunking does not change a document that already fits. A
     document too large to admit whole can still contribute its most
     relevant PARAGRAPHS: this function still treats each chunk as its own
     ordinary budget candidate (no special-casing), so the same PREFIX

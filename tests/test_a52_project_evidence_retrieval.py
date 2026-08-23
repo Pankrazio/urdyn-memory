@@ -1,42 +1,21 @@
-"""A52: PROJECT EVIDENCE in `context()` -- the retrieval gap this closes.
+"""Regression coverage for PROJECT EVIDENCE retrieval in `context()`.
 
-Real-world dogfooding of `urdyn-memory[semantic]` inside a separate
-project (`urdyn-platform`) reproduced a structural gap: `urdyn seed`
-correctly records a document as a `Source`/`SourceObservation`/
-canonical `Evidence` (never a Memory -- `urdyn sources` confirms
-digest/timestamp/provenance), but nothing wired that Evidence into
-retrieval. `urdyn semantic setup` reported "0 attempts, 0 memories, 0
-skills" with no mention of Sources at all, and `urdyn context --budget N
-"<a task genuinely covered by the seeded docs>"` answered "No compiled
-context for this task." -- 0 of 0 selected -- no matter how relevant the
-seeded material was.
+`urdyn seed` records a document as a `Source`/`SourceObservation` and
+canonical `Evidence`. PROJECT EVIDENCE is a distinct `context()` candidate
+pool sourced from `MemoryStore.list_current_source_evidence()` (the current,
+i.e. latest, observation of every seeded Source), so a superseded observation
+is never a candidate. Candidates use the same lexical, FTS, and semantic
+retrieval channels as the other pools.
 
-Root cause, verified against the real HEAD before any fix: three
-independent places skipped Source/Evidence -- `MemoryStore.observe_source`
-never called `_index_entity` (so seeded docs got zero FTS rows),
-`_semantic_pool_entries` explicitly excluded Sources/Evidence from the
-semantic index, and `Urdyn.context()`/`_gather_experience` had no
-Source/Evidence candidate pool at all. None of this was a documented
-design choice: the ONE actual invariant in play --
-`Source != Evidence != Memory`, enforced at `MemoryStore.add()`'s
-verification-kind gate -- says a document observation must never become
-a verified Memory. It says nothing about Evidence being unable to
-PARTICIPATE in retrieval at a lower authority than Memory, and no
-existing test asserted the opposite (see
-`test_a20_evidence_cli.py::test_seeding_alone_creates_no_memory_and_recall_stays_empty`,
-which locks in that `recall()` -- Memory-only search -- stays empty;
-it says nothing about `context()`).
+The authority invariant remains explicit: `Source != Evidence != Memory`.
+Project Evidence is rendered with `authority=evidence.kind` (always
+`document_observation`), never `epistemic_state`, so compiled context cannot
+present raw document text as verified knowledge. `preflight()` and `recall()`
+remain unchanged; this is a `context()`-only pool, like Decision memories.
 
-The fix adds PROJECT EVIDENCE as a fifth `context()` candidate pool,
-sourced from `MemoryStore.list_current_source_evidence()` (the CURRENT,
-i.e. latest, observation of every seeded Source -- a superseded
-observation is never a candidate, see the source-update tests below),
-admitted through the same lexical/FTS/semantic channels every other
-pool uses, and rendered with `authority=evidence.kind` (always
-`document_observation`) -- never `epistemic_state` -- so a compiled
-context can never present raw document text as if it were verified
-knowledge. `preflight()`/`recall()` are untouched: this is a `context()`
--only pool, exactly like Decision memories.
+These tests cover retrieval, exclusion, budget handling, coexistence with
+Memory, current-observation filtering, semantic lifecycle, rendering,
+backward compatibility, and CLI behavior.
 """
 
 from __future__ import annotations
@@ -320,7 +299,7 @@ def test_compile_context_without_project_evidence_argument_still_works():
 
 
 # ---------------------------------------------------------------------------
-# End-to-end CLI reproduction of the reported dogfooding symptom
+# End-to-end CLI coverage
 # ---------------------------------------------------------------------------
 
 

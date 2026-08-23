@@ -74,7 +74,7 @@ artifact, or, if that artifact cannot be loaded here, not at all.
 
 Admission ("is this candidate semantically relevant enough to widen
 recall with") is calibrated per entity-type pool (attempt / memory /
-skill / [A52] source) -- see `SEMANTIC_POLICY` below (source's SET-
+skill / source) -- see `SEMANTIC_POLICY` below (source's SET-
 admission floor/cap live separately, next to `LESSON_SEMANTIC_FLOOR`,
 and are explicitly NOT independently calibrated -- see their own
 comment). A16.2.1 re-validated the MEMORY
@@ -359,7 +359,7 @@ SET_ADMISSION_LIMIT = 2
 INVARIANT_SEMANTIC_FLOOR = 0.35
 INVARIANT_ADMISSION_LIMIT = 2
 
-# [A52] The SET admission policy for `context()`'s PROJECT EVIDENCE pool
+# The set admission policy for `context()`'s PROJECT EVIDENCE pool
 # (current-observation document Evidence from a seeded Source). Same
 # shape as `LESSON_SEMANTIC_FLOOR`/`SET_ADMISSION_LIMIT` and
 # `INVARIANT_SEMANTIC_FLOOR`/`INVARIANT_ADMISSION_LIMIT` above, and for

@@ -10,6 +10,7 @@ Install Urdyn from PyPI:
 
 ```bash
 pip install urdyn-memory
+```
 
 Or install it from a local source checkout:
 
@@ -78,7 +79,7 @@ validation · provenance · memory rules
 .urdyn/
 ```
 
-This is a generic integration boundary, not an automatic provider integration. Urdyn 0.1.0 does not ship provider-specific adapters, MCP support, autonomous curation, or automatic invocation. AI tools should use the public CLI/API and never edit `.urdyn/` directly.
+This is a generic integration boundary, not an automatic provider integration. Urdyn 0.2.0 does not ship provider-specific adapters, MCP support, autonomous curation, or automatic invocation. AI tools should use the public CLI/API and never edit `.urdyn/` directly.
 
 ## Existing project files
 
@@ -103,7 +104,7 @@ urdyn watch stop
 
 `urdyn init dev` enables and starts the watcher. It watches only already tracked Sources plus the same conservative discovery allowlist used by `urdyn seed`; it never scans the whole project. Changes create Source/Observation/Evidence records, never automatic Memory or other canonical knowledge, and remain local. `urdyn watch stop` stops and persistently disables it.
 
-The watcher is validated and supported on Linux in this release. Known 0.1.0 limits:
+The watcher is validated and supported on Linux in this release. Known 0.2.0 limits:
 
 - Deletions and renames are not tracked. Existing history is retained, and a renamed file begins a new Source history.
 - It is not a boot service. After a reboot, the next normal `urdyn` command restarts an enabled watcher and rechecks already tracked files.
@@ -163,6 +164,8 @@ urdyn export "<task description>" > context.txt
 
 This export is task-scoped context, not a full backup or memory-archive export.
 
+Seeded project documents can contribute task-relevant **Project Evidence** to compiled context through lexical retrieval and, when enabled, semantic retrieval. For large documents, Urdyn retrieves the portions relevant to the task instead of requiring the entire document to fit the context budget. The retrieved text remains document Evidence with its Source provenance: **Source != Evidence != Durable Memory**, and retrieving Evidence never promotes it to Memory.
+
 ## Semantic retrieval
 
 The base engine works offline with lexical/full-text retrieval. Semantic retrieval is optional:
@@ -176,7 +179,7 @@ Setup downloads a pinned embedding model and builds a derived local index next t
 
 ## 🛠 Current scope and limitations
 
-Urdyn 0.1.0 is an alpha release. It does not currently include:
+Urdyn 0.2.0 is an alpha release. It does not currently include:
 
 - cloud sync;
 - a GUI or desktop application;

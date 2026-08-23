@@ -6,7 +6,7 @@ Urdyn è un motore di memoria local-first e privato per impostazione predefinita
 
 ## ⚡ Avvio rapido
 
-Installa urdyn-memory da Pypi
+Installa urdyn-memory da PyPI:
 
 ```bash
 pip install urdyn-memory
@@ -78,7 +78,7 @@ validazione · provenienza · regole della memoria
 .urdyn/
 ```
 
-Questo è un confine di integrazione generico, non un'integrazione automatica con i provider. Urdyn 0.1.0 non include adapter specifici per provider, supporto MCP, curatela autonoma o invocazione automatica. Gli strumenti AI devono usare la CLI/API pubblica e non modificare mai direttamente `.urdyn/`.
+Questo è un confine di integrazione generico, non un'integrazione automatica con i provider. Urdyn 0.2.0 non include adapter specifici per provider, supporto MCP, curatela autonoma o invocazione automatica. Gli strumenti AI devono usare la CLI/API pubblica e non modificare mai direttamente `.urdyn/`.
 
 ## File di progetti esistenti
 
@@ -103,7 +103,7 @@ urdyn watch stop
 
 `urdyn init dev` abilita e avvia il watcher. Osserva soltanto le Source già tracciate e la stessa allowlist di scoperta conservativa usata da `urdyn seed`; non scansiona mai l'intero progetto. Le modifiche creano record Source/Observation/Evidence, mai Memory automatica o altra conoscenza canonica, e restano locali. `urdyn watch stop` lo ferma e lo disabilita in modo persistente.
 
-Il watcher è validato e supportato su Linux in questa release. Limiti noti della 0.1.0:
+Il watcher è validato e supportato su Linux in questa release. Limiti noti della 0.2.0:
 
 - Cancellazioni e rinomini non sono tracciati. La storia esistente viene conservata e un file rinominato inizia una nuova storia Source.
 - Non è un servizio di avvio del sistema. Dopo un riavvio, il successivo comando `urdyn` normale riavvia un watcher abilitato e ricontrolla i file già tracciati.
@@ -163,6 +163,8 @@ urdyn export "<descrizione del task>" > context.txt
 
 Questo export è un contesto limitato al task, non un backup completo né un export dell'intero archivio di memoria.
 
+I documenti di progetto sottoposti a seed possono contribuire al contesto compilato come **Project Evidence** rilevante per il task, tramite recupero lessicale e, quando abilitato, semantico. Per i documenti grandi, Urdyn recupera le porzioni rilevanti per il task invece di richiedere che l'intero documento rientri nel budget del contesto. Il testo recuperato resta Evidence documentale con la provenienza della Source: **Source != Evidence != Durable Memory**, e recuperare Evidence non la promuove mai a Memory.
+
 ## Recupero semantico
 
 Il motore base funziona offline con recupero lessicale/full-text. Il recupero semantico è opzionale:
@@ -176,7 +178,7 @@ Il setup scarica un modello di embedding con versione fissata e costruisce un in
 
 ## 🛠 Ambito attuale e limiti
 
-Urdyn 0.1.0 è una release alpha. Attualmente non include:
+Urdyn 0.2.0 è una release alpha. Attualmente non include:
 
 - sincronizzazione cloud;
 - GUI o applicazione desktop;

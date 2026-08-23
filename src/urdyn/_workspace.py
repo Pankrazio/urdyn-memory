@@ -55,8 +55,8 @@ from ._preflight import (
     PreflightConflict,
     build_preflight,
     build_relevance_context,
-    evidence_is_relevant,
     memory_is_relevant,
+    relevant_evidence_chunks,
 )
 from ._relevance import attempt_search_text as _attempt_search_text
 from ._relevance import is_relevant as _is_relevant
@@ -1247,7 +1247,11 @@ class Urdyn:
           document text, never a Memory (`Source != Evidence != Memory`
           holds all the way to this method's output; see
           `_context.compile_context`'s docstring). `preflight()` never
-          reads Source/Evidence at all.
+          reads Source/Evidence at all. [A52.1] A document too large to
+          admit whole is offered as its own relevance-ranked PARAGRAPHS
+          instead (see `_preflight.relevant_evidence_chunks`/`_chunk.py`),
+          a purely derived, never-persisted view of the SAME current
+          observation -- never a second, competing representation of it.
 
         Never mutates canonical state and is never itself persisted:
         `CompiledContext` is derived and reconstructible from canonical
@@ -1320,9 +1324,9 @@ class Urdyn:
             task, evidence_eligible_ids=evidence_eligible_ids
         )
         relevant_project_evidence = tuple(
-            (evidence, source.path)
+            (evidence, source.path, chunk)
             for source, evidence in material.current_source_evidence
-            if evidence_is_relevant(
+            for chunk in relevant_evidence_chunks(
                 relevance.query_tokens,
                 evidence,
                 fts_admitted_ids=relevance.source_evidence_fts_admitted,

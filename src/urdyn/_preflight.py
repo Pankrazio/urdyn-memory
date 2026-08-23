@@ -54,6 +54,7 @@ import dataclasses
 from collections.abc import Callable, Mapping
 
 from ._attempt import OUTCOME_FAILED, OUTCOME_SUCCEEDED, Attempt
+from ._chunk import DEFAULT_CHUNK_MAX_CHARS, EvidenceChunk, chunk_evidence, rank_evidence_chunks
 from ._conflict import Conflict
 from ._errors import UrdynStorageError
 from ._evidence import RECOMMENDED_VALIDATION_EVIDENCE_KINDS, Evidence
@@ -115,6 +116,40 @@ def evidence_is_relevant(
     if evidence.evidence_id in fts_admitted_ids:
         return True
     return evidence.evidence_id in semantic_admitted_ids
+
+
+def relevant_evidence_chunks(
+    query_tokens: frozenset[str],
+    evidence: Evidence,
+    *,
+    fts_admitted_ids: frozenset[str],
+    semantic_admitted_ids: frozenset[str],
+    max_chars: int = DEFAULT_CHUNK_MAX_CHARS,
+) -> tuple[EvidenceChunk, ...]:
+    """[A52.1] The chunks of `evidence` worth offering `context()`'s
+    PROJECT EVIDENCE pool, in priority order -- empty if `evidence` itself
+    is not relevant at all.
+
+    Two separate decisions, kept apart on purpose: whether the WHOLE
+    document is relevant to `task` is still exactly `evidence_is_relevant`,
+    unchanged (the same three channels, over the same whole `content`) --
+    chunking never widens or narrows THAT gate. Only once a document
+    clears it does this function split it (`chunk_evidence`) and rank its
+    pieces by their own lexical overlap with `query_tokens`
+    (`rank_evidence_chunks`), so a budgeted compiler can admit the
+    specific paragraph that matters instead of the whole document as one
+    indivisible unit. See `_chunk.py`'s module docstring for why this
+    needs no new embedding backend and nothing persisted.
+    """
+    if not evidence_is_relevant(
+        query_tokens,
+        evidence,
+        fts_admitted_ids=fts_admitted_ids,
+        semantic_admitted_ids=semantic_admitted_ids,
+    ):
+        return ()
+    chunks = chunk_evidence(evidence, max_chars=max_chars)
+    return rank_evidence_chunks(query_tokens, chunks)
 
 
 def memory_is_relevant(

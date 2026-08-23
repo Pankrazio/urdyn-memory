@@ -64,6 +64,7 @@ from __future__ import annotations
 import dataclasses
 
 from ._attempt import Attempt
+from ._chunk import EvidenceChunk
 from ._conflict import Conflict
 from ._evidence import Evidence
 from ._memory import Memory
@@ -154,6 +155,18 @@ class ContextItem:
     (content SOURCED FROM a Source, not an Attempt ABSORBED into this
     item) and reusing `provenance` would render it as "from attempt
     [...]", which is simply false for a document.
+
+    [A52.1] `chunk_index`/`chunk_count` are set only when a PROJECT
+    EVIDENCE item's `content` is one PIECE of a larger document (see
+    `_chunk.py`) rather than the whole thing -- `None` for every other
+    kind, and `None` for a document small enough to be its own single
+    chunk, so a small seeded document renders EXACTLY as A52 already
+    rendered it. `entity_id` still names the parent Evidence's real,
+    canonical id: multiple chunks of the same document share one
+    `entity_id` and are told apart only by this pair, never by a chunk
+    id of their own (chunks are never looked up on their own -- see
+    `_chunk.py`'s module docstring on why they carry no separate
+    identity).
     """
 
     entity_id: str
@@ -163,6 +176,8 @@ class ContextItem:
     provenance: tuple[str, ...] = ()
     conflicts_with: tuple[str, ...] = ()
     source_path: str | None = None
+    chunk_index: int | None = None
+    chunk_count: int | None = None
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -293,7 +308,12 @@ def _render_item(item: ContextItem) -> str:
     else:
         lines = [f"- [{item.entity_id}] ({item.authority}) {_safe(item.content)}"]
     if item.source_path is not None:
-        lines.append(f"  source: {_safe(item.source_path)}")
+        if item.chunk_count is not None and item.chunk_count > 1:
+            lines.append(
+                f"  source: {_safe(item.source_path)} (chunk {item.chunk_index + 1} of {item.chunk_count})"
+            )
+        else:
+            lines.append(f"  source: {_safe(item.source_path)}")
     if item.provenance:
         cited = ", ".join(f"[{entity_id}]" for entity_id in item.provenance)
         lines.append(f"  from attempt {cited}")
@@ -384,7 +404,7 @@ def compile_context(
     recommended_validation_candidates: tuple[Evidence, ...],
     open_conflicts: list[Conflict],
     retrieval: SemanticState | None,
-    project_evidence: tuple[tuple[Evidence, str], ...] = (),
+    project_evidence: tuple[tuple[Evidence, str, EvidenceChunk], ...] = (),
 ) -> CompiledContext:
     """Pure composition/budgeting/rendering logic over ALREADY
     relevance-admitted candidates. `Urdyn.context()` is the only caller
@@ -414,10 +434,10 @@ def compile_context(
     away, or one that only a non-displayed relevant success attempt
     cited, does not itself earn a place.
 
-    [A52] `project_evidence` is `(evidence, source_path)` pairs -- one
-    per seeded Source, already filtered for task relevance by the
-    caller (`evidence_is_relevant`, see `_preflight.py`) and restricted
-    to each Source's CURRENT observation only (see
+    [A52] `project_evidence` is one entry per CANDIDATE SEGMENT of a
+    seeded Source's current observation, already filtered for task
+    relevance by the caller (`evidence_is_relevant`, see `_preflight.py`)
+    and restricted to each Source's CURRENT observation only (see
     `MemoryStore.list_current_source_evidence`). Unlike
     `recommended_validation_candidates`, this is not citation-gated by
     what else got selected: a seeded document is relevant to `task` on
@@ -427,6 +447,21 @@ def compile_context(
     keeps a rendered PROJECT EVIDENCE line visibly distinct from a
     verified Memory, preserving `Source != Evidence != Memory` in the
     OUTPUT, not just in how it was retrieved.
+
+    [A52.1] Each entry is `(evidence, source_path, chunk)`: `evidence` and
+    `source_path` name WHICH document and WHERE it came from (unchanged
+    from A52), and `chunk` (see `_chunk.py`) is the specific, already
+    relevance-RANKED slice of `evidence.content` this candidate offers --
+    a whole small document is exactly one chunk covering all of `content`,
+    so nothing here changes for a document that already fit under A52. A
+    document too large to admit whole can still contribute its most
+    relevant PARAGRAPHS: this function still treats each chunk as its own
+    ordinary budget candidate (no special-casing), so the same PREFIX
+    admission rule applies within a document's own chunks exactly as it
+    does across categories -- an oversized document's best-ranked chunk is
+    tried first, and if it fits but the next, lower-ranked chunk of the
+    SAME document does not, selection simply moves on to the next
+    candidate after it, never re-orders to "fill what's left".
     """
     conflict_partners = _conflict_partner_map(open_conflicts)
     absorbed_by_root_cause, standalone_attempts = _absorb_known_failures(root_causes, known_failures)
@@ -453,13 +488,15 @@ def compile_context(
         candidates.append((SECTION_LESSONS, *_memory_item(memory, "lesson")))
     for memory in decisions:
         candidates.append((SECTION_DECISIONS, *_memory_item(memory, "decision")))
-    for evidence, source_path in project_evidence:
+    for evidence, source_path, chunk in project_evidence:
         item = ContextItem(
             entity_id=evidence.evidence_id,
             kind="evidence",
-            content=evidence.content,
+            content=chunk.text,
             authority=evidence.kind,
             source_path=source_path,
+            chunk_index=chunk.chunk_index if chunk.chunk_count > 1 else None,
+            chunk_count=chunk.chunk_count if chunk.chunk_count > 1 else None,
         )
         candidates.append((SECTION_PROJECT_EVIDENCE, item, ()))
     for memory in root_causes:

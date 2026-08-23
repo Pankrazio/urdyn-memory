@@ -83,6 +83,7 @@ SECTION_CONSTRAINTS = "CONSTRAINTS"
 SECTION_OPEN_RISKS = "OPEN RISKS"
 SECTION_LESSONS = "LESSONS"
 SECTION_DECISIONS = "DECISIONS"
+SECTION_PROJECT_EVIDENCE = "PROJECT EVIDENCE"
 SECTION_HISTORY = "HISTORY"
 SECTION_VALIDATION = "VALIDATION"
 
@@ -96,11 +97,20 @@ SECTION_VALIDATION = "VALIDATION"
 # urgent to read before starting, and the easiest to recover with a
 # second, unbudgeted command. No cross-category score: this ordering IS
 # the priority, applied once, top to bottom.
+#
+# [A52] PROJECT EVIDENCE sits right after DECISIONS and before HISTORY:
+# every category above it is either verified experience or a committed
+# Memory, and all of them keep outranking raw, unverified document text
+# for budget -- the authority ordering `Source != Evidence != Memory`
+# requires. It still outranks HISTORY/VALIDATION, which are narrative
+# and re-runnable respectively, because a seeded architecture document
+# is closer to "what must this task respect" than either.
 _SECTION_ORDER = (
     SECTION_CONSTRAINTS,
     SECTION_OPEN_RISKS,
     SECTION_LESSONS,
     SECTION_DECISIONS,
+    SECTION_PROJECT_EVIDENCE,
     SECTION_HISTORY,
     SECTION_VALIDATION,
 )
@@ -134,6 +144,16 @@ class ContextItem:
     the item and its conflict marker are always admitted or rejected
     together -- never a marker with no item to explain it, and never an
     item that hides a contradiction Urdyn already knows about.
+
+    [A52] `source_path` is set only for a PROJECT EVIDENCE item (a
+    seeded document's current-observation Evidence): the workspace-
+    relative path of the Source it came from. `entity_id` is that
+    Evidence's own id, not human-readable on its own, so this is what
+    lets a rendered line say WHICH document it is quoting -- a distinct
+    field from `provenance` because it names a different relation
+    (content SOURCED FROM a Source, not an Attempt ABSORBED into this
+    item) and reusing `provenance` would render it as "from attempt
+    [...]", which is simply false for a document.
     """
 
     entity_id: str
@@ -142,6 +162,7 @@ class ContextItem:
     authority: str | None
     provenance: tuple[str, ...] = ()
     conflicts_with: tuple[str, ...] = ()
+    source_path: str | None = None
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -271,6 +292,8 @@ def _render_item(item: ContextItem) -> str:
         lines = [f"- [{item.entity_id}] {_safe(item.content)}"]
     else:
         lines = [f"- [{item.entity_id}] ({item.authority}) {_safe(item.content)}"]
+    if item.source_path is not None:
+        lines.append(f"  source: {_safe(item.source_path)}")
     if item.provenance:
         cited = ", ".join(f"[{entity_id}]" for entity_id in item.provenance)
         lines.append(f"  from attempt {cited}")
@@ -361,6 +384,7 @@ def compile_context(
     recommended_validation_candidates: tuple[Evidence, ...],
     open_conflicts: list[Conflict],
     retrieval: SemanticState | None,
+    project_evidence: tuple[tuple[Evidence, str], ...] = (),
 ) -> CompiledContext:
     """Pure composition/budgeting/rendering logic over ALREADY
     relevance-admitted candidates. `Urdyn.context()` is the only caller
@@ -389,6 +413,20 @@ def compile_context(
     -- an Evidence that would validate a Lesson or RootCause budget cut
     away, or one that only a non-displayed relevant success attempt
     cited, does not itself earn a place.
+
+    [A52] `project_evidence` is `(evidence, source_path)` pairs -- one
+    per seeded Source, already filtered for task relevance by the
+    caller (`evidence_is_relevant`, see `_preflight.py`) and restricted
+    to each Source's CURRENT observation only (see
+    `MemoryStore.list_current_source_evidence`). Unlike
+    `recommended_validation_candidates`, this is not citation-gated by
+    what else got selected: a seeded document is relevant to `task` on
+    its own terms, the same way an Invariant or Decision is. Rendered
+    with `kind="evidence"` and `authority=evidence.kind` (always
+    `document_observation`), NEVER `epistemic_state` -- this is what
+    keeps a rendered PROJECT EVIDENCE line visibly distinct from a
+    verified Memory, preserving `Source != Evidence != Memory` in the
+    OUTPUT, not just in how it was retrieved.
     """
     conflict_partners = _conflict_partner_map(open_conflicts)
     absorbed_by_root_cause, standalone_attempts = _absorb_known_failures(root_causes, known_failures)
@@ -415,6 +453,15 @@ def compile_context(
         candidates.append((SECTION_LESSONS, *_memory_item(memory, "lesson")))
     for memory in decisions:
         candidates.append((SECTION_DECISIONS, *_memory_item(memory, "decision")))
+    for evidence, source_path in project_evidence:
+        item = ContextItem(
+            entity_id=evidence.evidence_id,
+            kind="evidence",
+            content=evidence.content,
+            authority=evidence.kind,
+            source_path=source_path,
+        )
+        candidates.append((SECTION_PROJECT_EVIDENCE, item, ()))
     for memory in root_causes:
         candidates.append(
             (

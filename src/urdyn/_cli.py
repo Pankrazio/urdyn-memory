@@ -702,7 +702,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"Dimensions: {result.dimensions} ({result.normalization})")
                 print(
                     f"Indexed: {result.attempt_count} attempts, {result.memory_count} memories, "
-                    f"{result.skill_count} skills"
+                    f"{result.skill_count} skills, {result.source_evidence_count} project evidence"
                 )
                 print("Semantic index ready.")
                 return 0

@@ -74,7 +74,10 @@ artifact, or, if that artifact cannot be loaded here, not at all.
 
 Admission ("is this candidate semantically relevant enough to widen
 recall with") is calibrated per entity-type pool (attempt / memory /
-skill) -- see `SEMANTIC_POLICY` below. A16.2.1 re-validated the MEMORY
+skill / [A52] source) -- see `SEMANTIC_POLICY` below (source's SET-
+admission floor/cap live separately, next to `LESSON_SEMANTIC_FLOOR`,
+and are explicitly NOT independently calibrated -- see their own
+comment). A16.2.1 re-validated the MEMORY
 pool's shipped floors against this backend on a frozen 14-scenario,
 4-language holdout and found them to hold unchanged (83% recall, zero
 false retrievals, and the margin floor demonstrably rejecting all three
@@ -171,6 +174,7 @@ SUPPORTED_ARTIFACTS = frozenset({ARTIFACT_PORTABLE, ARTIFACT_X86_64, ARTIFACT_AR
 ENTITY_ATTEMPT = "attempt"
 ENTITY_MEMORY = "memory"
 ENTITY_SKILL = "skill"
+ENTITY_SOURCE = "source"
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -354,6 +358,32 @@ SET_ADMISSION_LIMIT = 2
 # to 8, and no previously admitted true positive is lost.
 INVARIANT_SEMANTIC_FLOOR = 0.35
 INVARIANT_ADMISSION_LIMIT = 2
+
+# [A52] The SET admission policy for `context()`'s PROJECT EVIDENCE pool
+# (current-observation document Evidence from a seeded Source). Same
+# shape as `LESSON_SEMANTIC_FLOOR`/`SET_ADMISSION_LIMIT` and
+# `INVARIANT_SEMANTIC_FLOOR`/`INVARIANT_ADMISSION_LIMIT` above, and for
+# the same reason: several seeded documents can each cover a distinct,
+# co-relevant facet of one task (e.g. one doc on dependency direction,
+# another on component orthogonality), so this is a set-valued pool, not
+# a single-winner contest.
+#
+# NOT INDEPENDENTLY CALIBRATED. Every other floor/cap pair in this
+# module is the output of a frozen, scored evaluation corpus (A16.2,
+# A16.3, A23.1/A23.2, A31.1) -- no such corpus exists yet for seeded
+# document text, whose length and register differ from every other pool
+# (a Memory/Lesson is a short, single-claim sentence; a seeded document
+# is arbitrary prose, often a whole file). Inventing a number here would
+# be exactly the "designing on assumptions" this project's own
+# calibration discipline exists to prevent. `LESSON_SEMANTIC_FLOOR`/
+# `SET_ADMISSION_LIMIT` are reused verbatim instead, as the closest
+# available analog (free-form prose, admitted as a bounded set, not a
+# single winner) -- a conscious placeholder, not a measurement, and
+# tracked as a MUST follow-up: this pool needs its own frozen,
+# pre-scored corpus of seeded documents before its operating point can
+# be trusted the way the others are.
+EVIDENCE_SEMANTIC_FLOOR = LESSON_SEMANTIC_FLOOR
+EVIDENCE_ADMISSION_LIMIT = SET_ADMISSION_LIMIT
 
 
 class SemanticUnavailable(Exception):

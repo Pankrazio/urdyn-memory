@@ -73,9 +73,20 @@ clear this floor with room to spare) while rejecting the all-generic
 short-candidate case (whose shared count comes only from genericness,
 not from covering a meaningful share of the query).
 
-Entity type strings (`ENTITY_MEMORY`/`ENTITY_ATTEMPT`/`ENTITY_SKILL`)
-are internal vocabulary shared only between this module and
-`_store.py`'s FTS index; nothing about them is part of the public API.
+Entity type strings (`ENTITY_MEMORY`/`ENTITY_ATTEMPT`/`ENTITY_SKILL`/
+`ENTITY_SOURCE`) are internal vocabulary shared only between this
+module, `_store.py`'s FTS index, and `_semantic.py`'s pool policy;
+nothing about them is part of the public API.
+
+[A52] `ENTITY_SOURCE` widens the same lexical/FTS admission this module
+already provides to the CURRENT (latest-observation) Evidence of a
+seeded Source -- see `_workspace.py`'s `_semantic_pool_entries` and
+`Urdyn.context()`. It is deliberately the fourth pool, not a
+repurposing of `ENTITY_MEMORY`: a document observation is canonical
+Evidence, never a Memory (see `_evidence.py`'s module docstring), and
+mixing it into the Memory pool would let raw, unverified document text
+compete for the same FTS/semantic admission slots as verified
+experience.
 """
 
 from __future__ import annotations
@@ -85,6 +96,7 @@ from ._relevance import tokens as _tokens
 ENTITY_MEMORY = "memory"
 ENTITY_ATTEMPT = "attempt"
 ENTITY_SKILL = "skill"
+ENTITY_SOURCE = "source"
 
 # A defensive bound on how many FTS matches are evaluated per call, not
 # a relevance cutoff: every match is judged on the same threshold

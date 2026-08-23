@@ -93,7 +93,7 @@ from ._memory import (
     Memory,
 )
 from ._relevance import attempt_search_text, memory_search_text, skill_search_text
-from ._retrieval import ENTITY_ATTEMPT, ENTITY_MEMORY, ENTITY_SKILL
+from ._retrieval import ENTITY_ATTEMPT, ENTITY_MEMORY, ENTITY_SKILL, ENTITY_SOURCE
 from ._skill import SKILL_CANDIDATE, SKILL_ID_PATTERN, SKILL_VERIFIED, VALID_SKILL_VERIFICATION_STATES, Skill
 from ._source import (
     DIGEST_PATTERN,
@@ -844,6 +844,17 @@ class MemoryStore:
                     "VALUES (?, ?, ?, ?, ?)",
                     (source_id, candidate_evidence_id, digest, size_bytes, observed_at.isoformat()),
                 )
+                # [A52] Index this observation's Evidence for lexical/FTS
+                # widening, in the same transaction as the canonical
+                # writes above -- exactly the pattern `add()`/`add_attempt`/
+                # `add_skill` already use. Every observation is indexed,
+                # including ones a later re-seed supersedes: search_index
+                # is append-only derived history, same as the `memories`
+                # table's own FTS rows for a superseded Memory. "Current"
+                # filtering happens downstream, in
+                # `MemoryStore.list_current_source_evidence` and
+                # `Urdyn._gather_experience`, never at the index layer.
+                self._index_entity(ENTITY_SOURCE, candidate_evidence_id, evidence_content)
                 evidence = self._require_observation_evidence(candidate_evidence_id)
                 return (status, self._load_source(source_id), evidence)
         except sqlite3.DatabaseError as exc:
@@ -874,6 +885,28 @@ class MemoryStore:
             return [self._load_source(row[0]) for row in rows]
         except sqlite3.DatabaseError as exc:
             raise UrdynStorageError(f"Failed to read Urdyn source store: {exc}") from exc
+
+    def list_current_source_evidence(self) -> list[tuple[Source, Evidence]]:
+        """[A52] Every tracked Source paired with its LATEST observation's
+        Evidence -- the current, retrievable text of each seeded
+        document, one pair per Source.
+
+        Older observations remain in `source_observations`/`evidence`
+        forever (append-only, see `observe_source`) and stay individually
+        indexed in `search_index`/the semantic index, but only the
+        latest one is a candidate here: presenting a superseded reading
+        of a document at the same authority as the current one would let
+        a stale, possibly-contradicted observation silently duplicate or
+        outrank the current one in `context()`. This is the one place
+        that decision is made, shared by the semantic pool
+        (`_semantic_pool_entries`) and task-relevance filtering
+        (`Urdyn.context()`), so neither can disagree about which
+        observation is "current" for a Source.
+        """
+        return [
+            (source, self._require_observation_evidence(source.latest_observation.evidence_id))
+            for source in self.list_sources()
+        ]
 
     def _load_source(self, source_id: str) -> Source:
         row = self._connection.execute(
@@ -1916,6 +1949,20 @@ def _rebuild_search_index(connection: sqlite3.Connection) -> None:
         connection.execute(
             f"INSERT INTO {SEARCH_INDEX_TABLE} (entity_type, entity_id, text) VALUES (?, ?, ?)",
             (ENTITY_SKILL, skill_id, skill_search_text(name, purpose, conditions)),
+        )
+
+    # [A52] Every observation of every Source, not just the current one --
+    # matching the `memories` loop above, which also indexes superseded
+    # rows. `list_current_source_evidence` is where "current" filtering
+    # happens, not here.
+    source_rows = connection.execute(
+        "SELECT so.evidence_id, e.content FROM source_observations so "
+        "JOIN evidence e ON e.evidence_id = so.evidence_id"
+    ).fetchall()
+    for evidence_id, content in source_rows:
+        connection.execute(
+            f"INSERT INTO {SEARCH_INDEX_TABLE} (entity_type, entity_id, text) VALUES (?, ?, ?)",
+            (ENTITY_SOURCE, evidence_id, content),
         )
 
 

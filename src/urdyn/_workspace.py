@@ -50,13 +50,20 @@ from ._memory import (
     VALID_KINDS,
     Memory,
 )
-from ._preflight import Preflight, PreflightConflict, build_preflight, build_relevance_context, memory_is_relevant
+from ._preflight import (
+    Preflight,
+    PreflightConflict,
+    build_preflight,
+    build_relevance_context,
+    evidence_is_relevant,
+    memory_is_relevant,
+)
 from ._relevance import attempt_search_text as _attempt_search_text
 from ._relevance import is_relevant as _is_relevant
 from ._relevance import memory_search_text as _memory_search_text
 from ._relevance import skill_search_text as _skill_search_text
 from ._relevance import tokens as _tokens
-from ._retrieval import ENTITY_ATTEMPT, ENTITY_MEMORY, ENTITY_SKILL
+from ._retrieval import ENTITY_ATTEMPT, ENTITY_MEMORY, ENTITY_SKILL, ENTITY_SOURCE
 from ._semantic_store import (
     DETAIL_BUILD_INCOMPLETE,
     DETAIL_EXTRA_MISSING,
@@ -120,6 +127,8 @@ class _ExperienceMaterial:
     attempt_semantic_admitted: frozenset[str]
     memory_semantic_admitted: frozenset[str]
     retrieval: "SemanticState"
+    current_source_evidence: list[tuple[Source, Evidence]]
+    source_fts_candidates: list[tuple[str, str]]
 
     @classmethod
     def empty(cls, *, retrieval: "SemanticState") -> "_ExperienceMaterial":
@@ -142,6 +151,8 @@ class _ExperienceMaterial:
             attempt_semantic_admitted=frozenset(),
             memory_semantic_admitted=frozenset(),
             retrieval=retrieval,
+            current_source_evidence=[],
+            source_fts_candidates=[],
         )
 
 
@@ -164,14 +175,16 @@ def _semantic_pool_entries(
     memories: list[Memory] | None = None,
     attempts: list[Attempt] | None = None,
     skills: list[Skill] | None = None,
+    source_evidence: list[tuple[Source, Evidence]] | None = None,
 ) -> tuple[tuple[str, list[tuple[str, str]]], ...]:
     """[A27] THE definition of what the semantic index is derived from:
     which canonical records feed it, and with which text.
 
-    One definition, three consumers -- `semantic_setup()` (which builds
+    One definition, every consumer -- `semantic_setup()` (which builds
     the index), `Urdyn.semantic_state()` (which decides whether it is
-    still current) and the incremental refresh (which repairs it). Before
-    A27 this lived inline inside `semantic_setup()` and had exactly one
+    still current) and the incremental refresh (which repairs it), and
+    now `Urdyn.context()`'s PROJECT EVIDENCE pool as well. Before A27
+    this lived inline inside `semantic_setup()` and had exactly one
     reader, which was fine while nothing else needed to know what
     "semantically relevant" meant. It is extracted rather than copied
     because the freshness answer is only as true as its agreement with
@@ -181,12 +194,24 @@ def _semantic_pool_entries(
     it would be a lie that no test could catch by inspecting one side
     alone.
 
-    The three pools and their texts are UNCHANGED from A7.4 -- the same
-    representations `_relevance.py` already derives for FTS, no new
-    canonical field, no new pool. Notably absent, and deliberately so:
-    Evidence, Conflicts and Sources are canonical data that no semantic
-    pool indexes, so writing them cannot make this index stale and must
-    not be allowed to say otherwise.
+    The Attempt/Memory/Skill pools and their texts are UNCHANGED from
+    A7.4 -- the same representations `_relevance.py` already derives for
+    FTS, no new canonical field.
+
+    [A52] `ENTITY_SOURCE` is the fourth pool: the CURRENT (latest-
+    observation) Evidence of every seeded Source, keyed by that
+    Evidence's own id (see `MemoryStore.list_current_source_evidence`).
+    This REVISES the pre-A52 policy, which excluded Evidence/Sources
+    entirely on the grounds that "writing them cannot make this index
+    stale" -- true only because nothing consulted them. Superseding a
+    Source now DOES make this index stale for the new observation's
+    Evidence, exactly like recording a new Memory does; the old
+    observation's Evidence is simply no longer in this pool; it is not
+    unindexed retroactively (search_index/the semantic vector store are
+    both append-only derived data, see `observe_source`) -- it is
+    excluded from THIS pool the same call after call, which is what
+    "current" means here. Ordinary canonical Conflicts remain absent:
+    nothing has ever made them a retrieval unit of their own.
 
     Callers that have already read some of these lists pass them in; the
     parameters exist to avoid re-reading the canonical store inside a
@@ -196,10 +221,12 @@ def _semantic_pool_entries(
     memories = store.timeline(None) if memories is None else memories
     attempts = store.list_attempts() if attempts is None else attempts
     skills = store.list_skills() if skills is None else skills
+    source_evidence = store.list_current_source_evidence() if source_evidence is None else source_evidence
     return (
         (ENTITY_ATTEMPT, [(a.attempt_id, _attempt_search_text(a.task, a.approach)) for a in attempts]),
         (ENTITY_MEMORY, [(m.memory_id, _memory_search_text(m.content)) for m in memories]),
         (ENTITY_SKILL, [(s.skill_id, _skill_search_text(s.name, s.purpose, s.conditions)) for s in skills]),
+        (ENTITY_SOURCE, [(evidence.evidence_id, evidence.content) for _source, evidence in source_evidence]),
     )
 
 
@@ -230,6 +257,7 @@ class SemanticSetupResult:
     attempt_count: int
     memory_count: int
     skill_count: int
+    source_evidence_count: int = 0
 
 
 class Urdyn:
@@ -976,6 +1004,14 @@ class Urdyn:
             query_tokens = frozenset(_tokens(task))
             attempt_fts_candidates = store.search_candidates(query_tokens, ENTITY_ATTEMPT)
             memory_fts_candidates = store.search_candidates(query_tokens, ENTITY_MEMORY)
+            # [A52] The current (latest-observation) Evidence of every
+            # seeded Source -- read once here, alongside the other
+            # single-read materializations this method already does, and
+            # handed to both `_semantic_pool_entries` (below) and
+            # `Urdyn.context()`'s PROJECT EVIDENCE pool (via
+            # `_ExperienceMaterial`) so neither re-reads the store.
+            current_source_evidence = store.list_current_source_evidence()
+            source_fts_candidates = store.search_candidates(query_tokens, ENTITY_SOURCE)
 
             # [A7.7] Consumer-specific eligibility, computed here (this is
             # exactly the same current+verified filtering already applied
@@ -1000,7 +1036,9 @@ class Urdyn:
             # just-refreshed, degraded, or never enabled) all the way out
             # to the caller.
             retrieval = self._semantic_prepare(
-                _semantic_pool_entries(store, memories=all_memories, attempts=attempts)
+                _semantic_pool_entries(
+                    store, memories=all_memories, attempts=attempts, source_evidence=current_source_evidence
+                )
             )
 
             # [A27] `eligible_ids` here is NOT a new admission policy: it
@@ -1140,6 +1178,8 @@ class Urdyn:
                     | lesson_semantic_admitted
                 ),
                 retrieval=retrieval,
+                current_source_evidence=current_source_evidence,
+                source_fts_candidates=source_fts_candidates,
             )
 
     def preflight(self, task: str) -> Preflight:
@@ -1201,7 +1241,13 @@ class Urdyn:
           never reads at all;
         - an Attempt sharing Evidence with an already-relevant RootCause
           is cited on that RootCause's line instead of costing a line of
-          its own.
+          its own;
+        - [A52] a seeded Source's CURRENT observation surfaces, task-
+          relevance permitting, as PROJECT EVIDENCE -- raw, unverified
+          document text, never a Memory (`Source != Evidence != Memory`
+          holds all the way to this method's output; see
+          `_context.compile_context`'s docstring). `preflight()` never
+          reads Source/Evidence at all.
 
         Never mutates canonical state and is never itself persisted:
         `CompiledContext` is derived and reconstructible from canonical
@@ -1243,6 +1289,7 @@ class Urdyn:
             attempt_fts_candidates=material.attempt_fts_candidates,
             memory_fts_candidates=material.memory_fts_candidates,
             attempt_semantic_admitted=material.attempt_semantic_admitted,
+            source_evidence_fts_candidates=material.source_fts_candidates,
         )
 
         # [A29.1] Two more DISJOINT semantic pools, the A11.3/A22.1
@@ -1261,6 +1308,27 @@ class Urdyn:
         )
         decision_eligible_ids = frozenset(m.memory_id for m in material.decision_memories)
         decision_semantic_admitted = self._semantic_widen(task, ENTITY_MEMORY, eligible_ids=decision_eligible_ids)
+
+        # [A52] A fifth DISJOINT pool: the current-observation Evidence of
+        # every seeded Source, restricted to the current-observation ids
+        # `_gather_experience` already computed (BEFORE ranking, A7.7) so
+        # a superseded observation can never win a slot here.
+        evidence_eligible_ids = frozenset(
+            evidence.evidence_id for _source, evidence in material.current_source_evidence
+        )
+        evidence_semantic_admitted = self._context_evidence_semantic_admitted(
+            task, evidence_eligible_ids=evidence_eligible_ids
+        )
+        relevant_project_evidence = tuple(
+            (evidence, source.path)
+            for source, evidence in material.current_source_evidence
+            if evidence_is_relevant(
+                relevance.query_tokens,
+                evidence,
+                fts_admitted_ids=relevance.source_evidence_fts_admitted,
+                semantic_admitted_ids=evidence_semantic_admitted,
+            )
+        )
 
         def _relevant(memory: Memory, semantic_admitted: frozenset[str]) -> bool:
             return memory_is_relevant(
@@ -1291,6 +1359,7 @@ class Urdyn:
             recommended_validation_candidates=preflight_view.recommended_validation,
             open_conflicts=material.open_conflict_list,
             retrieval=material.retrieval,
+            project_evidence=relevant_project_evidence,
         )
 
     def promote(
@@ -1500,11 +1569,11 @@ class Urdyn:
     def semantic_setup(self) -> SemanticSetupResult:
         """(Re)build the derived semantic index for this workspace from
         canonical data: attempts (task+approach), all memories (content),
-        and skills (name+purpose+conditions) -- the same three
-        representations `_relevance.py` already derives for FTS, no new
-        canonical field. Always safe to call again: fully rebuilds from
-        scratch every time (idempotent), which is also how a stale or
-        model-mismatched index gets fixed.
+        skills (name+purpose+conditions), and [A52] the current
+        observation of every seeded Source (its Evidence content) -- see
+        `_semantic_pool_entries` for the exact definition. Always safe to
+        call again: fully rebuilds from scratch every time (idempotent),
+        which is also how a stale or model-mismatched index gets fixed.
 
         Raises `UrdynSemanticUnavailableError` if the `[semantic]` extra
         is not installed, or if the semantic model itself cannot be
@@ -1548,6 +1617,7 @@ class Urdyn:
                 (ENTITY_ATTEMPT, []),
                 (ENTITY_MEMORY, []),
                 (ENTITY_SKILL, []),
+                (ENTITY_SOURCE, []),
             )
         else:
             with store:
@@ -1582,6 +1652,7 @@ class Urdyn:
             attempt_count=counts[ENTITY_ATTEMPT],
             memory_count=counts[ENTITY_MEMORY],
             skill_count=counts[ENTITY_SKILL],
+            source_evidence_count=counts[ENTITY_SOURCE],
         )
 
     # -- semantic lifecycle (A27) ------------------------------------------
@@ -1646,7 +1717,7 @@ class Urdyn:
                 meta = index.meta()
                 indexed = {
                     entity_type: index.indexed_ids(entity_type)
-                    for entity_type in (ENTITY_ATTEMPT, ENTITY_MEMORY, ENTITY_SKILL)
+                    for entity_type in (ENTITY_ATTEMPT, ENTITY_MEMORY, ENTITY_SKILL, ENTITY_SOURCE)
                 }
         except UrdynStorageError:
             return SemanticState(status=SEMANTIC_UNAVAILABLE, detail=DETAIL_INDEX_UNREADABLE)
@@ -1961,6 +2032,55 @@ class Urdyn:
                 ranked,
                 floor=semantic.INVARIANT_SEMANTIC_FLOOR,
                 limit=semantic.INVARIANT_ADMISSION_LIMIT,
+            )
+        except Exception:
+            return frozenset()
+
+    def _context_evidence_semantic_admitted(
+        self, task: str, *, evidence_eligible_ids: frozenset[str]
+    ) -> frozenset[str]:
+        """[A52] Semantic admission for `context()`'s PROJECT EVIDENCE
+        pool: a bounded SET, not a single winner -- the same shape as
+        `_context_invariant_semantic_admitted` and for the same reason:
+        several seeded documents can each cover a distinct, co-relevant
+        facet of one task, so this is a set-valued pool, not a contest
+        with one winner.
+
+        Ranks `ENTITY_SOURCE` vectors (the current-observation Evidence
+        of every seeded Source, see `_semantic_pool_entries`) against
+        `task` with the SAME model used by every other pool, restricted
+        (before ranking, per A7.7) to `evidence_eligible_ids` -- the
+        caller's already-computed current-observation set, reused rather
+        than re-derived. A superseded observation is not in that set, so
+        no score can bring it back.
+
+        Admission uses `semantic.EVIDENCE_SEMANTIC_FLOOR`/
+        `EVIDENCE_ADMISSION_LIMIT`, which are NOT independently
+        calibrated -- see that module's docstring. This is a documented
+        placeholder operating point, not a measurement.
+
+        Falls back to empty -- never raises -- on any degraded
+        condition, exactly like `_semantic_widen`.
+        """
+        try:
+            context = self._semantic_context()
+            if context is None:
+                return frozenset()
+            semantic, model, meta = context
+            source_vectors = self._semantic_vectors(ENTITY_SOURCE)
+            if not source_vectors:
+                return frozenset()
+            ranked = semantic.semantic_rank_eligible(
+                task,
+                model=model,
+                stored_vectors=source_vectors,
+                dimensions=meta.dimensions,
+                eligible_ids=evidence_eligible_ids,
+            )
+            return semantic.set_admitted_ids(
+                ranked,
+                floor=semantic.EVIDENCE_SEMANTIC_FLOOR,
+                limit=semantic.EVIDENCE_ADMISSION_LIMIT,
             )
         except Exception:
             return frozenset()

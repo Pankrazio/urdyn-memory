@@ -91,6 +91,32 @@ def attempt_is_relevant(
     return attempt.attempt_id in semantic_admitted_ids
 
 
+def evidence_is_relevant(
+    query_tokens: frozenset[str],
+    evidence: Evidence,
+    *,
+    fts_admitted_ids: frozenset[str],
+    semantic_admitted_ids: frozenset[str],
+) -> bool:
+    """[A52] Whether a seeded document's current-observation `evidence`
+    clears any of the three independent relevance channels described in
+    the module docstring: lexical majority overlap over its own
+    `content`, FTS5/BM25 widening, or semantic admission.
+
+    Same two-of-four shape as `attempt_is_relevant`: no provenance-
+    rescue channel, because Evidence does not cite other Evidence the
+    way a Memory does. Used only by `Urdyn.context()`'s PROJECT EVIDENCE
+    pool -- `build_preflight` never calls this, exactly as it never
+    reads Decision memories (see `_context.py`'s module docstring for
+    why `context()` and `preflight()` deliberately differ here).
+    """
+    if _is_relevant(query_tokens, evidence.content):
+        return True
+    if evidence.evidence_id in fts_admitted_ids:
+        return True
+    return evidence.evidence_id in semantic_admitted_ids
+
+
 def memory_is_relevant(
     query_tokens: frozenset[str],
     memory: Memory,
@@ -136,6 +162,7 @@ class RelevanceContext:
     known_failures: tuple[Attempt, ...]
     relevant_successes: tuple[Attempt, ...]
     relevant_attempt_evidence_ids: frozenset[str]
+    source_evidence_fts_admitted: frozenset[str] = frozenset()
 
 
 def build_relevance_context(
@@ -145,16 +172,25 @@ def build_relevance_context(
     attempt_fts_candidates: list[tuple[str, str]] = (),
     memory_fts_candidates: list[tuple[str, str]] = (),
     attempt_semantic_admitted: frozenset[str] = frozenset(),
+    source_evidence_fts_candidates: list[tuple[str, str]] = (),
 ) -> RelevanceContext:
     """The one place `task` is tokenized and attempts are sorted into
     known-failure/relevant-success pools. Both `build_preflight` and
     `Urdyn.context()` call this rather than re-deriving it, so the two
     consumers can never silently disagree about which attempts are
     relevant to `task` or which Evidence a provenance rescue may cite.
+
+    [A52] `source_evidence_fts_candidates`/`source_evidence_fts_admitted`
+    follow the same shape as the attempt/memory FTS pair, computed here
+    for the same reason (one tokenization of `task`, shared by every
+    consumer) even though only `Urdyn.context()`'s PROJECT EVIDENCE pool
+    reads the result today -- `build_preflight` simply never looks at
+    this field, exactly as it never reads `decision_memories`.
     """
     query_tokens = frozenset(_tokens(task))
     attempt_fts_admitted = _fts_admitted_ids(query_tokens, list(attempt_fts_candidates))
     memory_fts_admitted = _fts_admitted_ids(query_tokens, list(memory_fts_candidates))
+    source_evidence_fts_admitted = _fts_admitted_ids(query_tokens, list(source_evidence_fts_candidates))
 
     def _attempt_matches(attempt: Attempt) -> bool:
         return attempt_is_relevant(
@@ -176,6 +212,7 @@ def build_relevance_context(
         known_failures=known_failures,
         relevant_successes=relevant_successes,
         relevant_attempt_evidence_ids=relevant_attempt_evidence_ids,
+        source_evidence_fts_admitted=source_evidence_fts_admitted,
     )
 
 

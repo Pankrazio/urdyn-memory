@@ -186,6 +186,35 @@ def chunk_evidence(evidence: Evidence, *, max_chars: int = DEFAULT_CHUNK_MAX_CHA
     )
 
 
+def score_evidence_chunks(
+    query_tokens: frozenset[str], chunks: tuple[EvidenceChunk, ...]
+) -> tuple[tuple[int, EvidenceChunk], ...]:
+    """`rank_evidence_chunks`, but KEEPING each surviving chunk's own
+    lexical shared-token count instead of discarding it.
+
+    The count was always computed here -- ranking is defined by it -- and
+    was simply thrown away at the return statement, which left every
+    caller downstream with no way to compare a chunk of one document
+    against a chunk of another. Exposing the number that already decides
+    WITHIN-document order is not a new score, a new threshold, or a new
+    channel: it is the same integer, surfaced instead of dropped, so
+    cross-document ordering can use it too (see
+    `_preflight.ordered_project_evidence`).
+
+    Ordering, the zero-overlap leading-chunk fallback, and the
+    single-chunk pass-through are all exactly `rank_evidence_chunks`'s,
+    which is now a thin wrapper over this function -- there is one
+    implementation of chunk ranking, not two that could drift.
+    """
+    if len(chunks) <= 1:
+        return tuple((len(query_tokens & _tokens(chunk.text)), chunk) for chunk in chunks)
+    scored = [(len(query_tokens & _tokens(chunk.text)), chunk) for chunk in chunks]
+    if all(score == 0 for score, _ in scored):
+        return ((0, chunks[0]),)
+    relevant = sorted((pair for pair in scored if pair[0] > 0), key=lambda pair: (-pair[0], pair[1].chunk_index))
+    return tuple(relevant)
+
+
 def rank_evidence_chunks(
     query_tokens: frozenset[str], chunks: tuple[EvidenceChunk, ...]
 ) -> tuple[EvidenceChunk, ...]:
@@ -207,10 +236,4 @@ def rank_evidence_chunks(
     no risk of a document that fits its own budget being second-guessed
     out of the pool by its own lexical score.
     """
-    if len(chunks) <= 1:
-        return chunks
-    scored = [(len(query_tokens & _tokens(chunk.text)), chunk) for chunk in chunks]
-    if all(score == 0 for score, _ in scored):
-        return (chunks[0],)
-    relevant = sorted((pair for pair in scored if pair[0] > 0), key=lambda pair: (-pair[0], pair[1].chunk_index))
-    return tuple(chunk for _score, chunk in relevant)
+    return tuple(chunk for _score, chunk in score_evidence_chunks(query_tokens, chunks))

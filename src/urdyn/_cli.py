@@ -605,13 +605,25 @@ def main(argv: list[str] | None = None) -> int:
                 # Discovery only: this branch must never write. It opens
                 # no store, creates no `memory.db`, and records nothing --
                 # it reports what COULD be seeded and stops.
-                candidates = cx.seed_candidates()
-                if not candidates:
+                report = cx.seed_candidate_report()
+                if not report:
                     print("No project context candidates found.")
                     return 0
                 print("Project context candidates:")
-                for candidate in candidates:
-                    print(f"- {_safe(candidate)}")
+                # Grouped by what seeding each one WOULD do, and only for
+                # groups that have members: an all-new listing looks
+                # exactly like the flat list this command always printed,
+                # while a workspace that has already seeded most of its
+                # documents gets the one answer it actually wants -- which
+                # files are new, and which have drifted since Urdyn last
+                # saw them -- instead of an undifferentiated wall.
+                for label, paths in (
+                    ("new", report.new),
+                    ("changed since last seed", report.changed),
+                    ("already recorded, unchanged", report.unchanged),
+                ):
+                    for candidate in sorted(paths):
+                        print(f"- {_safe(candidate)} ({label})")
                 print("Nothing was recorded. Run 'urdyn seed <path>...' to record them.")
                 return 0
             results = cx.seed(args.paths)

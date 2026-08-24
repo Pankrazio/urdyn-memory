@@ -10,7 +10,12 @@ from pathlib import Path
 
 from ._attempt import OUTCOME_FAILED, VALID_OUTCOMES, Attempt
 from ._conflict import Conflict
-from ._context import DEFAULT_CONTEXT_BUDGET, CompiledContext, compile_context
+from ._context import (
+    DEFAULT_CONTEXT_BUDGET,
+    SECTION_PROJECT_EVIDENCE,
+    CompiledContext,
+    compile_context,
+)
 from ._errors import (
     UrdynAlreadyInitializedError,
     UrdynManifestError,
@@ -53,10 +58,12 @@ from ._memory import (
 from ._preflight import (
     Preflight,
     PreflightConflict,
+    ProjectEvidenceTrace,
     build_preflight,
     build_relevance_context,
     memory_is_relevant,
-    relevant_evidence_chunks,
+    ordered_project_evidence,
+    trace_project_evidence,
 )
 from ._relevance import attempt_search_text as _attempt_search_text
 from ._relevance import is_relevant as _is_relevant
@@ -83,9 +90,11 @@ from ._semantic_store import (
 )
 from ._skill import Skill
 from ._source import (
+    SeedCandidateReport,
     SeedResult,
     Source,
     discover_candidate_paths,
+    discover_seed_candidates,
     read_seed_candidate,
     resolve_seed_path,
 )
@@ -167,6 +176,20 @@ def _open_conflicts_projection(conflicts: list[Conflict], current_ids: set[str])
         for conflict in conflicts
         if conflict.memory_ids[0] in current_ids and conflict.memory_ids[1] in current_ids
     ]
+
+
+def _selected_project_evidence_keys(compiled: CompiledContext) -> frozenset[tuple[str, int]]:
+    """`(source_path, chunk_index)` for every PROJECT EVIDENCE item the
+    budget scan actually kept. `chunk_index` is `None` on a rendered item
+    whose document was a single chunk (see `_context.compile_context`),
+    which is index 0 by construction. Internal, used only to attribute
+    selection back to `ProjectEvidenceTrace` rows."""
+    return frozenset(
+        (item.source_path or "", item.chunk_index or 0)
+        for section in compiled.sections
+        if section.heading == SECTION_PROJECT_EVIDENCE
+        for item in section.items
+    )
 
 
 def _semantic_pool_entries(
@@ -764,42 +787,93 @@ class Urdyn:
         with store:
             return store.list_sources()
 
+    def _require_dev_discovery(self) -> None:
+        if self._profile != PROFILE_DEV:
+            raise ValueError(
+                f"Project context discovery is only available in the {PROFILE_DEV!r} profile; "
+                f"this workspace is {self._profile!r}. Seed explicit paths instead."
+            )
+
     def seed_candidates(self) -> list[str]:
         """Project files a `dev` workspace could seed, as workspace-relative
         POSIX paths, sorted.
 
-        Pure suggestion: reads no file content, writes nothing, and
-        creates no store. The allowlist is deliberately narrow and
-        non-recursive (see `_source.py`) -- Urdyn proposes the handful of
-        files that conventionally describe a project, and the caller
-        decides which of them, if any, to actually seed.
+        Pure suggestion: writes nothing and creates no store. Discovery is
+        a BOUNDED recursive walk (A53) -- root manifest files plus
+        documentation-like files at any depth -- pruned by `.gitignore`,
+        `.git/info/exclude` and a mandatory directory exclusion list, with
+        every survivor passing the same eligibility checks an explicit
+        seed does. See `_source.discover_seed_candidates`.
 
         Raises `ValueError` outside the `dev` profile: automatic project
         discovery is this profile's behaviour, and silently returning
         nothing elsewhere would look like "this project has no
         documentation" rather than "Urdyn did not look".
         """
-        if self._profile != PROFILE_DEV:
-            raise ValueError(
-                f"Project context discovery is only available in the {PROFILE_DEV!r} profile; "
-                f"this workspace is {self._profile!r}. Seed explicit paths instead."
-            )
+        self._require_dev_discovery()
         return discover_candidate_paths(self._path, URDYN_DIRNAME)
+
+    def seed_candidate_report(self) -> SeedCandidateReport:
+        """`seed_candidates()`, split into what seeding each candidate
+        WOULD do: never-seeded, tracked-and-changed, tracked-and-identical
+        (see `SeedCandidateReport`).
+
+        Writes nothing and creates no store -- `sources()` opens the
+        database only if it already exists, so this stays safe to call in
+        a workspace that has never recorded anything.
+        """
+        self._require_dev_discovery()
+        candidates = discover_seed_candidates(self._path, URDYN_DIRNAME)
+        latest = {source.path: source.latest_observation.digest for source in self.sources()}
+
+        new: list[str] = []
+        changed: list[str] = []
+        unchanged: list[str] = []
+        for candidate in candidates:
+            known = latest.get(candidate.path)
+            if known is None:
+                new.append(candidate.path)
+            elif known == candidate.digest:
+                unchanged.append(candidate.path)
+            else:
+                changed.append(candidate.path)
+        return SeedCandidateReport(
+            new=tuple(new), changed=tuple(changed), unchanged=tuple(unchanged)
+        )
+
+    def tracked_scope(self) -> frozenset[str]:
+        """The CHEAP half of `watcher_scope()`: paths already tracked as a
+        `Source`. One indexed read of canonical data, no filesystem walk
+        at all -- this is what the watcher may safely recompute on every
+        poll tick (see `_watcher.py`'s scope-cadence note)."""
+        return frozenset(source.path for source in self.sources())
+
+    def discovered_scope(self) -> frozenset[str]:
+        """The EXPENSIVE half of `watcher_scope()`: the bounded recursive
+        discovery walk. Separated from `tracked_scope()` so a caller that
+        must run often (the watcher) can run this one rarely.
+
+        Not profile-gated, unlike `seed_candidates()`: this is the
+        watcher's own building block, and the watcher is already
+        `dev`-only by construction. Gating it here would change
+        `watcher_scope()` from "returns a set" to "raises" for every
+        non-dev caller, which no caller expects."""
+        return frozenset(discover_candidate_paths(self._path, URDYN_DIRNAME))
 
     def watcher_scope(self) -> frozenset[str]:
         """Workspace-relative paths the Dev watcher may observe:
-        every path already tracked as a `Source`, unioned with the `dev`
-        discovery allowlist (`discover_candidate_paths`).
+        every path already tracked as a `Source`, unioned with everything
+        discovery currently proposes.
 
-        Deliberately bounded, never a recursive crawl of the workspace --
-        this is what keeps automatic background observation storage- and
-        privacy-safe (see `_watcher.py`). Nothing is cached: both halves
-        are recomputed fresh on every call, so a file newly seeded or a
-        new allowlist match joins the scope the moment it exists.
+        Bounded, but no longer free: since A53 the discovery half walks
+        the tree (pruned, capped, and ignore-filtered -- see
+        `_source.discover_seed_candidates`). Nothing is cached HERE, so
+        this stays the always-correct answer; a caller on a hot path
+        should combine `tracked_scope()` with a less frequently refreshed
+        `discovered_scope()` instead, which is exactly what the watcher
+        does.
         """
-        tracked = {source.path for source in self.sources()}
-        discoverable = set(discover_candidate_paths(self._path, URDYN_DIRNAME))
-        return frozenset(tracked | discoverable)
+        return frozenset(self.tracked_scope() | self.discovered_scope())
 
     def learn(
         self,
@@ -1217,7 +1291,13 @@ class Urdyn:
             retrieval=material.retrieval,
         )
 
-    def context(self, task: str, *, budget: int = DEFAULT_CONTEXT_BUDGET) -> CompiledContext:
+    def context(
+        self,
+        task: str,
+        *,
+        budget: int = DEFAULT_CONTEXT_BUDGET,
+        _project_evidence_trace: list[ProjectEvidenceTrace] | None = None,
+    ) -> CompiledContext:
         """Compile the smallest budgeted working context relevant to
         `task` -- not "what does Urdyn know" (`preflight()`), but "what
         must an agent respect right now to start this task safely".
@@ -1247,13 +1327,24 @@ class Urdyn:
           `_context.compile_context`'s docstring). `preflight()` never
           reads Source/Evidence at all. A document too large to
           admit whole is offered as its own relevance-ranked PARAGRAPHS
-          instead (see `_preflight.relevant_evidence_chunks`/`_chunk.py`),
+          instead (see `_preflight.ordered_project_evidence`/`_chunk.py`),
           a purely derived, never-persisted view of the SAME current
           observation -- never a second, competing representation of it.
 
         Never mutates canonical state and is never itself persisted:
         `CompiledContext` is derived and reconstructible from canonical
         state plus `task` and `budget` alone, exactly like `Preflight`.
+
+        `_project_evidence_trace` is INTERNAL instrumentation and not
+        part of this method's contract: pass a list and it is filled with
+        one `ProjectEvidenceTrace` per PROJECT EVIDENCE candidate
+        considered (admission channels, lexical shared-token count,
+        semantic score, final position, selected or omitted-for-budget).
+        It is an out-parameter rather than a second return value
+        precisely so `CompiledContext`'s shape -- a stable, rendered,
+        CLI-visible contract -- is unchanged, and it is deliberately
+        unreachable from the CLI. Leave it as `None` (the default) and
+        nothing about this call differs.
         """
         if not isinstance(task, str) or not task.strip():
             raise ValueError("Context task must not be empty or whitespace-only")
@@ -1318,18 +1409,28 @@ class Urdyn:
         evidence_eligible_ids = frozenset(
             evidence.evidence_id for _source, evidence in material.current_source_evidence
         )
-        evidence_semantic_admitted = self._context_evidence_semantic_admitted(
+        evidence_semantic_admitted, evidence_semantic_scores = self._context_evidence_semantic_admitted(
             task, evidence_eligible_ids=evidence_eligible_ids
         )
+        # [A53.1] Ordered by RELEVANCE, not by workspace-relative path.
+        # `list_current_source_evidence` returns Sources alphabetically
+        # and `compile_context` admits by a prefix scan that stops at the
+        # first candidate that does not fit, so consuming that order
+        # directly handed the whole budget to whichever admitted document
+        # happened to sort first. See
+        # `_preflight.ordered_project_evidence` for the ordering key and
+        # for why this is a permutation of the same candidate set rather
+        # than a new admission rule.
+        project_evidence_candidates = ordered_project_evidence(
+            relevance.query_tokens,
+            material.current_source_evidence,
+            fts_admitted_ids=relevance.source_evidence_fts_admitted,
+            semantic_admitted_ids=evidence_semantic_admitted,
+            semantic_scores=evidence_semantic_scores,
+        )
         relevant_project_evidence = tuple(
-            (evidence, source.path, chunk)
-            for source, evidence in material.current_source_evidence
-            for chunk in relevant_evidence_chunks(
-                relevance.query_tokens,
-                evidence,
-                fts_admitted_ids=relevance.source_evidence_fts_admitted,
-                semantic_admitted_ids=evidence_semantic_admitted,
-            )
+            (candidate.evidence, candidate.source_path, candidate.chunk)
+            for candidate in project_evidence_candidates
         )
 
         def _relevant(memory: Memory, semantic_admitted: frozenset[str]) -> bool:
@@ -1348,7 +1449,7 @@ class Urdyn:
         relevant_invariants = tuple(m for m in material.invariant_memories if _relevant(m, invariant_semantic_admitted))
         relevant_decisions = tuple(m for m in material.decision_memories if _relevant(m, decision_semantic_admitted))
 
-        return compile_context(
+        compiled = compile_context(
             task=task,
             budget=budget,
             invariants=relevant_invariants,
@@ -1363,6 +1464,13 @@ class Urdyn:
             retrieval=material.retrieval,
             project_evidence=relevant_project_evidence,
         )
+        if _project_evidence_trace is not None:
+            _project_evidence_trace.extend(
+                trace_project_evidence(
+                    project_evidence_candidates, _selected_project_evidence_keys(compiled)
+                )
+            )
+        return compiled
 
     def promote(
         self,
@@ -2040,7 +2148,7 @@ class Urdyn:
 
     def _context_evidence_semantic_admitted(
         self, task: str, *, evidence_eligible_ids: frozenset[str]
-    ) -> frozenset[str]:
+    ) -> tuple[frozenset[str], dict[str, float]]:
         """Semantic admission for `context()`'s PROJECT EVIDENCE
         pool: a bounded SET, not a single winner -- the same shape as
         `_context_invariant_semantic_admitted` and for the same reason:
@@ -2061,17 +2169,25 @@ class Urdyn:
         calibrated -- see that module's docstring. This is a documented
         placeholder operating point, not a measurement.
 
+        Returns the admitted id SET together with the cosine score the
+        ranking already produced for each candidate. The scores are not a
+        second admission gate and are never compared to any threshold:
+        `ordered_project_evidence` uses them only to break ties between
+        chunks with an identical lexical shared-token count, so a
+        workspace without the semantic extra (where this returns an empty
+        set and an empty mapping) orders exactly as it would have.
+
         Falls back to empty -- never raises -- on any degraded
         condition, exactly like `_semantic_widen`.
         """
         try:
             context = self._semantic_context()
             if context is None:
-                return frozenset()
+                return frozenset(), {}
             semantic, model, meta = context
             source_vectors = self._semantic_vectors(ENTITY_SOURCE)
             if not source_vectors:
-                return frozenset()
+                return frozenset(), {}
             ranked = semantic.semantic_rank_eligible(
                 task,
                 model=model,
@@ -2079,13 +2195,14 @@ class Urdyn:
                 dimensions=meta.dimensions,
                 eligible_ids=evidence_eligible_ids,
             )
-            return semantic.set_admitted_ids(
+            admitted = semantic.set_admitted_ids(
                 ranked,
                 floor=semantic.EVIDENCE_SEMANTIC_FLOOR,
                 limit=semantic.EVIDENCE_ADMISSION_LIMIT,
             )
+            return admitted, {entity_id: score for entity_id, score in ranked}
         except Exception:
-            return frozenset()
+            return frozenset(), {}
 
     def _preflight_memory_semantic_widen(
         self,

@@ -51,10 +51,10 @@ new semantic pool.
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 
 from ._attempt import OUTCOME_FAILED, OUTCOME_SUCCEEDED, Attempt
-from ._chunk import DEFAULT_CHUNK_MAX_CHARS, EvidenceChunk, chunk_evidence, rank_evidence_chunks
+from ._chunk import DEFAULT_CHUNK_MAX_CHARS, EvidenceChunk, chunk_evidence, score_evidence_chunks
 from ._conflict import Conflict
 from ._errors import UrdynStorageError
 from ._evidence import RECOMMENDED_VALIDATION_EVIDENCE_KINDS, Evidence
@@ -65,6 +65,7 @@ from ._relevance import memory_search_text as _memory_search_text
 from ._relevance import tokens as _tokens
 from ._retrieval import fts_admitted_ids as _fts_admitted_ids
 from ._semantic_store import SemanticState
+from ._source import Source
 
 _VALIDATION_EVIDENCE_KINDS = RECOMMENDED_VALIDATION_EVIDENCE_KINDS
 
@@ -111,45 +112,220 @@ def evidence_is_relevant(
     reads Decision memories (see `_context.py`'s module docstring for
     why `context()` and `preflight()` deliberately differ here).
     """
-    if _is_relevant(query_tokens, evidence.content):
-        return True
-    if evidence.evidence_id in fts_admitted_ids:
-        return True
-    return evidence.evidence_id in semantic_admitted_ids
+    return evidence_admission(
+        query_tokens,
+        evidence,
+        fts_admitted_ids=fts_admitted_ids,
+        semantic_admitted_ids=semantic_admitted_ids,
+    ).admitted
 
 
-def relevant_evidence_chunks(
+CHANNEL_LEXICAL = "lexical"
+CHANNEL_FTS = "fts"
+CHANNEL_SEMANTIC = "semantic"
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class EvidenceAdmission:
+    """WHICH of `evidence_is_relevant`'s three channels fired, not just
+    whether any of them did.
+
+    Internal instrumentation only: no public API, no CLI output, and
+    nothing here changes the admission DECISION -- `admitted` is exactly
+    the boolean OR the three channels always produced. It exists because
+    "this document was admitted" alone is unactionable when a real
+    workspace surfaces a surprising document: knowing it came in through
+    FTS widening rather than lexical majority is the difference between
+    a tuning question and a corpus question.
+    """
+
+    lexical: bool
+    fts: bool
+    semantic: bool
+
+    @property
+    def admitted(self) -> bool:
+        return self.lexical or self.fts or self.semantic
+
+    @property
+    def channels(self) -> tuple[str, ...]:
+        names = []
+        if self.lexical:
+            names.append(CHANNEL_LEXICAL)
+        if self.fts:
+            names.append(CHANNEL_FTS)
+        if self.semantic:
+            names.append(CHANNEL_SEMANTIC)
+        return tuple(names)
+
+
+def evidence_admission(
     query_tokens: frozenset[str],
     evidence: Evidence,
     *,
     fts_admitted_ids: frozenset[str],
     semantic_admitted_ids: frozenset[str],
-    max_chars: int = DEFAULT_CHUNK_MAX_CHARS,
-) -> tuple[EvidenceChunk, ...]:
-    """The chunks of `evidence` worth offering `context()`'s
-    PROJECT EVIDENCE pool, in priority order -- empty if `evidence` itself
-    is not relevant at all.
+) -> EvidenceAdmission:
+    """The per-channel breakdown behind `evidence_is_relevant`.
 
-    Two separate decisions, kept apart on purpose: whether the WHOLE
-    document is relevant to `task` is still exactly `evidence_is_relevant`,
-    unchanged (the same three channels, over the same whole `content`) --
-    chunking never widens or narrows THAT gate. Only once a document
-    clears it does this function split it (`chunk_evidence`) and rank its
-    pieces by their own lexical overlap with `query_tokens`
-    (`rank_evidence_chunks`), so a budgeted compiler can admit the
-    specific paragraph that matters instead of the whole document as one
-    indivisible unit. See `_chunk.py`'s module docstring for why this
-    needs no new embedding backend and nothing persisted.
+    Evaluates all three channels rather than short-circuiting on the
+    first hit. That is a deliberate, bounded cost paid for observability:
+    `_is_relevant` is a set intersection over an already-tokenized
+    document and the other two are frozenset membership tests, so
+    nothing here is a new pass over the corpus.
     """
-    if not evidence_is_relevant(
-        query_tokens,
-        evidence,
-        fts_admitted_ids=fts_admitted_ids,
-        semantic_admitted_ids=semantic_admitted_ids,
-    ):
-        return ()
-    chunks = chunk_evidence(evidence, max_chars=max_chars)
-    return rank_evidence_chunks(query_tokens, chunks)
+    return EvidenceAdmission(
+        lexical=_is_relevant(query_tokens, evidence.content),
+        fts=evidence.evidence_id in fts_admitted_ids,
+        semantic=evidence.evidence_id in semantic_admitted_ids,
+    )
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class ProjectEvidenceCandidate:
+    """One admitted chunk of one seeded document, carrying the signals
+    that decide where it sits in the budget queue.
+
+    `lexical_shared_tokens` is the count `score_evidence_chunks` already
+    computes to order chunks WITHIN a document; `semantic_score` is the
+    cosine the semantic channel already computed for the parent document
+    if that channel fired (0.0 otherwise, including whenever the optional
+    semantic extra is not installed). Neither is a new measurement.
+    """
+
+    evidence: Evidence
+    source_path: str
+    chunk: EvidenceChunk
+    lexical_shared_tokens: int
+    semantic_score: float
+    admission: EvidenceAdmission
+
+
+def ordered_project_evidence(
+    query_tokens: frozenset[str],
+    current_source_evidence: Sequence[tuple[Source, Evidence]],
+    *,
+    fts_admitted_ids: frozenset[str],
+    semantic_admitted_ids: frozenset[str],
+    semantic_scores: Mapping[str, float] | None = None,
+    max_chars: int = DEFAULT_CHUNK_MAX_CHARS,
+) -> tuple[ProjectEvidenceCandidate, ...]:
+    """Every admitted PROJECT EVIDENCE chunk across every seeded Source,
+    ordered by RELEVANCE rather than by filename.
+
+    WHY THIS EXISTS. Admission is boolean: a document either clears one
+    of the three channels or it does not, and nothing about how strongly
+    it cleared them survived that gate. Chunks were then ranked inside
+    each document but the documents themselves arrived in the order
+    `MemoryStore.list_current_source_evidence` returns them, which is
+    alphabetical by workspace-relative path. `compile_context` admits by
+    a strict PREFIX scan that stops at the first candidate that does not
+    fit (A29.1, and it must stay that way -- it is what makes a smaller
+    budget's selection a prefix of a larger one's). Alphabetical order
+    plus a prefix-stop scan means the alphabetically-first admitted
+    document gets first claim on the entire budget, and a later document
+    that answers the task far better can contribute nothing at all. The
+    filename is not a relevance signal; using it as the tie-break for
+    everything made it one by accident.
+
+    WHAT THE ORDER IS. `(-lexical_shared_tokens, -semantic_score,
+    source_path, chunk_index)`:
+
+      - `lexical_shared_tokens` first, because it is the ONE signal
+        available in every configuration. Lexical-only retrieval (no
+        semantic extra installed) must order correctly on its own;
+        semantic stays an enhancement, never a correctness requirement.
+      - `semantic_score` second, and only as a tiebreaker among chunks
+        with an identical lexical count -- it is 0.0 for every candidate
+        when the extra is absent, so it can never reorder a
+        lexical-only workspace.
+      - `source_path` then `chunk_index` last, purely to make ties total
+        and the result deterministic. Path is still here; it is just no
+        longer the FIRST thing consulted.
+
+    WHAT THIS IS NOT. No new score is computed, no threshold is
+    introduced or moved, no candidate is admitted or rejected that
+    `evidence_is_relevant` did not already decide on, and no per-source
+    cap, diversity penalty, or rank-fusion formula is applied: a source
+    with the five best-scoring chunks still contributes all five. This
+    is a permutation of an unchanged candidate SET.
+
+    Within one document the order is unchanged from
+    `rank_evidence_chunks`: that function sorts by `(-score,
+    chunk_index)`, and this key agrees with it on any two chunks sharing
+    an `evidence`/`source_path`.
+    """
+    scores = semantic_scores or {}
+    candidates: list[ProjectEvidenceCandidate] = []
+    for source, evidence in current_source_evidence:
+        admission = evidence_admission(
+            query_tokens,
+            evidence,
+            fts_admitted_ids=fts_admitted_ids,
+            semantic_admitted_ids=semantic_admitted_ids,
+        )
+        if not admission.admitted:
+            continue
+        semantic_score = float(scores.get(evidence.evidence_id, 0.0)) if admission.semantic else 0.0
+        for shared, chunk in score_evidence_chunks(query_tokens, chunk_evidence(evidence, max_chars=max_chars)):
+            candidates.append(
+                ProjectEvidenceCandidate(
+                    evidence=evidence,
+                    source_path=source.path,
+                    chunk=chunk,
+                    lexical_shared_tokens=shared,
+                    semantic_score=semantic_score,
+                    admission=admission,
+                )
+            )
+    candidates.sort(
+        key=lambda c: (-c.lexical_shared_tokens, -c.semantic_score, c.source_path, c.chunk.chunk_index)
+    )
+    return tuple(candidates)
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class ProjectEvidenceTrace:
+    """One row of internal, debug-only instrumentation about how a
+    PROJECT EVIDENCE candidate fared in one `context()` call.
+
+    Never part of `CompiledContext`, never rendered, never reachable
+    from the CLI: `CompiledContext`'s shape is a stable contract and
+    this is a measurement aid for calibration work, not output. See
+    `Urdyn._project_evidence_trace`.
+    """
+
+    source_path: str
+    chunk_index: int
+    chunk_count: int
+    channels: tuple[str, ...]
+    lexical_shared_tokens: int
+    semantic_score: float
+    position: int
+    selected: bool
+
+
+def trace_project_evidence(
+    candidates: Sequence[ProjectEvidenceCandidate], selected_keys: frozenset[tuple[str, int]]
+) -> tuple[ProjectEvidenceTrace, ...]:
+    """Pair each ordered candidate with whether the budget scan actually
+    took it. `selected_keys` is `(source_path, chunk_index)` pairs, the
+    only identity a rendered PROJECT EVIDENCE item exposes (its
+    `entity_id` is the PARENT Evidence's, shared by every chunk of that
+    document -- see `_chunk.py`)."""
+    return tuple(
+        ProjectEvidenceTrace(
+            source_path=candidate.source_path,
+            chunk_index=candidate.chunk.chunk_index,
+            chunk_count=candidate.chunk.chunk_count,
+            channels=candidate.admission.channels,
+            lexical_shared_tokens=candidate.lexical_shared_tokens,
+            semantic_score=candidate.semantic_score,
+            position=position,
+            selected=(candidate.source_path, candidate.chunk.chunk_index) in selected_keys,
+        )
+        for position, candidate in enumerate(candidates)
+    )
 
 
 def memory_is_relevant(

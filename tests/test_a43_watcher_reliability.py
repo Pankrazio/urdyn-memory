@@ -376,33 +376,48 @@ def test_tracked_path_transient_permission_failure_does_not_advance_baseline(tmp
 
 def test_discovery_path_transient_permission_failure_recovers_without_restart(tmp_path):
     """A file that is NOT yet a tracked Source -- only reachable through
-    the discovery allowlist -- created unreadable and made readable later:
-    it must eventually be seeded while the SAME watcher process keeps
+    project discovery -- created unreadable and made readable later: it
+    must eventually be seeded while the SAME watcher process keeps
     running, with no restart. `_reconcile_baseline(retro_observe=True)`
     only re-seeds paths already tracked as a Source, so a path that failed
     on its very first attempt would otherwise never be retried even
     across a restart.
+
+    A53 moved WHERE that first failure happens, not whether it is
+    recoverable. Discovery now reads each candidate itself, so an
+    unreadable file is rejected during the walk and never enters scope at
+    all -- rather than entering scope and being logged as a transient
+    `error` at seed time. Either way the file must NOT be permanently
+    refused, and must be picked up on its own once readable. The
+    assertions below therefore check scope membership instead of a log
+    line; everything they claim about recovery is unchanged.
     """
     cx = _init_dev(tmp_path, **{"README.md": "keep watcher busy\n"})
     (tmp_path / "docs").mkdir()
     _watcher.enable_and_start(cx)
-    assert _running_pid(cx) is not None
+    pid = _running_pid(cx)
+    assert pid is not None
 
     target = tmp_path / "docs" / "note.md"
     target.write_text("first content\n", encoding="utf-8")
     os.chmod(target, 0o000)
     try:
-        assert _wait_for(lambda: "docs/note.md" in _log_text(cx), timeout=8.0)
+        time.sleep(3.0)
+        assert "docs/note.md" not in _watcher._scan_scope(cx)
         assert _observation_count(cx, "docs/note.md") == 0
         assert all(s.path != "docs/note.md" for s in cx.sources())
-        assert _running_pid(cx) is not None
-        log = _log_text(cx)
-        assert "error docs/note.md:" in log
-        assert "refused docs/note.md:" not in log
+        assert _running_pid(cx) == pid  # never crashed, never restarted
+        assert "refused docs/note.md:" not in _log_text(cx)
     finally:
         os.chmod(target, 0o644)
 
-    assert _wait_for(lambda: _observation_count(cx, "docs/note.md") == 1, timeout=8.0)
+    # Bounded by the discovery cadence (`_DISCOVERY_SCAN_INTERVAL`), plus
+    # a settle window and margin -- no restart is involved.
+    assert _wait_for(
+        lambda: _observation_count(cx, "docs/note.md") == 1,
+        timeout=_watcher._DISCOVERY_SCAN_INTERVAL + 12.0,
+    )
+    assert _running_pid(cx) == pid
     source = [s for s in cx.sources() if s.path == "docs/note.md"][0]
     evidence = cx.get_evidence(source.latest_observation.evidence_id)
     assert evidence.content == "first content\n"

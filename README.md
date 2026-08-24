@@ -79,18 +79,25 @@ validation · provenance · memory rules
 .urdyn/
 ```
 
-This is a generic integration boundary, not an automatic provider integration. Urdyn 0.2.0 does not ship provider-specific adapters, MCP support, autonomous curation, or automatic invocation. AI tools should use the public CLI/API and never edit `.urdyn/` directly.
+This is a generic integration boundary, not an automatic provider integration. Urdyn 0.3.0 does not ship provider-specific adapters, MCP support, autonomous curation, or automatic invocation. AI tools should use the public CLI/API and never edit `.urdyn/` directly.
 
 ## Existing project files
 
-Explicit file seeding works in every profile. In a `dev` workspace, `urdyn seed` with no paths lists conservative discovery candidates and records nothing. Name regular UTF-8 text files explicitly to observe them:
+Explicit file seeding works in every profile. In a `dev` workspace, `urdyn seed` with no paths lists discovery candidates and records nothing. Name regular UTF-8 text files explicitly to observe them:
 
 ```bash
 urdyn seed                           # list candidates; record nothing
 urdyn seed README.md pyproject.toml  # record specific files
 ```
 
-Each seeded file becomes a Source with a document-observation Evidence record. Urdyn keeps the observed text, digest, size, and timestamp, but does not treat the document's claims as verified knowledge.
+Discovery in `dev` is a **bounded recursive walk**: root-level manifest files (`README*`, `LICENSE*`, `pyproject.toml`, ...) plus documentation-like files (`.md`, `.txt`) anywhere in the project tree, at any depth. It stays bounded and privacy-safe by construction, not by asking:
+
+- it never descends into `.git/`, `.venv`/`venv/`, `node_modules/`, `dist/`/`build/`, caches, or Urdyn's own `.urdyn/` directory;
+- it honors `.gitignore` and `.git/info/exclude` when present — anything a project already tells Git to forget, Urdyn never surfaces, indexes, or observes;
+- it never follows a symlink outside the workspace, never reads a binary or oversized file, and applies a discovery-only sensitive-name filter (`*secret*`, `*password*`, `*token*`, ...) on top of the credential-name guard explicit seeding already has;
+- Git is entirely optional: ignore files are read directly as plain text, never through a `git` subprocess, so discovery works identically with or without a repository.
+
+Each seeded file becomes a Source with a document-observation Evidence record. Urdyn keeps the observed text, digest, size, and timestamp, but does not treat the document's claims as verified knowledge. Listing a candidate never records anything by itself — that stays an explicit `urdyn seed <path>...`.
 
 ## 👀 Project watcher
 
@@ -102,9 +109,9 @@ urdyn watch start
 urdyn watch stop
 ```
 
-`urdyn init dev` enables and starts the watcher. It watches only already tracked Sources plus the same conservative discovery allowlist used by `urdyn seed`; it never scans the whole project. Changes create Source/Observation/Evidence records, never automatic Memory or other canonical knowledge, and remain local. `urdyn watch stop` stops and persistently disables it.
+`urdyn init dev` enables and starts the watcher. It watches every already-tracked Source plus everything the same bounded, privacy-filtered discovery above currently proposes — including a newly created file nobody has seeded yet, not only files that already have a tracked history. Already-tracked files are checked on a fast, adaptive cadence (as often as every 2 seconds while active); noticing a brand-new, never-seen file uses a slower cadence (about every 10 seconds), since nothing about a file with no baseline can be lost by finding it a little later. Changes create Source/Observation/Evidence records, never automatic Memory or other canonical knowledge, and remain local. `urdyn watch stop` stops and persistently disables it.
 
-The watcher is validated and supported on Linux in this release. Known 0.2.0 limits:
+The watcher is validated and supported on Linux in this release. Known 0.3.0 limits:
 
 - Deletions and renames are not tracked. Existing history is retained, and a renamed file begins a new Source history.
 - It is not a boot service. After a reboot, the next normal `urdyn` command restarts an enabled watcher and rechecks already tracked files.
@@ -179,7 +186,7 @@ Setup downloads a pinned embedding model and builds a derived local index next t
 
 ## 🛠 Current scope and limitations
 
-Urdyn 0.2.0 is an alpha release. It does not currently include:
+Urdyn 0.3.0 is an alpha release. It does not currently include:
 
 - cloud sync;
 - a GUI or desktop application;

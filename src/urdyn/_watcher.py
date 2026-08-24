@@ -17,18 +17,33 @@ rests on comparing current filesystem state against what Urdyn last
 recorded, never on the delivery of any particular OS notification (kernel
 event queues are lossy under load; a periodic reconciliation is not).
 
-SCOPE, BY CONSTRUCTION. `Urdyn.watcher_scope()` returns tracked `Source`
-paths unioned with the `dev` discovery allowlist -- both bounded,
-non-recursive sets. This module never walks a directory tree: every scan
-is "stat these specific paths", not "find files under this root". A
-directory denylist (`.git/`, `node_modules/`, ...) is therefore not
-needed as the exclusion mechanism -- scope structurally cannot contain
-such a path, since neither `sources()` (itself gated by
-`resolve_seed_path`, which already refuses anything under `.urdyn/` or
-outside the workspace) nor the allowlist globs can ever match one. The one
-denylist this module DOES apply is `_looks_like_temp_name`, because the
-allowlist's `README*`-style globs can transiently match an editor's own
-backup file (`README.md~`); see its docstring.
+SCOPE, IN TWO HALVES AT TWO CADENCES. `Urdyn.watcher_scope()` returns
+tracked `Source` paths unioned with what project discovery currently
+proposes. This module still never walks a directory tree ITSELF -- every
+scan it performs is "stat these specific paths", not "find files under
+this root" -- but since A53 the discovery half it delegates to DOES walk
+one (bounded, pruned and ignore-filtered; see
+`_source.discover_seed_candidates`). Two consequences:
+
+  * The exclusion mechanism now lives in that walk, not in the shape of a
+    glob. A directory denylist (`.git/`, `node_modules/`, `.venv/`, ...)
+    plus `.gitignore`/`.git/info/exclude` is what keeps a private or
+    generated file out of scope; it is no longer true that scope
+    "structurally cannot contain" such a path, and the guarantee is
+    asserted by tests rather than implied by the glob's narrowness.
+  * The two halves are refreshed at DIFFERENT cadences (see
+    `_ScopeCache`): the cheap half -- "did an already-tracked file
+    change?" -- stays on the adaptive 2s/10s/60s poll, because that is
+    the latency users actually feel when they save a file. The expensive
+    half -- "does a file exist that nobody has seeded yet?" -- is
+    recomputed at most every `_DISCOVERY_SCAN_INTERVAL`, because a file
+    that was created seconds ago has no baseline to differ from and
+    finding it 30 seconds later costs nothing but 30 seconds.
+
+The one denylist this module DOES apply directly is
+`_looks_like_temp_name`, because the discovery allowlist's
+`README*`-style globs can transiently match an editor's own backup file
+(`README.md~`); see its docstring.
 
 LIFECYCLE. A workspace has a persistent switch (`watcher.json`,
 `{"enabled": bool}`) and a live process holding an advisory lock
@@ -95,6 +110,15 @@ _DEEP_IDLE_WINDOW = 1800.0
 _SCAN_COST_FACTOR = 50
 _MIN_INTERVAL = 2.0
 _MAX_INTERVAL = 60.0
+
+# (A53) How often the EXPENSIVE half of scope -- the recursive project
+# discovery walk -- is recomputed, independently of the adaptive poll
+# interval above. Deliberately equal to `_IDLE_INTERVAL`: an
+# actively-edited workspace polls at 2s and therefore walks the tree only
+# once per ~5 polls, while an idle or deep-idle one polls no faster than
+# it walks and pays nothing extra at all. See `_ScopeCache` for why
+# delaying discovery can never lose a change.
+_DISCOVERY_SCAN_INTERVAL = _IDLE_INTERVAL
 
 # Shutdown must be responsive even while the loop is sleeping through a
 # 60-second deep-idle interval, so the sleep is chunked rather than one
@@ -356,12 +380,69 @@ def _stat_fingerprint(full_path: Path) -> tuple[int, int] | None:
 
 
 def _scan_scope(urdyn: Urdyn) -> list[str]:
-    """The current watched paths: `Urdyn.watcher_scope()`, filtered for
-    editor/temp artifacts that can transiently match the allowlist (see
-    `_looks_like_temp_name`). Recomputed on every call -- cheap by
-    construction, since neither half of `watcher_scope()` walks a tree."""
+    """The current watched paths, fully recomputed: `Urdyn.watcher_scope()`
+    filtered for editor/temp artifacts that can transiently match the
+    discovery allowlist (see `_looks_like_temp_name`).
+
+    Always accurate and never cached, which is what a caller running it
+    ONCE (baseline reconciliation, a test, a diagnostic) wants. The
+    polling loop deliberately does NOT use it -- it goes through
+    `_ScopeCache` instead, so the recursive discovery half is not redone
+    every two seconds."""
     scope = urdyn.watcher_scope()
+    return _filter_scope(scope)
+
+
+def _filter_scope(scope) -> list[str]:
     return sorted(path for path in scope if not _looks_like_temp_name(Path(path).name))
+
+
+class _ScopeCache:
+    """Scope for the polling loop, with the expensive half memoised.
+
+    `Urdyn.tracked_scope()` (one indexed read of canonical data) is
+    recomputed on EVERY call: a path seeded a second ago -- by the user,
+    from another terminal -- must join the watched set immediately, and
+    it is cheap enough to.
+
+    `Urdyn.discovered_scope()` (the bounded recursive walk) is recomputed
+    at most every `_DISCOVERY_SCAN_INTERVAL`, and its last result is
+    reused in between.
+
+    WHY A SLOWER CADENCE IS SAFE. The only thing it delays is noticing a
+    file that Urdyn has never seen. Such a file has no baseline, so nothing
+    about it can be LOST by looking later -- when discovery does find it,
+    it is baselined at whatever it contains then, exactly as if it had
+    been created at that moment (the same "start observing from now"
+    contract enabling the watcher has). Meanwhile a tracked file's change
+    latency -- the one a user perceives -- is untouched, still bounded by
+    the adaptive 2s/10s/60s interval.
+
+    A failed discovery pass keeps the previous result rather than
+    emptying scope: an unreadable directory or a transient I/O error must
+    never silently un-watch every discovered file.
+    """
+
+    __slots__ = ("_discovered", "_last_scan_monotonic")
+
+    def __init__(self, discovered: frozenset[str] | None = None) -> None:
+        self._discovered: frozenset[str] = discovered if discovered is not None else frozenset()
+        self._last_scan_monotonic: float | None = None if discovered is None else time.monotonic()
+
+    def scope(self, urdyn: Urdyn, *, force: bool = False) -> list[str]:
+        now = time.monotonic()
+        due = (
+            force
+            or self._last_scan_monotonic is None
+            or now - self._last_scan_monotonic >= _DISCOVERY_SCAN_INTERVAL
+        )
+        if due:
+            try:
+                self._discovered = urdyn.discovered_scope()
+            except OSError:
+                pass  # keep the previous discovered set; see the docstring
+            self._last_scan_monotonic = now
+        return _filter_scope(urdyn.tracked_scope() | self._discovered)
 
 
 def _is_transient_source_error(exc: UrdynSourceError) -> bool:
@@ -552,6 +633,7 @@ def _run_loop(
     stats: _RuntimeStats,
     should_stop: Callable[[], bool],
     baseline: dict[str, tuple[int, int]],
+    scope_cache: "_ScopeCache | None" = None,
 ) -> None:
     """The polling/settle/observe loop, starting from an already-computed
     `baseline` -- built by the caller via `_reconcile_baseline`, with
@@ -563,6 +645,8 @@ def _run_loop(
     changed, manifest gone) is hit.
     """
     pending: dict[str, tuple[tuple[int, int], float]] = {}
+    if scope_cache is None:
+        scope_cache = _ScopeCache()
     limiter = _RateLimiter(_MAX_WRITES_PER_SECOND)
     last_change_monotonic = time.monotonic()
 
@@ -578,7 +662,7 @@ def _run_loop(
             return
 
         try:
-            scope = _scan_scope(urdyn)
+            scope = scope_cache.scope(urdyn)
         except OSError as exc:
             log_line(urdyn_dir, f"error: scope resolution failed: {exc}")
             scope = list(baseline)
@@ -1017,7 +1101,12 @@ def _child_main(argv: list[str]) -> int:
         # be a tracked Source. Any other start (restart, crash recovery,
         # `watch start` after `stop`) reconciles tracked Sources against
         # their canonical latest digest -- see `_reconcile_baseline`.
-        scope = _scan_scope(urdyn)
+        # One full, uncached discovery pass to build the baseline, whose
+        # result seeds `_ScopeCache` -- so the loop's first tick does not
+        # immediately redo the walk it just did.
+        discovered = urdyn.discovered_scope()
+        scope_cache = _ScopeCache(discovered)
+        scope = _filter_scope(urdyn.tracked_scope() | discovered)
         baseline = _reconcile_baseline(
             urdyn,
             scope,
@@ -1041,7 +1130,7 @@ def _child_main(argv: list[str]) -> int:
         # window could be silently absorbed into the baseline instead of
         # being seen as a change.
         lock.update_metadata(_lock_metadata(urdyn, stats))
-        _run_loop(urdyn, lock, urdyn_dir, stats, _should_stop, baseline)
+        _run_loop(urdyn, lock, urdyn_dir, stats, _should_stop, baseline, scope_cache)
     except Exception as exc:  # pragma: no cover - defensive top-level guard
         log_line(urdyn_dir, f"error: unhandled exception, exiting: {exc}")
     finally:

@@ -361,6 +361,34 @@ class TestSeedPathSecurity:
 
 class TestDiscovery:
     def test_discovery_lists_allowlisted_files_only(self, tmp_path):
+        """INTENTIONAL BEHAVIOUR CHANGE (A53): discovery is now bounded-
+        RECURSIVE, not root+flat-`docs/` only.
+
+        This test previously asserted that `docs/deep/nested.md` was
+        EXCLUDED, because `discover_candidate_paths` globbed exactly two
+        locations. That was the wrong product behaviour: a note filed one
+        directory deeper was invisible to `urdyn seed` and to the watcher
+        forever, with nothing to tell the author why.
+
+        Nested documentation is now discovered at any depth. What keeps
+        that bounded is a policy, not a shallow glob (see `_source.py`):
+        only documentation-like extensions (`.md`/`.txt`), never source
+        code; a mandatory directory exclusion list; `.gitignore` and
+        `.git/info/exclude`; the unchanged per-file gates (workspace
+        containment, regular file, credential-name denylist,
+        `MAX_SEED_FILE_BYTES`, UTF-8, non-empty); and a hard visit cap.
+
+        `src/main.py` therefore stays excluded (source code is not
+        discovered). `secrets.txt` is ALSO excluded from automatic
+        discovery: `.txt` is a discovered extension and the credential
+        denylist (`.env*`/`*.pem`/...) would not by itself catch a name
+        merely containing the word "secrets", so automatic discovery
+        applies a separate, stricter, discovery-only sensitive-name filter
+        on top of it (`_is_discovery_sensitive_name`). An explicit
+        `urdyn seed secrets.txt` is unaffected by that filter and still
+        works -- it is a deliberate act, not a suggestion nobody asked
+        for.
+        """
         cx = _dev_workspace(
             tmp_path,
             **{
@@ -385,8 +413,12 @@ class TestDiscovery:
             "LICENSE",
             "README.md",
             "docs/architecture.md",
+            "docs/deep/nested.md",
             "pyproject.toml",
         ]
+        assert "src/main.py" not in candidates  # source code is never discovered
+        assert ".env" not in candidates  # credential-name denylist still applies
+        assert "secrets.txt" not in candidates  # discovery-only sensitive-name filter
 
     def test_discovery_writes_nothing(self, tmp_path):
         cx = _dev_workspace(tmp_path, **{"README.md": "r\n"})

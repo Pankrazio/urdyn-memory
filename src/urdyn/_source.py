@@ -48,10 +48,12 @@ what makes a repeated seed decidable without comparing whole documents,
 and what lets a reader confirm that a stored snapshot is the text that
 produced it.
 
-The cost is deliberate and bounded: only files a caller explicitly named
-(or explicitly chose from discovery) are read, only UTF-8 text, only up
-to `MAX_SEED_FILE_BYTES`, and only when the content actually changed --
-a re-seed of an unchanged file writes nothing at all. `.urdyn/` does
+The cost is deliberate and bounded: only UTF-8 text, only up to
+`MAX_SEED_FILE_BYTES`, and only STORED when the content actually changed
+-- a re-seed of an unchanged file writes nothing at all. (Discovery
+reads candidates too, to answer "is this binary/empty?", but reading is
+not recording: nothing a caller did not explicitly seed is ever
+persisted.) `.urdyn/` does
 therefore hold a local copy of the documents it was asked to observe,
 which the CLI states plainly at seed time rather than leaving implied.
 
@@ -76,12 +78,15 @@ import dataclasses
 import datetime as dt
 import fnmatch
 import hashlib
+import os
 import re
 import stat
 from pathlib import Path
 
 from ._errors import UrdynSourceError
 from ._evidence import Evidence
+from ._ignore import IgnoreRules as _IgnoreRules
+from ._ignore import load_ignore_rules
 
 SOURCE_ID_PATTERN = re.compile(r"[0-9a-f]{32}")
 
@@ -118,12 +123,12 @@ _SECRET_NAME_PATTERNS = (
     "id_rsa*",
 )
 
-# (A19.1) Conservative allowlist for `urdyn seed` with no arguments, in
-# the `dev` profile only. Deliberately NOT a recursive crawl: these are
-# the files that describe a project to a newcomer, at the two locations
-# where projects conventionally put them (the root, and a flat `docs/`).
-# A recursive walk would turn a bounded, predictable command into one
-# whose output depends on the size and shape of the whole repository.
+# (A19.1) Root-only manifest/description files for `urdyn seed` with no
+# arguments, in the `dev` profile only. These stay ROOT-ONLY on purpose:
+# they are conventions about the top of a repository (`pyproject.toml`
+# three directories down is a vendored copy or a test fixture, not this
+# project's manifest), so globbing them recursively would add noise, not
+# context.
 _DISCOVERY_ROOT_PATTERNS = (
     "README*",
     "LICENSE*",
@@ -135,7 +140,96 @@ _DISCOVERY_ROOT_PATTERNS = (
     "AGENTS.md",
     "CLAUDE.md",
 )
-_DISCOVERY_DOCS_PATTERN = ("docs", "*.md")
+
+# (A53) Names automatic discovery refuses to PROPOSE, even though an
+# explicit `urdyn seed <path>` for the same name still works (that stays
+# governed by `_SECRET_NAME_PATTERNS` above, applied via
+# `resolve_seed_path` to explicit and discovered paths alike). Recursive
+# discovery widens what a bare `urdyn seed` can surface to any `.md`/
+# `.txt` file in the tree, which means a file merely NAMED like private
+# material (`secrets.txt`, `team-password-notes.md`) can now be offered
+# even though its name matches no credential-file pattern. Automatic
+# discovery is a suggestion nobody asked for by path, so it holds itself
+# to a stricter, discovery-only bar; a deliberate `urdyn seed secrets.txt`
+# is a different act and is not affected by this list.
+_DISCOVERY_SENSITIVE_NAME_PATTERNS = (
+    "*secret*",
+    "*password*",
+    "*passwd*",
+    "*credential*",
+    "*token*",
+)
+
+
+def _is_discovery_sensitive_name(name: str) -> bool:
+    lowered = name.lower()
+    return any(fnmatch.fnmatch(lowered, pattern) for pattern in _DISCOVERY_SENSITIVE_NAME_PATTERNS)
+
+
+# (A53) Documentation-like files ARE discovered recursively. The earlier
+# design globbed only a flat `docs/*.md`, which silently missed the very
+# common `docs/research/notes.md` shape and made "did Urdyn see my new
+# note?" depend on how deep the author filed it.
+#
+# What keeps the recursive walk bounded -- and therefore keeps this from
+# becoming "scan the whole repository":
+#
+#   1. EXTENSION SCOPE. Only these suffixes are considered. Source code
+#      is deliberately NOT discovered: `.py`/`.js`/... are the bulk of a
+#      repository and are not the project-describing documents this
+#      feature exists to track. An explicit `urdyn seed src/main.py`
+#      still works and is unchanged.
+#   2. DIRECTORY PRUNING. `MANDATORY_EXCLUDED_DIR_NAMES` below is never
+#      descended into, regardless of what any ignore file says.
+#   3. IGNORE RULES. `.gitignore` / `.git/info/exclude` (see `_ignore.py`)
+#      prune directories and reject files. What the project already told
+#      git to forget, Urdyn never sees.
+#   4. PER-FILE GATES. Every surviving candidate passes the same
+#      `resolve_seed_path` + `read_seed_candidate` checks an explicit
+#      seed does: inside the workspace, regular file, not a credential
+#      name, under `MAX_SEED_FILE_BYTES`, real UTF-8 text, non-empty.
+#   5. A HARD VISIT CAP (`MAX_DISCOVERY_VISITS`).
+_DISCOVERY_RECURSIVE_SUFFIXES = (".md", ".txt")
+
+# Never descended into, whatever `.gitignore` says (it may say nothing:
+# a workspace need not be a git repository at all, and `.venv/` is
+# routinely absent from `.gitignore` because nobody ever needed git to
+# know about it). These are the directories where a recursive walk would
+# otherwise spend all of its time and find nothing that describes the
+# project: dependency trees, build output, virtualenvs, tool caches.
+#
+# `.urdyn` itself is NOT listed here -- it is passed in as
+# `urdyn_dirname` by every caller (see `discover_candidate_paths`), so
+# the one place that knows the directory's real name stays
+# `_workspace.URDYN_DIRNAME` rather than a second copy of the string.
+MANDATORY_EXCLUDED_DIR_NAMES = frozenset(
+    {
+        ".git",
+        ".venv",
+        "venv",
+        "node_modules",
+        "dist",
+        "build",
+        "__pycache__",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+        ".tox",
+        ".eggs",
+    }
+)
+
+# Same policy, for directory names that are only expressible as a glob.
+MANDATORY_EXCLUDED_DIR_PATTERNS = ("*.egg-info",)
+
+# Hard ceiling on directory entries examined in ONE discovery pass. A
+# pathological workspace (a generated tree, a mount point with millions
+# of files, a symlink farm) must make discovery return early, not hang or
+# blow up: the walk stops and returns what it found so far, which is
+# still a valid -- merely incomplete -- suggestion. Sized well above any
+# plausible real repository so that hitting it is diagnostic of something
+# unusual rather than a limit normal projects live against.
+MAX_DISCOVERY_VISITS = 50_000
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -228,6 +322,45 @@ class SeedCandidate:
     digest: str
     size_bytes: int
     text: str
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class SeedCandidateReport:
+    """What `urdyn seed` with no arguments found, split by what seeding
+    each candidate WOULD do.
+
+    A derived view, not canonical data -- the same reasoning that keeps
+    `SeedResult.status` off `Source`. The split is computed by comparing
+    each candidate's current digest against
+    `Source.latest_observation.digest`, i.e. exactly the comparison
+    `seed()` itself would make, so the three groups predict the three
+    `SEED_*` statuses without performing any of them.
+
+      new       -- eligible and never seeded (would be `added`)
+      changed   -- already a tracked Source whose content has since
+                   changed (would be `changed`)
+      unchanged -- already a tracked Source, byte-identical to the last
+                   observation (would be `unchanged`, writing nothing)
+
+    Nothing is written to produce this. Excluded and ineligible files are
+    deliberately NOT enumerated: listing everything the walk rejected
+    would turn a suggestion into a report on the whole repository, and
+    "why was my file not offered?" is a question for `urdyn seed <path>`,
+    which answers it with the exact refusal reason.
+    """
+
+    new: tuple[str, ...] = ()
+    changed: tuple[str, ...] = ()
+    unchanged: tuple[str, ...] = ()
+
+    @property
+    def paths(self) -> list[str]:
+        """Every candidate, sorted -- the flat list `seed_candidates()`
+        has always returned."""
+        return sorted((*self.new, *self.changed, *self.unchanged))
+
+    def __bool__(self) -> bool:
+        return bool(self.new or self.changed or self.unchanged)
 
 
 def compute_digest(data: bytes) -> str:
@@ -356,29 +489,180 @@ def read_seed_candidate(workspace: Path, relative_path: str) -> SeedCandidate:
     )
 
 
-def discover_candidate_paths(workspace: Path, urdyn_dirname: str) -> list[str]:
-    """The `dev` profile's conservative project-context allowlist, as
-    workspace-relative POSIX paths, sorted for determinism.
+def _is_excluded_dir_name(name: str, urdyn_dirname: str) -> bool:
+    """True for a directory the walk must never descend into (§2 of the
+    `_DISCOVERY_RECURSIVE_SUFFIXES` note above)."""
+    if name == urdyn_dirname or name in MANDATORY_EXCLUDED_DIR_NAMES:
+        return True
+    return any(fnmatch.fnmatch(name, pattern) for pattern in MANDATORY_EXCLUDED_DIR_PATTERNS)
 
-    Reads no file content and writes nothing. A match that fails any
-    check in `resolve_seed_path` is silently skipped rather than raised:
-    this is a suggestion of what COULD be seeded, so an unreadable or
-    oversized `README.pdf` simply is not a candidate.
+
+def _walk_discoverable_files(
+    workspace_root: Path,
+    urdyn_dirname: str,
+    ignore_rules: _IgnoreRules,
+) -> list[str]:
+    """Breadth-first walk of `workspace_root`, yielding workspace-relative
+    POSIX paths whose suffix is in `_DISCOVERY_RECURSIVE_SUFFIXES` and
+    which survive directory pruning and ignore rules.
+
+    Path/content eligibility is NOT decided here -- that stays in
+    `resolve_seed_path`/`read_seed_candidate`, applied by the caller, so
+    there is exactly one definition of "seedable" in the codebase.
+
+    Symlink handling. A symlinked directory is followed only if it still
+    resolves inside the workspace, and only if its resolved identity
+    (`st_dev`, `st_ino`) is not already one of its OWN ANCESTORS -- which
+    is what makes a symlink cycle (`loop/back -> loop`) terminate instead
+    of recursing forever.
+
+    Deliberately an ancestor check, not a global "visited" set: two
+    distinct paths that alias the same directory (`linked -> real`) are
+    BOTH reachable spellings of a real file inside the workspace, and
+    which one a global set happened to reach first would depend on
+    `scandir` order -- making discovery's output non-deterministic in
+    exactly the way the sorted result is supposed to prevent. A symlinked
+    FILE is not resolved here at all: `resolve_seed_path` already refuses
+    one that escapes, and doing it twice would just be a second policy.
+    """
+    found: list[str] = []
+    visits = 0
+    queue: list[tuple[Path, str, frozenset[tuple[int, int]]]] = []
+
+    try:
+        root_info = workspace_root.stat()
+    except OSError:
+        return found
+    queue.append((workspace_root, "", frozenset({(root_info.st_dev, root_info.st_ino)})))
+
+    while queue:
+        directory, prefix, ancestors = queue.pop()
+        try:
+            entries = list(os.scandir(directory))
+        except OSError:
+            # Unreadable directory (permissions, a vanished mount): skip
+            # it, never fail the whole scan for one bad subtree.
+            continue
+
+        for entry in entries:
+            visits += 1
+            if visits > MAX_DISCOVERY_VISITS:
+                # Degrade gracefully: what was found so far is still a
+                # valid suggestion, just not an exhaustive one.
+                return found
+
+            relative = f"{prefix}{entry.name}"
+            try:
+                is_dir = entry.is_dir()
+            except OSError:
+                continue
+
+            if is_dir:
+                if _is_excluded_dir_name(entry.name, urdyn_dirname):
+                    continue
+                if ignore_rules.is_ignored(relative, is_dir=True):
+                    continue
+                try:
+                    info = entry.stat()  # follows symlinks: identity of the target
+                except OSError:
+                    continue
+                identity = (info.st_dev, info.st_ino)
+                if identity in ancestors:
+                    continue  # a cycle: this directory contains itself
+                try:
+                    resolved = Path(entry.path).resolve()
+                except (OSError, RuntimeError):
+                    continue
+                if not resolved.is_relative_to(workspace_root):
+                    continue
+                queue.append((Path(entry.path), f"{relative}/", ancestors | {identity}))
+                continue
+
+            if not entry.name.endswith(_DISCOVERY_RECURSIVE_SUFFIXES):
+                continue
+            if ignore_rules.is_ignored(relative, is_dir=False):
+                continue
+            if _is_discovery_sensitive_name(entry.name):
+                continue
+            found.append(relative)
+
+    return found
+
+
+def discover_seed_candidates(
+    workspace: Path,
+    urdyn_dirname: str,
+    *,
+    ignore_rules: _IgnoreRules | None = None,
+) -> list[SeedCandidate]:
+    """The `dev` profile's project-context candidates, fully read and
+    validated, sorted by workspace-relative POSIX path for determinism.
+
+    Two sources, unioned: the root-only manifest/description globs
+    (`_DISCOVERY_ROOT_PATTERNS`) and a bounded recursive walk for
+    documentation-like files (`_DISCOVERY_RECURSIVE_SUFFIXES`). Both are
+    filtered by `.gitignore`/`.git/info/exclude` and by the mandatory
+    directory exclusions, and every survivor must pass the same checks an
+    explicitly seeded path does.
+
+    Writes nothing, ever -- `urdyn seed` with no arguments is a
+    suggestion, and `test_discovery_writes_nothing` is the guard. It DOES
+    read candidate content (via `read_seed_candidate`), because "is this
+    binary / empty / not UTF-8?" is not answerable from a stat and a
+    candidate the seed pipeline would immediately refuse is not a
+    candidate worth proposing. The cost is bounded by the same things
+    that bound the walk: the 1 MiB size cap applied before the read, the
+    extension allowlist, and directory pruning.
+
+    Deterministic and idempotent: the same filesystem yields the same
+    sorted list.
+
+    Any failure of an individual path -- unresolvable, oversized, binary,
+    a credential name -- is silently skipped rather than raised.
+
+    `ignore_rules` may be passed by a caller that already built them (the
+    watcher re-uses one set across a scan); by default they are loaded
+    fresh from the workspace.
     """
     workspace_root = workspace.resolve()
-    matches: set[str] = set()
+    if ignore_rules is None:
+        ignore_rules = load_ignore_rules(workspace_root)
 
+    matches: set[str] = set()
     for pattern in _DISCOVERY_ROOT_PATTERNS:
         for match in workspace_root.glob(pattern):
-            matches.add(str(match))
-    docs_dirname, docs_pattern = _DISCOVERY_DOCS_PATTERN
-    for match in (workspace_root / docs_dirname).glob(docs_pattern):
-        matches.add(str(match))
+            relative = match.name
+            if ignore_rules.is_ignored(relative, is_dir=match.is_dir()):
+                continue
+            matches.add(relative)
+    matches.update(_walk_discoverable_files(workspace_root, urdyn_dirname, ignore_rules))
 
-    candidates = []
-    for match in matches:
+    seen: set[str] = set()
+    candidates: list[SeedCandidate] = []
+    for match in sorted(matches):
         try:
-            candidates.append(resolve_seed_path(workspace_root, urdyn_dirname, match))
+            relative = resolve_seed_path(workspace_root, urdyn_dirname, match)
+            if relative in seen:
+                continue
+            candidate = read_seed_candidate(workspace_root, relative)
         except UrdynSourceError:
             continue
-    return sorted(set(candidates))
+        seen.add(relative)
+        candidates.append(candidate)
+    return sorted(candidates, key=lambda candidate: candidate.path)
+
+
+def discover_candidate_paths(
+    workspace: Path,
+    urdyn_dirname: str,
+    *,
+    ignore_rules: _IgnoreRules | None = None,
+) -> list[str]:
+    """`discover_seed_candidates`, reduced to just the sorted paths --
+    the shape every existing caller wants."""
+    return [
+        candidate.path
+        for candidate in discover_seed_candidates(
+            workspace, urdyn_dirname, ignore_rules=ignore_rules
+        )
+    ]

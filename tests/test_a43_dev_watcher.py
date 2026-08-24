@@ -266,13 +266,32 @@ def test_no_canonical_memory_promotion_after_watcher_activity(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "excluded_dir", [".urdyn", ".git", "__pycache__", "node_modules", "dist", "build"]
+    "excluded_dir",
+    [
+        ".urdyn",
+        ".git",
+        "__pycache__",
+        "node_modules",
+        "dist",
+        "build",
+        ".venv",
+        "venv",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+        ".tox",
+        ".eggs",
+        "urdyn.egg-info",
+        "nested/node_modules",
+    ],
 )
 def test_files_under_excluded_or_uninteresting_dirs_never_observed(tmp_path, excluded_dir):
-    """Scope is a bounded allowlist (tracked Sources + a root/docs-only
-    discovery glob), never a recursive walk -- a path under any of these
-    directories cannot structurally match it, so no denylist is needed
-    as the enforcement mechanism (see `_watcher.py`'s module docstring).
+    """Since A53 discovery DOES walk the tree, so this is no longer true
+    "by construction" -- it is enforced by an explicit mandatory
+    directory exclusion list (`_source.MANDATORY_EXCLUDED_DIR_NAMES`)
+    that the walk never descends into, at any depth, whatever
+    `.gitignore` does or does not say. That makes this test load-bearing
+    rather than a restatement of the glob's shape.
     """
     cx = _init_dev(tmp_path, **{"README.md": "root\n"})
     (tmp_path / excluded_dir).mkdir(parents=True, exist_ok=True)
@@ -280,10 +299,35 @@ def test_files_under_excluded_or_uninteresting_dirs_never_observed(tmp_path, exc
 
     scope = cx.watcher_scope()
     assert f"{excluded_dir}/README.md" not in scope
+    assert f"{excluded_dir}/README.md" not in cx.seed_candidates()
 
     _watcher.enable_and_start(cx)
     time.sleep(3.0)
     assert _observation_count(cx, f"{excluded_dir}/README.md") == 0
+
+
+def test_private_dir_excluded_via_git_info_exclude_is_never_observed(tmp_path):
+    """The privacy invariant, end to end through the watcher: a directory
+    the project already told git to forget -- here via
+    `.git/info/exclude`, the mechanism for a private exclusion that is
+    NOT committed -- is never discovered, never watched, and never
+    observed. `.private-notes/` is a generic fixture name; nothing about
+    the rule is specific to it."""
+    cx = _init_dev(tmp_path, **{"README.md": "root\n"})
+    (tmp_path / ".git" / "info").mkdir(parents=True, exist_ok=True)
+    (tmp_path / ".git" / "info" / "exclude").write_text(".private-notes/\n", encoding="utf-8")
+    (tmp_path / ".private-notes").mkdir()
+    (tmp_path / ".private-notes" / "journal.md").write_text("private\n", encoding="utf-8")
+
+    assert ".private-notes/journal.md" not in cx.watcher_scope()
+    assert ".private-notes/journal.md" not in cx.seed_candidates()
+
+    _watcher.enable_and_start(cx)
+    time.sleep(3.0)
+    (tmp_path / ".private-notes" / "journal.md").write_text("still private\n", encoding="utf-8")
+    time.sleep(3.0)
+    assert _observation_count(cx, ".private-notes/journal.md") == 0
+    assert all(not source.path.startswith(".private-notes/") for source in cx.sources())
 
 
 def test_out_of_scope_file_ignored_until_seeded(tmp_path):
@@ -491,36 +535,45 @@ def test_symlink_loop_does_not_hang_and_is_refused(tmp_path):
     assert len(source.observations) == 1
 
 
-def test_oversized_binary_blank_refused_logged_and_watcher_keeps_running(tmp_path):
+def test_oversized_binary_blank_never_enter_discovered_scope(tmp_path):
+    """INTENTIONAL BEHAVIOUR CHANGE (A53).
+
+    This test previously asserted that only the OVERSIZED file was
+    pre-filtered at discovery (a stat-level check), while binary and
+    blank files entered scope and were refused later, at seed() time,
+    once per fresh fingerprint.
+
+    Discovery now reads each candidate through `read_seed_candidate`
+    -- the same function the seed pipeline uses -- so binary, non-UTF-8
+    and blank files are pre-filtered too, exactly like the oversized one.
+    That is a STRONGER guarantee than "refused and logged": such files
+    never enter scope, so the watcher never re-reads them on every scan
+    just to refuse them again. The refusal path itself is unchanged and
+    still exercised by `test_symlink_escape_refused` and
+    `test_symlink_loop_does_not_hang_and_is_refused`, which reach it the
+    only way that still can: through an already-tracked Source.
+    """
     cx = _init_dev(tmp_path, **{"README.md": "fine\n"})
     _watcher.enable_and_start(cx)
 
-    # Created AFTER enable: detected as new/changed paths, each reaching
-    # a real seed() attempt and refusal, rather than being silently
-    # absorbed into the fresh, zero-observation baseline.
     (tmp_path / "docs").mkdir()
     (tmp_path / "docs" / "oversized.md").write_text("x" * (1_048_576 + 1), encoding="utf-8")
     (tmp_path / "docs" / "binary.md").write_bytes(b"\x00\x01\x02binary")
     (tmp_path / "docs" / "blank.md").write_text("   \n", encoding="utf-8")
+    (tmp_path / "docs" / "fine.md").write_text("a real document\n", encoding="utf-8")
 
-    # The oversized file is pre-filtered at the DISCOVERY stage itself
-    # (`discover_candidate_paths` applies the same `resolve_seed_path`
-    # size check used everywhere else) -- it never even enters scope, so
-    # it is never read and never reaches a seed() attempt at all. That is
-    # a stronger guarantee than "refused", not the same one, so it is
-    # asserted separately from the binary/blank cases below.
-    assert "docs/oversized.md" not in _watcher._scan_scope(cx)
-
-    def _both_refused() -> bool:
-        text = _log_text(cx)
-        return text.count("refused") >= 2
-
-    assert _wait_for(_both_refused, timeout=10.0)
-    assert cx.sources() == []  # all refused, nothing fabricated
+    scope = _watcher._scan_scope(cx)
+    assert "docs/oversized.md" not in scope
+    assert "docs/binary.md" not in scope
+    assert "docs/blank.md" not in scope
+    assert "docs/fine.md" in scope  # ...and an eligible sibling still is
 
     # the watcher must still be alive and functional afterward
     (tmp_path / "README.md").write_text("still working\n", encoding="utf-8")
     assert _wait_for(lambda: _observation_count(cx, "README.md") == 1)
+    assert _observation_count(cx, "docs/oversized.md") == 0
+    assert _observation_count(cx, "docs/binary.md") == 0
+    assert _observation_count(cx, "docs/blank.md") == 0
 
 
 # -- 8. concurrency smoke and platform isolation ---------------------------------

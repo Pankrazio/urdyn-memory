@@ -44,6 +44,64 @@ is relevant at all -- that gate is unchanged, still
 via all three existing channels (lexical majority, FTS, semantic). No new
 embedding backend, no new persisted index: chunk ranking only ever narrows
 an ALREADY-admitted document down to its most relevant segments.
+
+INTENT-WEIGHTED OVERLAP (A54). A flat "count of shared tokens" score
+structurally favors a long, topically-dense document over a short,
+precise one that directly answers the query: a document that paraphrases
+"capability X" ten different ways racks up shared generic vocabulary
+(the topic's own words) even when it never actually contains the
+CONCLUSION, DECISION or EVALUATION the query is asking for, while the
+short document that states that conclusion in one sentence shares fewer
+tokens overall and loses the ranking despite being the right answer. This
+was reproduced during A54 dogfooding review: a dense definition
+out-scored a precise later-research conclusion on a query that explicitly
+asked what that research concluded.
+
+`_INTENT_TERMS` is a small, fixed vocabulary of words that signal WHAT
+KIND of answer a query wants (concluding, deciding, evaluating, a result,
+a current/latest state) rather than WHAT TOPIC it is about. A shared
+token drawn from this set counts `_INTENT_TERM_WEIGHT` times instead of
+once -- still an integer, still deterministic, still requiring the token
+to appear in both the query AND the candidate (an intent word absent from
+the query never boosts anything). This only re-orders candidates that
+ADMISSION already let through; no threshold here is an admission gate,
+and a lexical-only workspace (no semantic extra installed) ranks exactly
+as correctly as one with it, since this is pure vocabulary weighting with
+no embedding involved.
+
+TOPICAL CO-OCCURRENCE REQUIREMENT (A54.1). Real-corpus dogfooding
+(replaying a historical failing query from A54's own fix review) falsified
+the plain version above: a completely unrelated document that happened to
+contain the single word "conclude" in an aside about something else
+entirely still got its lone shared token boosted 3x by
+`_INTENT_TERM_WEIGHT`, with ZERO other shared vocabulary -- and that
+inflated score was enough for `_preflight.minimum_sufficient_project_evidence`
+to treat it as worth keeping, purely because nothing else in the corpus
+happened to contain that exact word. Confirmed by grep: the word never
+appears anywhere in either of the two documents that actually discuss the
+query's real topic.
+
+Growing `_INTENT_TERMS` to cover more reporting verbs (establish,
+determine, assess, ...) cannot fix this: it was independently confirmed
+that the ACTUAL relevant documents in that corpus use no reporting verb
+at all for their conclusion -- they simply state it as prose. The bug was
+never "the wrong word was on the list", it was "a lone intent-word match,
+with no accompanying topical evidence that the candidate is even about
+the right SUBJECT, was treated as meaningful signal at all".
+
+The fix: `_weighted_overlap` now applies `_INTENT_TERM_WEIGHT` only when
+the shared tokens include at least one TOPICAL (non-intent) token too --
+i.e. only when there is independent evidence the candidate is about the
+query's subject in the first place. An intent word matched in isolation
+now counts as an ordinary shared token (weight 1, the same as any other
+single incidental word, and the same as this codebase's behavior before
+A54 introduced the weighting at all) -- never specially promoted on its
+own. This keeps every A54 CASE A-D fixture unchanged (each of those
+documents shares real topical vocabulary WITH its intent word, by
+construction), while removing the exact mechanism that promoted a
+topically-empty match. No new vocabulary, no per-query classification,
+no embedding: intent cues remain a REFINEMENT applied on top of
+independently-established topical relevance, never a substitute for it.
 """
 
 from __future__ import annotations
@@ -66,6 +124,44 @@ from ._relevance import tokens as _tokens
 DEFAULT_CHUNK_MAX_CHARS = 1200
 
 _PARAGRAPH_SEPARATOR = re.compile(r"\n\s*\n")
+
+# [A54] Words that name WHAT KIND of answer a query wants, not what topic
+# it is about -- see the module docstring's "INTENT-WEIGHTED OVERLAP"
+# section. Deliberately small, fixed, and generic across domains: no word
+# tied to any one project, vendor, or dogfood corpus. Only inflection
+# forms of each intent verb/noun are included (not synonyms in general),
+# to keep the set auditable at a glance.
+_INTENT_TERMS = frozenset(
+    {
+        "conclude", "concludes", "concluded", "concluding", "conclusion", "conclusions",
+        "decide", "decides", "decided", "deciding", "decision", "decisions",
+        "evaluate", "evaluates", "evaluated", "evaluating", "evaluation", "evaluations",
+        "result", "results", "finding", "findings", "found",
+        "current", "currently", "latest", "recent", "recently",
+        "definition", "definitions", "define", "defines", "defined", "defining",
+    }
+)
+
+# Integer, not a tuned float: a shared intent token counts as this many
+# ordinary shared tokens. Large enough to move a short, precise,
+# intent-matching document ahead of a longer topically-dense one in the
+# A54 reproduction (see module docstring), without being so large that a
+# single incidental intent-word match can outweigh a genuinely large
+# topical overlap on its own.
+_INTENT_TERM_WEIGHT = 3
+
+
+def _weighted_overlap(query_tokens: frozenset[str], candidate_tokens: set[str]) -> int:
+    shared = query_tokens & candidate_tokens
+    intent_shared = shared & _INTENT_TERMS
+    topical_shared = shared - _INTENT_TERMS
+    if not topical_shared:
+        # [A54.1] No independent evidence this candidate is even about
+        # the query's subject -- an intent word matched in isolation is
+        # an ordinary shared token, not a signal of relevance on its own.
+        # See the module docstring's "TOPICAL CO-OCCURRENCE REQUIREMENT".
+        return len(shared)
+    return len(shared) + (_INTENT_TERM_WEIGHT - 1) * len(intent_shared)
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -186,20 +282,54 @@ def chunk_evidence(evidence: Evidence, *, max_chars: int = DEFAULT_CHUNK_MAX_CHA
     )
 
 
+_CHUNK_SEMANTIC_ID_SEPARATOR = "#"
+
+
+def chunk_semantic_id(evidence_id: str, chunk_index: int) -> str:
+    """[A54.3] Deterministic, derived identity for one chunk's semantic
+    (embedding) representation -- a plain, reconstructible function of
+    the same `(evidence_id, chunk_index)` pair `EvidenceChunk` already
+    carries, never a row id and never a path. `evidence_id` is a
+    `uuid.uuid4().hex` string (see `_workspace.py`), which never contains
+    `_CHUNK_SEMANTIC_ID_SEPARATOR`, so this round-trips exactly through
+    `parse_chunk_semantic_id`.
+
+    This id names a SEMANTIC INDEX row only -- see `_semantic_store.py` --
+    never a canonical record: a chunk has no identity or authority of its
+    own (module docstring), and nothing outside the semantic pool ever
+    looks this id up."""
+    return f"{evidence_id}{_CHUNK_SEMANTIC_ID_SEPARATOR}{chunk_index}"
+
+
+def parse_chunk_semantic_id(semantic_id: str) -> tuple[str, int]:
+    """Inverse of `chunk_semantic_id`: recovers the parent Evidence's own
+    canonical id and the chunk's index within it. `rpartition` (not
+    `split`) on purpose: robust even in the purely theoretical case of an
+    id containing the separator, since only the LAST occurrence can be
+    the chunk-index delimiter this function itself always writes."""
+    evidence_id, _, index = semantic_id.rpartition(_CHUNK_SEMANTIC_ID_SEPARATOR)
+    return evidence_id, int(index)
+
+
 def score_evidence_chunks(
     query_tokens: frozenset[str], chunks: tuple[EvidenceChunk, ...]
 ) -> tuple[tuple[int, EvidenceChunk], ...]:
     """`rank_evidence_chunks`, but KEEPING each surviving chunk's own
-    lexical shared-token count instead of discarding it.
+    lexical score instead of discarding it.
 
-    The count was always computed here -- ranking is defined by it -- and
+    The score was always computed here -- ranking is defined by it -- and
     was simply thrown away at the return statement, which left every
     caller downstream with no way to compare a chunk of one document
     against a chunk of another. Exposing the number that already decides
-    WITHIN-document order is not a new score, a new threshold, or a new
-    channel: it is the same integer, surfaced instead of dropped, so
-    cross-document ordering can use it too (see
-    `_preflight.ordered_project_evidence`).
+    WITHIN-document order is not a new channel: it is the same integer,
+    surfaced instead of dropped, so cross-document ordering can use it
+    too (see `_preflight.ordered_project_evidence`).
+
+    The score itself is `_weighted_overlap` (see the module docstring's
+    "INTENT-WEIGHTED OVERLAP" section, A54): plain shared-token count,
+    except a shared token drawn from `_INTENT_TERMS` counts extra. Zero
+    exactly when there is no overlap at all, same as the plain count did,
+    so every "zero overlap" branch below is unaffected by the weighting.
 
     Ordering, the zero-overlap leading-chunk fallback, and the
     single-chunk pass-through are all exactly `rank_evidence_chunks`'s,
@@ -207,8 +337,8 @@ def score_evidence_chunks(
     implementation of chunk ranking, not two that could drift.
     """
     if len(chunks) <= 1:
-        return tuple((len(query_tokens & _tokens(chunk.text)), chunk) for chunk in chunks)
-    scored = [(len(query_tokens & _tokens(chunk.text)), chunk) for chunk in chunks]
+        return tuple((_weighted_overlap(query_tokens, _tokens(chunk.text)), chunk) for chunk in chunks)
+    scored = [(_weighted_overlap(query_tokens, _tokens(chunk.text)), chunk) for chunk in chunks]
     if all(score == 0 for score, _ in scored):
         return ((0, chunks[0]),)
     relevant = sorted((pair for pair in scored if pair[0] > 0), key=lambda pair: (-pair[0], pair[1].chunk_index))

@@ -9,6 +9,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from ._attempt import OUTCOME_FAILED, VALID_OUTCOMES, Attempt
+from ._chunk import chunk_evidence, chunk_semantic_id, parse_chunk_semantic_id
 from ._conflict import Conflict
 from ._context import (
     DEFAULT_CONTEXT_BUDGET,
@@ -62,6 +63,7 @@ from ._preflight import (
     build_preflight,
     build_relevance_context,
     memory_is_relevant,
+    minimum_sufficient_project_evidence,
     ordered_project_evidence,
     trace_project_evidence,
 )
@@ -192,6 +194,20 @@ def _selected_project_evidence_keys(compiled: CompiledContext) -> frozenset[tupl
     )
 
 
+# [A54.3] Semantic-index-only entity type for derived, per-chunk
+# representations of a seeded Source's current-observation Evidence --
+# see `_semantic_pool_entries`'s "Strategy B'" paragraph below. Deliberately
+# NOT `._retrieval.ENTITY_SOURCE`: that constant names the WHOLE-DOCUMENT
+# pool the FTS/lexical widening channel still ranks (`_relevance.py`'s
+# `search_candidates(..., ENTITY_SOURCE)`, unchanged by this), a completely
+# separate store (`MemoryStore`'s FTS index) from the one this constant
+# addresses (`SemanticIndexStore`'s vector table). Reusing one string for
+# two different pools across two different stores would make "is this the
+# lexical or the semantic Source pool" a fact a reader has to infer from
+# context instead of from the name.
+ENTITY_SOURCE_CHUNK = "source_chunk"
+
+
 def _semantic_pool_entries(
     store: MemoryStore,
     *,
@@ -221,18 +237,39 @@ def _semantic_pool_entries(
     A7.4 -- the same representations `_relevance.py` already derives for
     FTS, no new canonical field.
 
-    `ENTITY_SOURCE` is the fourth pool: the current (latest-
-    observation) Evidence of every seeded Source, keyed by that
-    Evidence's own id (see `MemoryStore.list_current_source_evidence`).
+    `ENTITY_SOURCE_CHUNK` is the fourth pool -- [A54.3, Strategy B',
+    superseding the whole-document `ENTITY_SOURCE` embedding this pool
+    used before]: every derived chunk (`_chunk.chunk_evidence`) of the
+    current (latest-observation) Evidence of every seeded Source, keyed
+    by `_chunk.chunk_semantic_id(evidence_id, chunk_index)` -- never a row
+    id, never a path, always reconstructible from the same
+    `(evidence_id, chunk_index)` pair the lexical chunk ranker already
+    uses. A54.2/A54.2.1 measured that ONE embedding for an entire document
+    (truncated at the model's own 128-token limit) cannot represent a
+    passage buried past that window; embedding each chunk independently
+    and aggregating a Source's semantic score as the MAXIMUM among its own
+    current chunks (see `Urdyn._context_evidence_semantic_admitted`) lets
+    one strongly relevant section make its Source admissible without a
+    document scoring higher merely for having more chunks. Admission
+    itself stays at SOURCE granularity, with the SAME
+    `EVIDENCE_SEMANTIC_FLOOR`/`EVIDENCE_ADMISSION_LIMIT` cap as before --
+    this is deliberately not a global top-K over hundreds of independent
+    chunks, which would let one long document's many chunks crowd out
+    every other seeded Source's only chance at a slot (A54.2.1 ruled this
+    out explicitly).
+
     Evidence/Sources must be included because retrieval now consults
     them: superseding a Source makes this index stale for the new
-    observation's Evidence, exactly like recording a new Memory does; the old
-    observation's Evidence is simply no longer in this pool; it is not
-    unindexed retroactively (search_index/the semantic vector store are
-    both append-only derived data, see `observe_source`) -- it is
-    excluded from THIS pool the same call after call, which is what
-    "current" means here. Ordinary canonical Conflicts remain absent:
-    nothing has ever made them a retrieval unit of their own.
+    observation's Evidence, exactly like recording a new Memory does; the
+    old observation's chunks are simply no longer in this pool -- they are
+    not unindexed retroactively (the semantic vector store is append-only
+    derived data, see `observe_source`), only excluded from THIS pool the
+    same call after call, which is what "current" means here, and is
+    re-enforced independently by `Urdyn._context_evidence_semantic_admitted`
+    restricting ranking to chunks of the CURRENT observation before it
+    ever ranks anything (A7.7's own discipline, unchanged). Ordinary
+    canonical Conflicts remain absent: nothing has ever made them a
+    retrieval unit of their own.
 
     Callers that have already read some of these lists pass them in; the
     parameters exist to avoid re-reading the canonical store inside a
@@ -243,11 +280,16 @@ def _semantic_pool_entries(
     attempts = store.list_attempts() if attempts is None else attempts
     skills = store.list_skills() if skills is None else skills
     source_evidence = store.list_current_source_evidence() if source_evidence is None else source_evidence
+    chunk_entries = [
+        (chunk_semantic_id(evidence.evidence_id, chunk.chunk_index), chunk.text)
+        for _source, evidence in source_evidence
+        for chunk in chunk_evidence(evidence)
+    ]
     return (
         (ENTITY_ATTEMPT, [(a.attempt_id, _attempt_search_text(a.task, a.approach)) for a in attempts]),
         (ENTITY_MEMORY, [(m.memory_id, _memory_search_text(m.content)) for m in memories]),
         (ENTITY_SKILL, [(s.skill_id, _skill_search_text(s.name, s.purpose, s.conditions)) for s in skills]),
-        (ENTITY_SOURCE, [(evidence.evidence_id, evidence.content) for _source, evidence in source_evidence]),
+        (ENTITY_SOURCE_CHUNK, chunk_entries),
     )
 
 
@@ -1403,14 +1445,17 @@ class Urdyn:
         decision_semantic_admitted = self._semantic_widen(task, ENTITY_MEMORY, eligible_ids=decision_eligible_ids)
 
         # A fifth disjoint pool: the current-observation Evidence of
-        # every seeded Source, restricted to the current-observation ids
-        # `_gather_experience` already computed (BEFORE ranking, A7.7) so
-        # a superseded observation can never win a slot here.
-        evidence_eligible_ids = frozenset(
-            evidence.evidence_id for _source, evidence in material.current_source_evidence
-        )
+        # every seeded Source. [A54.3] `current_source_evidence` is passed
+        # through directly (the same list `ordered_project_evidence` below
+        # already receives) rather than a precomputed id set, because
+        # Source-level semantic admission now needs to derive each
+        # Source's OWN current chunk ids -- see
+        # `_context_evidence_semantic_admitted`. A superseded observation
+        # still can never win a slot here: it is simply absent from
+        # `material.current_source_evidence` in the first place (A7.7,
+        # unchanged).
         evidence_semantic_admitted, evidence_semantic_scores = self._context_evidence_semantic_admitted(
-            task, evidence_eligible_ids=evidence_eligible_ids
+            task, current_source_evidence=material.current_source_evidence
         )
         # [A53.1] Ordered by RELEVANCE, not by workspace-relative path.
         # `list_current_source_evidence` returns Sources alphabetically
@@ -1428,9 +1473,18 @@ class Urdyn:
             semantic_admitted_ids=evidence_semantic_admitted,
             semantic_scores=evidence_semantic_scores,
         )
+        # [A54] Minimum sufficient context: drop candidates that add no
+        # NEW query-token coverage over higher-ranked ones already kept,
+        # independent of `budget` -- see
+        # `_preflight.minimum_sufficient_project_evidence`. Runs strictly
+        # before `compile_context`'s own budget prefix-scan, which is
+        # unchanged.
+        sufficient_project_evidence = minimum_sufficient_project_evidence(
+            relevance.query_tokens, project_evidence_candidates
+        )
         relevant_project_evidence = tuple(
             (candidate.evidence, candidate.source_path, candidate.chunk)
-            for candidate in project_evidence_candidates
+            for candidate in sufficient_project_evidence
         )
 
         def _relevant(memory: Memory, semantic_admitted: frozenset[str]) -> bool:
@@ -1465,9 +1519,14 @@ class Urdyn:
             project_evidence=relevant_project_evidence,
         )
         if _project_evidence_trace is not None:
+            sufficient_keys = frozenset(
+                (candidate.source_path, candidate.chunk.chunk_index) for candidate in sufficient_project_evidence
+            )
             _project_evidence_trace.extend(
                 trace_project_evidence(
-                    project_evidence_candidates, _selected_project_evidence_keys(compiled)
+                    project_evidence_candidates,
+                    _selected_project_evidence_keys(compiled),
+                    sufficient_keys=sufficient_keys,
                 )
             )
         return compiled
@@ -1727,12 +1786,20 @@ class Urdyn:
                 (ENTITY_ATTEMPT, []),
                 (ENTITY_MEMORY, []),
                 (ENTITY_SKILL, []),
-                (ENTITY_SOURCE, []),
+                (ENTITY_SOURCE_CHUNK, []),
             )
         else:
             with store:
                 pools = _semantic_pool_entries(store)
         counts = {entity_type: len(entries) for entity_type, entries in pools}
+        # [A54.3] `counts[ENTITY_SOURCE_CHUNK]` is a CHUNK count, not a
+        # document count -- `SemanticSetupResult.source_evidence_count` is
+        # public API and must keep meaning "how many seeded documents",
+        # so it is derived separately as the number of DISTINCT parent
+        # Evidence ids among the chunk pool's own ids, never the row count.
+        source_document_ids = {
+            parse_chunk_semantic_id(chunk_id)[0] for chunk_id, _ in dict(pools)[ENTITY_SOURCE_CHUNK]
+        }
 
         with SemanticIndexStore.create_or_open(self._semantic_db_path) as semantic_store:
             semantic_store.begin_rebuild(
@@ -1762,7 +1829,7 @@ class Urdyn:
             attempt_count=counts[ENTITY_ATTEMPT],
             memory_count=counts[ENTITY_MEMORY],
             skill_count=counts[ENTITY_SKILL],
-            source_evidence_count=counts[ENTITY_SOURCE],
+            source_evidence_count=len(source_document_ids),
         )
 
     # -- semantic lifecycle (A27) ------------------------------------------
@@ -1827,7 +1894,7 @@ class Urdyn:
                 meta = index.meta()
                 indexed = {
                     entity_type: index.indexed_ids(entity_type)
-                    for entity_type in (ENTITY_ATTEMPT, ENTITY_MEMORY, ENTITY_SKILL, ENTITY_SOURCE)
+                    for entity_type in (ENTITY_ATTEMPT, ENTITY_MEMORY, ENTITY_SKILL, ENTITY_SOURCE_CHUNK)
                 }
         except UrdynStorageError:
             return SemanticState(status=SEMANTIC_UNAVAILABLE, detail=DETAIL_INDEX_UNREADABLE)
@@ -2147,7 +2214,7 @@ class Urdyn:
             return frozenset()
 
     def _context_evidence_semantic_admitted(
-        self, task: str, *, evidence_eligible_ids: frozenset[str]
+        self, task: str, *, current_source_evidence: Sequence[tuple[Source, Evidence]]
     ) -> tuple[frozenset[str], dict[str, float]]:
         """Semantic admission for `context()`'s PROJECT EVIDENCE
         pool: a bounded SET, not a single winner -- the same shape as
@@ -2156,26 +2223,46 @@ class Urdyn:
         facet of one task, so this is a set-valued pool, not a contest
         with one winner.
 
-        Ranks `ENTITY_SOURCE` vectors (the current-observation Evidence
-        of every seeded Source, see `_semantic_pool_entries`) against
-        `task` with the SAME model used by every other pool, restricted
-        (before ranking, per A7.7) to `evidence_eligible_ids` -- the
-        caller's already-computed current-observation set, reused rather
-        than re-derived. A superseded observation is not in that set, so
-        no score can bring it back.
+        [A54.3, Strategy B'] Admission is at SOURCE granularity, exactly
+        as before, but the score behind it is no longer one whole-document
+        embedding: it ranks `ENTITY_SOURCE_CHUNK` vectors (every derived
+        chunk of the current-observation Evidence of every seeded Source,
+        see `_semantic_pool_entries`) against `task`, restricted (before
+        ranking, per A7.7) to the CURRENT chunk ids derived fresh from
+        `current_source_evidence` -- an append-only index can hold a
+        superseded observation's chunk vectors, but they are never even
+        candidates here, the same guarantee the old whole-document
+        admission gave. Each Source's semantic score is then the MAXIMUM
+        cosine among its own eligible chunks: one strongly relevant
+        section is enough to make its Source admissible, and a document
+        does not score higher merely for having more chunks (a straight
+        sum or average would do exactly that, and was rejected -- see the
+        A54.2.1 architectural review). `set_admitted_ids` then runs over
+        these per-SOURCE scores with the UNCHANGED floor/limit, so at
+        most `EVIDENCE_ADMISSION_LIMIT` distinct Sources are ever
+        admitted here, never a flood of one long document's own chunks --
+        this is what keeps admission itself immune to same-source
+        flooding by construction, without a new per-source cap.
 
         Admission uses `semantic.EVIDENCE_SEMANTIC_FLOOR`/
         `EVIDENCE_ADMISSION_LIMIT`, which are NOT independently
         calibrated -- see that module's docstring. This is a documented
-        placeholder operating point, not a measurement.
+        placeholder operating point, not a measurement, and this change
+        does not touch either number (see the A54.3 report's CALIBRATION
+        FOLLOW-UP REQUIRED note: max-over-chunks scores run measurably
+        higher than the old whole-document scores did, which makes that
+        pre-existing calibration debt more visible, not something this
+        change was scoped to pay down).
 
-        Returns the admitted id SET together with the cosine score the
-        ranking already produced for each candidate. The scores are not a
-        second admission gate and are never compared to any threshold:
-        `ordered_project_evidence` uses them only to break ties between
-        chunks with an identical lexical shared-token count, so a
-        workspace without the semantic extra (where this returns an empty
-        set and an empty mapping) orders exactly as it would have.
+        Returns the admitted id SET (of `evidence_id`s, exactly as
+        before -- callers downstream, `ordered_project_evidence` included,
+        need no changes) together with the per-Source score the
+        aggregation above produced. The scores are not a second admission
+        gate and are never compared to any threshold: `ordered_project_evidence`
+        uses them only to break ties between chunks with an identical
+        lexical shared-token count, so a workspace without the semantic
+        extra (where this returns an empty set and an empty mapping)
+        orders exactly as it would have.
 
         Falls back to empty -- never raises -- on any degraded
         condition, exactly like `_semantic_widen`.
@@ -2185,22 +2272,44 @@ class Urdyn:
             if context is None:
                 return frozenset(), {}
             semantic, model, meta = context
-            source_vectors = self._semantic_vectors(ENTITY_SOURCE)
-            if not source_vectors:
+            chunk_vectors = self._semantic_vectors(ENTITY_SOURCE_CHUNK)
+            if not chunk_vectors:
                 return frozenset(), {}
-            ranked = semantic.semantic_rank_eligible(
+            # chunk_semantic_id -> owning evidence_id, restricted to
+            # CURRENT chunks only (A7.7): built fresh from the caller's
+            # current-observation list, never from the (possibly stale,
+            # append-only) index contents.
+            owner_by_chunk_id: dict[str, str] = {
+                chunk_semantic_id(evidence.evidence_id, chunk.chunk_index): evidence.evidence_id
+                for _source, evidence in current_source_evidence
+                for chunk in chunk_evidence(evidence)
+            }
+            if not owner_by_chunk_id:
+                return frozenset(), {}
+            ranked_chunks = semantic.semantic_rank_eligible(
                 task,
                 model=model,
-                stored_vectors=source_vectors,
+                stored_vectors=chunk_vectors,
                 dimensions=meta.dimensions,
-                eligible_ids=evidence_eligible_ids,
+                eligible_ids=frozenset(owner_by_chunk_id),
             )
+            if not ranked_chunks:
+                return frozenset(), {}
+            # `ranked_chunks` is already best-first (`rank_candidates`),
+            # so the first chunk seen for a given Source IS that Source's
+            # maximum -- no separate max() pass needed.
+            source_scores: dict[str, float] = {}
+            for chunk_id, score in ranked_chunks:
+                evidence_id = owner_by_chunk_id[chunk_id]
+                if evidence_id not in source_scores:
+                    source_scores[evidence_id] = score
+            ranked_sources = sorted(source_scores.items(), key=lambda pair: -pair[1])
             admitted = semantic.set_admitted_ids(
-                ranked,
+                ranked_sources,
                 floor=semantic.EVIDENCE_SEMANTIC_FLOOR,
                 limit=semantic.EVIDENCE_ADMISSION_LIMIT,
             )
-            return admitted, {entity_id: score for entity_id, score in ranked}
+            return admitted, source_scores
         except Exception:
             return frozenset(), {}
 

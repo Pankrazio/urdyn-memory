@@ -186,7 +186,8 @@ class ProjectEvidenceCandidate:
     """One admitted chunk of one seeded document, carrying the signals
     that decide where it sits in the budget queue.
 
-    `lexical_shared_tokens` is the count `score_evidence_chunks` already
+    `lexical_shared_tokens` is the (intent-weighted, A54 --
+    `_chunk._weighted_overlap`) score `score_evidence_chunks` already
     computes to order chunks WITHIN a document; `semantic_score` is the
     cosine the semantic channel already computed for the parent document
     if that channel fired (0.0 otherwise, including whenever the optional
@@ -284,6 +285,115 @@ def ordered_project_evidence(
     return tuple(candidates)
 
 
+def minimum_sufficient_project_evidence(
+    query_tokens: frozenset[str],
+    candidates: Sequence[ProjectEvidenceCandidate],
+) -> tuple[ProjectEvidenceCandidate, ...]:
+    """Drop candidates that add no NEW query-token coverage beyond what
+    higher-ranked candidates already admitted -- a redundancy filter, not
+    a relevance or ranking one (A54, kept independent of the A54 intent
+    weighting in `ordered_project_evidence`/`score_evidence_chunks`: this
+    function never looks at `lexical_shared_tokens`, only at which
+    QUERY tokens each candidate's own text actually contains).
+
+    WHY THIS EXISTS. `compile_context`'s budget admission is a prefix
+    scan (A29.1): every admitted, ranked candidate is tried in order
+    until one does not fit. A generous budget therefore used to admit
+    every relevant chunk up to the byte limit, including chunks that
+    only restate a topic another, higher-ranked chunk already covered --
+    real signal did not grow with the extra budget spent on them. This
+    filter runs on the candidate list BEFORE `compile_context` ever sees
+    it, so the prefix-scan algorithm itself, and its "smaller budget's
+    selection is a prefix of a larger budget's" guarantee, are completely
+    unchanged; this only changes what is offered as a candidate in the
+    first place, uniformly regardless of budget size.
+
+    THE CRITERION. Walk `candidates` in their given (already ranked)
+    order, tracking the union of query tokens every KEPT candidate's own
+    text contains. A candidate is kept if it is the first one (a
+    non-empty result always has at least one item), or if its own text
+    contains at least one query token not already covered by that
+    running union. This is deliberately the SAME deterministic lexical
+    primitive (`_relevance.tokens`) every other retrieval channel in this
+    codebase uses -- no new embedding, no persisted index, no LLM: two
+    candidates that both restate "capability X handles load" contribute
+    the same query-token coverage, so only the higher-ranked one earns a
+    slot, but a candidate covering a genuinely different ASPECT of the
+    query (different query tokens) is always kept, which is what keeps a
+    genuinely multi-aspect query's coverage intact (A53) -- this never
+    reduces selection to "only the first source".
+
+    [A54.4] INDEPENDENT SEMANTIC EVIDENCE IS A SEPARATE "NEW" REASON, NOT
+    JUST NEW TOKENS. Real dogfooding of A54.3's Strategy B' (chunk-level
+    Source-max semantic admission) found a real, general failure class the
+    token-coverage criterion above cannot see: a short query (few
+    significant tokens) can have its ENTIRE vocabulary covered by a single,
+    shallow, incidentally-matching candidate -- a table-of-contents line
+    that merely LINKS to the real answer shares "authority"/"model" from
+    the link path itself, plus "what" from a wholly unrelated sentence two
+    bullets away in the same chunk -- while the actual canonical definition
+    document, whose prose never happens to repeat the query's own
+    interrogative wording, shares one token fewer and is then treated as
+    contributing "no new coverage" and silently dropped, DESPITE having
+    independently cleared the semantic channel by a wide margin (measured:
+    0.88 cosine against the excluded document, versus 0.0 for the TOC line
+    that survives). Token-set overlap does not distinguish "the same
+    information, restated" from "an incidental, shallow mention that
+    happens to share the query's own short vocabulary" -- exactly the
+    "semantic/topical similarity != informational redundancy" distinction:
+    a definition and a decision about the same subject can share most of a
+    short query's tokens while being two different, complementary answers,
+    and this criterion alone cannot tell them apart.
+
+    The fix is additive, not a redesign: a candidate whose SOURCE cleared
+    the semantic admission channel independently (`candidate.admission.semantic`,
+    already computed by `evidence_admission`, not a new measurement) is also
+    kept the FIRST time that Source is seen, even if its own chunk's tokens
+    are a strict subset of what is already covered -- semantic admission is
+    a channel independent of raw token overlap (a different signal entirely,
+    per `_retrieval.py`'s module docstring on why FTS/semantic exist
+    alongside the lexical majority rule in the first place), so a candidate
+    that cleared it is not proven redundant merely because its tokens
+    happen to overlap. `represented_sources` bounds this precisely: only
+    the FIRST candidate of a given, not-yet-represented Source can use this
+    reason, so a Source's SECOND and later chunks still need the original
+    token-coverage rule -- same-source flooding stays exactly as
+    controlled as it already was (A54.3's own guarantee, unaffected). And
+    because semantic admission itself is capped at
+    `EVIDENCE_ADMISSION_LIMIT` distinct Sources (A54.3), this exception can
+    add at most that many extra candidates beyond whatever the token rule
+    already keeps -- bounded by an existing cap, not a new one.
+
+    LEXICAL-ONLY UNCHANGED BY CONSTRUCTION: `candidate.admission.semantic`
+    is `False` for every candidate whenever the semantic extra is not
+    installed or not set up (see `evidence_admission`), which makes this
+    entire exception unreachable in that configuration -- a lexical-only
+    workspace's MSC behavior is byte-for-byte what it was before this
+    change, not merely "still passing its tests" but structurally unable to
+    take the new branch at all.
+
+    NOT a relevance filter: every candidate here already cleared
+    `evidence_is_relevant`'s admission gate before reaching
+    `ordered_project_evidence`, and this function can only remove
+    candidates, never add one back or change admission for any candidate
+    it keeps -- the semantic-evidence exception above still only decides
+    what SURVIVES this filter among already-admitted candidates, exactly
+    like the token-coverage rule it sits beside.
+    """
+    kept: list[ProjectEvidenceCandidate] = []
+    covered: set[str] = set()
+    represented_sources: set[str] = set()
+    for candidate in candidates:
+        chunk_tokens = query_tokens & _tokens(candidate.chunk.text)
+        new_tokens = chunk_tokens - covered
+        new_semantic_source = candidate.admission.semantic and candidate.evidence.evidence_id not in represented_sources
+        if not kept or new_tokens or new_semantic_source:
+            kept.append(candidate)
+            covered |= chunk_tokens
+            represented_sources.add(candidate.evidence.evidence_id)
+    return tuple(kept)
+
+
 @dataclasses.dataclass(frozen=True, slots=True)
 class ProjectEvidenceTrace:
     """One row of internal, debug-only instrumentation about how a
@@ -302,17 +412,30 @@ class ProjectEvidenceTrace:
     lexical_shared_tokens: int
     semantic_score: float
     position: int
+    sufficient: bool
     selected: bool
 
 
 def trace_project_evidence(
-    candidates: Sequence[ProjectEvidenceCandidate], selected_keys: frozenset[tuple[str, int]]
+    candidates: Sequence[ProjectEvidenceCandidate],
+    selected_keys: frozenset[tuple[str, int]],
+    *,
+    sufficient_keys: frozenset[tuple[str, int]] | None = None,
 ) -> tuple[ProjectEvidenceTrace, ...]:
     """Pair each ordered candidate with whether the budget scan actually
     took it. `selected_keys` is `(source_path, chunk_index)` pairs, the
     only identity a rendered PROJECT EVIDENCE item exposes (its
-    `entity_id` is the PARENT Evidence's, shared by every chunk of that
-    document -- see `_chunk.py`)."""
+    `entity_id` is the PARENT Evidence's, shared by every chunk of
+    document -- see `_chunk.py`).
+
+    `sufficient_keys` (A54) is the same kind of key set, but for which
+    candidates survived `minimum_sufficient_project_evidence` -- so a
+    candidate that was cut for REDUNDANCY (never even offered to the
+    budget scan) can be told apart, in this diagnostic-only trace, from
+    one that was cut because it did not FIT. `None` (the default) marks
+    every candidate sufficient, for callers that never ran that filter.
+    """
+    sufficient = sufficient_keys if sufficient_keys is not None else None
     return tuple(
         ProjectEvidenceTrace(
             source_path=candidate.source_path,
@@ -322,6 +445,11 @@ def trace_project_evidence(
             lexical_shared_tokens=candidate.lexical_shared_tokens,
             semantic_score=candidate.semantic_score,
             position=position,
+            sufficient=(
+                True
+                if sufficient is None
+                else (candidate.source_path, candidate.chunk.chunk_index) in sufficient
+            ),
             selected=(candidate.source_path, candidate.chunk.chunk_index) in selected_keys,
         )
         for position, candidate in enumerate(candidates)

@@ -79,7 +79,7 @@ validation · provenance · memory rules
 .urdyn/
 ```
 
-This is a generic integration boundary, not an automatic provider integration. Urdyn 0.3.0 does not ship provider-specific adapters, MCP support, autonomous curation, or automatic invocation. AI tools should use the public CLI/API and never edit `.urdyn/` directly.
+This is a generic integration boundary, not an automatic provider integration. Urdyn 0.4.0 does not ship provider-specific adapters, MCP support, autonomous curation, or automatic invocation. AI tools should use the public CLI/API and never edit `.urdyn/` directly.
 
 ## Existing project files
 
@@ -111,7 +111,7 @@ urdyn watch stop
 
 `urdyn init dev` enables and starts the watcher. It watches every already-tracked Source plus everything the same bounded, privacy-filtered discovery above currently proposes — including a newly created file nobody has seeded yet, not only files that already have a tracked history. Already-tracked files are checked on a fast, adaptive cadence (as often as every 2 seconds while active); noticing a brand-new, never-seen file uses a slower cadence (about every 10 seconds), since nothing about a file with no baseline can be lost by finding it a little later. Changes create Source/Observation/Evidence records, never automatic Memory or other canonical knowledge, and remain local. `urdyn watch stop` stops and persistently disables it.
 
-The watcher is validated and supported on Linux in this release. Known 0.3.0 limits:
+The watcher is validated and supported on Linux in this release. Known 0.4.0 limits:
 
 - Deletions and renames are not tracked. Existing history is retained, and a renamed file begins a new Source history.
 - It is not a boot service. After a reboot, the next normal `urdyn` command restarts an enabled watcher and rechecks already tracked files.
@@ -184,9 +184,11 @@ urdyn semantic setup
 
 Setup downloads a pinned embedding model and builds a derived local index next to the canonical store. The index is rebuildable; when semantic retrieval is unavailable, canonical data remains intact and Urdyn falls back to lexical retrieval.
 
+For seeded project documents, semantic relevance is computed at the granularity of derived text chunks rather than whole documents: a long document is split into paragraph-sized segments, each gets its own embedding, and a document becomes eligible for retrieval based on the strongest match among its own current chunks. This lets a long, multi-topic document surface on a query that only matches one of its sections, while admission still stays bounded to a small number of distinct documents per query, so one long document cannot crowd out every other seeded document. Chunks are always derived and rebuilt from the same canonical document text; they are never stored as their own kind of record and carry no authority independent of the document they came from.
+
 ## 🛠 Current scope and limitations
 
-Urdyn 0.3.0 is an alpha release. It does not currently include:
+Urdyn 0.4.0 is an alpha release. It does not currently include:
 
 - cloud sync;
 - a GUI or desktop application;

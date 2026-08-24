@@ -78,7 +78,7 @@ validazione · provenienza · regole della memoria
 .urdyn/
 ```
 
-Questo è un confine di integrazione generico, non un'integrazione automatica con i provider. Urdyn 0.3.0 non include adapter specifici per provider, supporto MCP, curatela autonoma o invocazione automatica. Gli strumenti AI devono usare la CLI/API pubblica e non modificare mai direttamente `.urdyn/`.
+Questo è un confine di integrazione generico, non un'integrazione automatica con i provider. Urdyn 0.4.0 non include adapter specifici per provider, supporto MCP, curatela autonoma o invocazione automatica. Gli strumenti AI devono usare la CLI/API pubblica e non modificare mai direttamente `.urdyn/`.
 
 ## File di progetti esistenti
 
@@ -110,7 +110,7 @@ urdyn watch stop
 
 `urdyn init dev` abilita e avvia il watcher. Osserva ogni Source già tracciata più tutto ciò che la stessa scoperta delimitata e filtrata per la privacy propone al momento — incluso un file appena creato che nessuno ha ancora sottoposto a seed, non solo i file che hanno già una storia tracciata. I file già tracciati sono controllati con una cadenza rapida e adattiva (fino a ogni 2 secondi durante l'attività); accorgersi di un file nuovo mai visto prima usa una cadenza più lenta (circa ogni 10 secondi), perché nulla riguardo un file senza una base di confronto può andare perso trovandolo un po' più tardi. Le modifiche creano record Source/Observation/Evidence, mai Memory automatica o altra conoscenza canonica, e restano locali. `urdyn watch stop` lo ferma e lo disabilita in modo persistente.
 
-Il watcher è validato e supportato su Linux in questa release. Limiti noti della 0.3.0:
+Il watcher è validato e supportato su Linux in questa release. Limiti noti della 0.4.0:
 
 - Cancellazioni e rinomini non sono tracciati. La storia esistente viene conservata e un file rinominato inizia una nuova storia Source.
 - Non è un servizio di avvio del sistema. Dopo un riavvio, il successivo comando `urdyn` normale riavvia un watcher abilitato e ricontrolla i file già tracciati.
@@ -183,9 +183,11 @@ urdyn semantic setup
 
 Il setup scarica un modello di embedding con versione fissata e costruisce un indice locale derivato accanto all'archivio canonico. L'indice è ricostruibile; quando il recupero semantico non è disponibile, i dati canonici restano intatti e Urdyn torna al recupero lessicale.
 
+Per i documenti di progetto seminati, la rilevanza semantica viene calcolata alla granularità dei chunk di testo derivati invece che sui documenti interi: un documento lungo viene suddiviso in segmenti delle dimensioni di un paragrafo, ciascuno con il proprio embedding, e un documento diventa idoneo al recupero in base al miglior punteggio tra i propri chunk correnti. Questo permette a un documento lungo e multi-argomento di emergere su una query che corrisponde a una sola delle sue sezioni, mentre l'ammissione resta comunque limitata a un piccolo numero di documenti distinti per query, così che un documento lungo non possa monopolizzare lo spazio a scapito di ogni altro documento seminato. I chunk sono sempre derivati e ricostruiti dallo stesso testo canonico del documento; non vengono mai memorizzati come un tipo di record a sé stante e non hanno un'autorità propria indipendente dal documento da cui provengono.
+
 ## 🛠 Ambito attuale e limiti
 
-Urdyn 0.3.0 è una release alpha. Attualmente non include:
+Urdyn 0.4.0 è una release alpha. Attualmente non include:
 
 - sincronizzazione cloud;
 - GUI o applicazione desktop;

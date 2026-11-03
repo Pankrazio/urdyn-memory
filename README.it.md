@@ -18,13 +18,15 @@ cd /percorso/a/urdyn-memory
 python -m pip install .
 ```
 
-Poi inizializza Urdyn all'interno di un progetto:
+Poi crea un Brain all'interno di un progetto esistente:
 
 ```bash
 cd mio-progetto
-urdyn init dev
+urdyn create dev
 urdyn status
 ```
+
+`urdyn init` crea un Brain soltanto in una directory vuota o non ancora esistente; altrimenti riapre il Brain già presente. In una directory non vuota senza Brain rifiuta e indica `urdyn create`: una directory simile non è distinguibile da un progetto il cui Brain è andato perso, quindi lì un Brain non viene mai creato implicitamente. (Urdyn 0.4.0 lo creava; questa versione deliberatamente no.)
 
 Il motore base richiede Python 3.12+, dichiara zero dipendenze runtime obbligatorie e non necessita di alcun modello o API key.
 
@@ -56,7 +58,7 @@ Questo preserva decisioni, fallimenti, provenienza e lezioni come record distint
 - I dati canonici vivono dentro `.urdyn/` nel tuo workspace.
 - Il motore base non richiede account, servizi cloud o API key.
 - Il funzionamento base non carica automaticamente dati all'esterno e non scarica modelli.
-- `urdyn init` aggiunge automaticamente `.urdyn/` al `.gitignore` del progetto.
+- `urdyn create`/`urdyn init` aggiungono `.urdyn/` al `.gitignore` della directory (regole e terminatori di riga esistenti conservati, nessuna duplicazione, mai scrittura attraverso un `.gitignore` symlink). Se Git è disponibile chiedono a Git di confermare che i file del Brain sono ignorati, e rifiutano di creare il Brain se Git traccia già file sotto `.urdyn/` o se una regola lo re-include esplicitamente; l'indice Git non viene mai modificato. Senza Git la voce viene scritta e dichiarata non verificata. Una voce `.gitignore` evita soltanto i commit accidentali: non è cifratura, controllo degli accessi né protezione di dati già pubblicati.
 - Il seed di un documento conserva localmente in `.urdyn/` il contenuto osservato; non lo invia altrove.
 
 L'extra semantico opzionale è l'eccezione esplicita all'assenza di download: il suo setup scarica da Hugging Face un modello di embedding con versione fissata.
@@ -125,7 +127,8 @@ Registrare Evidence non crea mai automaticamente Memory, Lesson o Skill. Un READ
 ## 🧩 Profili
 
 ```bash
-urdyn init [general|dev|lab]
+urdyn create [general|dev|lab]   # in un progetto esistente
+urdyn init [general|dev|lab]     # in una directory vuota o nuova
 ```
 
 | Profilo | Comportamento implementato |
@@ -181,13 +184,13 @@ pip install "urdyn-memory[semantic]"
 urdyn semantic setup
 ```
 
-Il setup scarica un modello di embedding con versione fissata e costruisce un indice locale derivato accanto all'archivio canonico. L'indice è ricostruibile; quando il recupero semantico non è disponibile, i dati canonici restano intatti e Urdyn torna al recupero lessicale.
+Il setup scarica un modello di embedding con versione fissata ([`sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`](https://huggingface.co/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2), a una revisione fissa; la licenza è indicata nella sua model card) e costruisce un indice locale derivato accanto all'archivio canonico. Il modello non è ridistribuito con Urdyn. L'indice è ricostruibile; quando il recupero semantico non è disponibile, i dati canonici restano intatti e Urdyn torna al recupero lessicale.
 
 Per i documenti di progetto seminati, la rilevanza semantica viene calcolata alla granularità dei chunk di testo derivati invece che sui documenti interi: un documento lungo viene suddiviso in segmenti delle dimensioni di un paragrafo, ciascuno con il proprio embedding, e un documento diventa idoneo al recupero in base al miglior punteggio tra i propri chunk correnti. Questo permette a un documento lungo e multi-argomento di emergere su una query che corrisponde a una sola delle sue sezioni, mentre l'ammissione resta comunque limitata a un piccolo numero di documenti distinti per query, così che un documento lungo non possa monopolizzare lo spazio a scapito di ogni altro documento seminato. I chunk sono sempre derivati e ricostruiti dallo stesso testo canonico del documento; non vengono mai memorizzati come un tipo di record a sé stante e non hanno un'autorità propria indipendente dal documento da cui provengono.
 
 ## 🛠 Ambito attuale e limiti
 
-Urdyn 0.4.0 è una release alpha. Attualmente non include:
+Urdyn è software alpha (ultima release 0.4.0; questa è la linea di sviluppo 0.4.1). Attualmente non include:
 
 - sincronizzazione cloud;
 - GUI o applicazione desktop;
@@ -198,15 +201,45 @@ Urdyn 0.4.0 è una release alpha. Attualmente non include:
 
 Il confine CLI/API è deliberato: Urdyn fornisce il motore di memoria e le sue regole, mentre una persona o uno strumento esterno decide cosa registrare e quando consultarlo.
 
+## Backend semantico locale esterno (sperimentale)
+
+L'API proposta espone `SemanticBackend`, `SemanticBackendIdentity` e `Urdyn.configure_semantic_backend(backend)`. Il backend è associato **alla singola istanza** Urdyn e deve essere riconfigurato dopo una nuova `open()` o `init()`. `available()` controlla la disponibilità locale senza rete; `encode(texts)` restituisce un vettore finito e non nullo per testo. Urdyn convalida tipo, cardinalità e larghezza, converte in `float32` rifiutando valori non finiti e righe nulle, normalizza secondo il contratto versionato `l2-scaled-f64-v1` e continua a gestire indice, recupero e fallback. `SemanticBackendIdentity.normalization` segue per default questo contratto; il valore legacy `l2` è rifiutato. Un indice costruito con il contratto precedente `l2` non viene letto né aggiornato: va ricostruito esplicitamente con `semantic_setup()`, senza toccare la memoria canonica. Se durante una richiesta la lettura semantica fallisce, la risposta è interamente lessicale e lo dichiara (`unavailable`), senza cambiare il significato di `semantic_state()`. Il backend Python ONNX esistente resta predefinito se non viene configurato nulla.
+
+Per ora sono accettate soltanto identità degli artifact MiniLM alla revisione già calibrata, con 384 dimensioni. Il contratto richiede SHA-256 di modello e tokenizer e un identificatore stabile della politica di encoding (compresi batching e padding): tutti entrano nell'identità persistita dell'indice. Per l'artifact ARM64 e il tokenizer Urdyn controlla gli hash pubblici fissati. Il valore `provider` distingue implementazioni la cui equivalenza non è stata provata. Il client deve verificare gli hash **dei file effettivi** prima di dichiarare `available()`. Il contratto è riutilizzabile da qualsiasi client, ma **non abilita automaticamente nuovi modelli** con soglie di ammissione non calibrate. L'extra `semantic-backend` installa solo NumPy; il pacchetto base conserva zero dipendenze runtime obbligatorie. Questa API è sperimentale e non è ancora inclusa in una release su PyPI.
+
+```python
+from urdyn import Urdyn
+
+brain = Urdyn.open("/percorso/al/brain")
+brain.configure_semantic_backend(backend)  # implementa SemanticBackend
+brain.semantic_setup()  # ricostruisce l'indice derivato
+```
+
+## 💾 Backup, ripristino e compatibilità
+
+```python
+from urdyn import backup
+
+backup.create_backup("my-project", "my-project-backup.zip")
+backup.restore_backup("my-project", "my-project-backup.zip")
+```
+
+Il ripristino passa da uno staging, è atomico, conserva il Brain precedente e rifiuta l'archivio di un Brain diverso. I Brain scritti da Urdyn 0.1.0–0.4.0 si aprono senza modifiche; gli store Cortex dell'epoca di sviluppo sono rifiutati, mai migrati implicitamente. L'indice full-text si verifica e si ricostruisce esplicitamente con `urdyn search-index status|rebuild`, che recupera anche un indice danneggiato dopo una copia di sicurezza. Vedi [backup e ripristino](docs/backup-and-recovery.md), [indice di ricerca](docs/search-index.md) e [compatibilità](docs/compatibility.md) (documentazione in inglese).
+
+## 📚 Documentazione
+
+In inglese: [Getting started](docs/getting-started.md) · [Python API](docs/python-api.md) · [CLI](docs/cli.md) · [Agenti AI](docs/agent-integration.md) · [Architettura](docs/architecture.md) · [Contratto di storage](docs/storage-contract.md) · [Sicurezza e privacy](docs/security-and-privacy.md) · [Changelog](CHANGELOG.md) · [Contributi](CONTRIBUTING.md) · [Segnalazioni di sicurezza](SECURITY.md)
+
 ## Sviluppo
 
 ```bash
-uv sync --extra semantic
+uv sync --frozen --all-extras
 uv run pytest
 HF_HUB_OFFLINE=1 uv run pytest -m real_model
 uv build
 ```
-La suite completa esercita anche il backend semantico opzionale, quindi l’ambiente di sviluppo installa l’extra semantic. Il pacchetto base continua a non avere dipendenze runtime obbligatorie.
+
+La suite completa esercita il backend semantico opzionale, quindi l'ambiente di sviluppo installa l'extra semantico. Il pacchetto base resta senza dipendenze runtime obbligatorie. I test `real_model` vengono saltati se il modello fissato non è già nella cache locale. Vedi [CONTRIBUTING.md](CONTRIBUTING.md).
 
 Lo sviluppo richiede Python 3.12+ e [uv](https://docs.astral.sh/uv/).
 

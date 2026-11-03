@@ -14,3 +14,15 @@ wheels/
 .urdyn/
 .claude/
 validation/
+
+# Internal development records -- kept in a private archive, never published
+/reviews/
+/experiments/
+*HANDOFF*.md
+*_EVIDENCE/
+*_QUALIFICATION_EVIDENCE/
+checkpoint_before_*/
+
+# Operational directories Urdyn creates next to a Brain (lock files, safety copies)
+.urdyn-locks/
+.urdyn-maintenance/

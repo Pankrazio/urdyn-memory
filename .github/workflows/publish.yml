@@ -1,47 +1,162 @@
-name: Publish to PyPI
+name: Verify and publish distributions
 
 on:
+  pull_request:
   push:
-    tags:
-      - "v*"
+    branches: [main, public/clean-consolidation, 'ci/**', 'fix/**']
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
-
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      UV_PROJECT_ENVIRONMENT: ${{ runner.temp }}/test-venv
+      HF_HOME: ${{ runner.temp }}/empty-huggingface-cache
+      HF_HUB_OFFLINE: '1'
+      TRANSFORMERS_OFFLINE: '1'
+      PYTHONDONTWRITEBYTECODE: '1'
+    outputs:
+      release_authorized: ${{ steps.release.outputs.authorized }}
+      distributions_id: ${{ steps.distributions.outputs.artifact-id }}
+      verification_id: ${{ steps.verification.outputs.artifact-id }}
+      checksums_sha256: ${{ steps.checksums.outputs.sha256 }}
     steps:
-      - name: Check out repository
+      - name: Check out the exact revision with historical tags
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
 
-      - name: Install uv
+      - name: Install the qualified Python and uv versions
         uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.12.24'
+          python-version: '3.12.15'
+          enable-cache: false
 
-      - name: Build package
-        run: uv build
+      - name: Check history and install locked dependencies without the project
+        run: |
+          test "$(git rev-parse --is-shallow-repository)" = false
+          for tag in v0.1.0 v0.2.0 v0.3.0 v0.4.0; do
+            git rev-parse --verify "refs/tags/$tag^{commit}"
+          done
+          mkdir -p "$RUNNER_TEMP/verification" "$RUNNER_TEMP/neutral" "$HF_HOME"
+          sha256sum uv.lock > "$RUNNER_TEMP/lock-before.sha256"
+          uv sync --locked --all-extras --no-install-project
+          sha256sum --check "$RUNNER_TEMP/lock-before.sha256"
 
-      - name: Upload distributions
+      - name: Authorize the tag, package version and release revision
+        id: release
+        run: |
+          "$UV_PROJECT_ENVIRONMENT/bin/python" -I .github/scripts/release_checks.py release "$GITHUB_WORKSPACE"
+
+      - name: Build wheel and sdist once, then verify their contents
+        run: |
+          uv build --out-dir "$RUNNER_TEMP/distributions"
+          "$UV_PROJECT_ENVIRONMENT/bin/python" -I .github/scripts/release_checks.py distributions \
+            "$RUNNER_TEMP/distributions" "$GITHUB_WORKSPACE" "$RUNNER_TEMP/verification"
+
+      - name: Install and smoke-test the exact wheel
+        working-directory: ${{ runner.temp }}/neutral
+        run: |
+          uv pip install --python "$UV_PROJECT_ENVIRONMENT/bin/python" --no-deps "$RUNNER_TEMP"/distributions/*.whl
+          "$UV_PROJECT_ENVIRONMENT/bin/python" -I "$GITHUB_WORKSPACE/.github/scripts/release_checks.py" smoke \
+            "$RUNNER_TEMP/distributions"
+
+      - name: Run the complete public suite against the installed wheel
+        working-directory: ${{ runner.temp }}/neutral
+        run: |
+          "$UV_PROJECT_ENVIRONMENT/bin/python" -I -m pytest "$GITHUB_WORKSPACE/tests" \
+            -c "$GITHUB_WORKSPACE/pyproject.toml" -q -ra \
+            --junitxml="$RUNNER_TEMP/verification/pytest.xml"
+
+      - name: Reject failures, missing tests and unexpected skips
+        run: |
+          "$UV_PROJECT_ENVIRONMENT/bin/python" -I .github/scripts/release_checks.py report \
+            "$RUNNER_TEMP/verification/pytest.xml" .github/expected-onnx-skips.json
+
+      - name: Smoke-test a base-only installation without optional dependencies
+        working-directory: ${{ runner.temp }}/neutral
+        run: |
+          uv venv --python 3.12.15 "$RUNNER_TEMP/base-venv"
+          uv pip install --python "$RUNNER_TEMP/base-venv/bin/python" --no-deps "$RUNNER_TEMP"/distributions/*.whl
+          "$RUNNER_TEMP/base-venv/bin/python" -I "$GITHUB_WORKSPACE/.github/scripts/release_checks.py" smoke \
+            "$RUNNER_TEMP/distributions"
+
+      - name: Confirm the artifacts and lockfile are unchanged
+        id: checksums
+        run: |
+          sha256sum --check "$RUNNER_TEMP/lock-before.sha256"
+          cd "$RUNNER_TEMP/distributions"
+          sha256sum --check --strict "$RUNNER_TEMP/verification/SHA256SUMS"
+          digest=$(sha256sum "$RUNNER_TEMP/verification/SHA256SUMS" | cut -d ' ' -f 1)
+          echo "sha256=$digest" >> "$GITHUB_OUTPUT"
+
+      # Distributions are uploaded only after every mandatory check succeeds.
+      - name: Upload the verified distributions
+        id: distributions
         uses: actions/upload-artifact@v4
         with:
-          name: python-package-distributions
-          path: dist/
+          name: verified-distributions
+          path: |
+            ${{ runner.temp }}/distributions/*.whl
+            ${{ runner.temp }}/distributions/*.tar.gz
+          if-no-files-found: error
+
+      - name: Upload checksums, provenance and test results
+        id: verification
+        uses: actions/upload-artifact@v4
+        with:
+          name: distribution-verification
+          path: ${{ runner.temp }}/verification/
+          if-no-files-found: error
 
   publish:
-    needs: build
-    runs-on: ubuntu-latest
-
+    needs: verify
+    if: ${{ success() && needs.verify.result == 'success' && needs.verify.outputs.release_authorized == 'true' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     environment:
       name: pypi
       url: https://pypi.org/p/urdyn-memory
-
     permissions:
+      contents: none
       id-token: write
-
     steps:
-      - name: Download distributions
+      - name: Download the distributions verified in this run
         uses: actions/download-artifact@v4
         with:
-          name: python-package-distributions
+          artifact-ids: ${{ needs.verify.outputs.distributions_id }}
+          merge-multiple: true
           path: dist/
 
-      - name: Publish package to PyPI
+      - name: Download their verification records
+        uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ needs.verify.outputs.verification_id }}
+          merge-multiple: true
+          path: verification/
+
+      - name: Verify the manifest and every distribution before publication
+        env:
+          EXPECTED_SHA256: ${{ needs.verify.outputs.checksums_sha256 }}
+        run: |
+          test -n "$EXPECTED_SHA256"
+          echo "$EXPECTED_SHA256  verification/SHA256SUMS" | sha256sum --check --strict
+          test "$(find dist -mindepth 1 -maxdepth 1 | wc -l)" -eq 2
+          test "$(find dist -maxdepth 1 -type f -name '*.whl' | wc -l)" -eq 1
+          test "$(find dist -maxdepth 1 -type f -name '*.tar.gz' | wc -l)" -eq 1
+          cd dist
+          sha256sum --check --strict ../verification/SHA256SUMS
+
+      - name: Publish the verified artifacts with Trusted Publishing
         uses: pypa/gh-action-pypi-publish@release/v1

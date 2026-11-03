@@ -27,6 +27,8 @@ import uuid
 
 import pytest
 
+import legacy_brains as legacy
+
 from urdyn import Urdyn, UrdynStorageCorruptError, UrdynStorageError, UrdynStorageSchemaError, UrdynStorageUnavailableError
 from urdyn import backup, maintenance
 from urdyn._retrieval import ENTITY_ATTEMPT, ENTITY_MEMORY, ENTITY_SKILL, ENTITY_SOURCE
@@ -91,7 +93,9 @@ def _canonical(db_path):
     try:
         dump = [line for line in connection.iterdump()
                 if SEARCH_INDEX_TABLE not in line and not line.startswith("PRAGMA writable_schema")]
-        identity = connection.execute("SELECT * FROM brain_identity").fetchall()
+        identity = (connection.execute("SELECT * FROM brain_identity").fetchall()
+                    if connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='brain_identity'").fetchone()
+                    else None)
     finally:
         connection.close()
     return dump, identity
@@ -100,6 +104,24 @@ def _canonical(db_path):
 def _files(root):
     urdyn_dir = root / ".urdyn"
     return {p.name: p.read_bytes() for p in sorted(urdyn_dir.iterdir()) if p.is_file()}
+
+
+def _fts_snapshot(db_path):
+    """Raw FTS schema and shadow rows, readable even with damaged segments.
+
+    SQLite's online backup may change header counters; compare the database
+    contents, including damaged index blobs, rather than the file header.
+    """
+    connection = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    try:
+        schema = connection.execute(
+            "SELECT type, name, tbl_name, sql FROM sqlite_master WHERE name GLOB 'search_index*' ORDER BY name"
+        ).fetchall()
+        rows = {name: sorted(connection.execute(f'SELECT * FROM "{name}"').fetchall(), key=repr)
+                for type_, name, _, _ in schema if type_ == "table" and name != SEARCH_INDEX_TABLE}
+        return schema, rows
+    finally:
+        connection.close()
 
 
 def _maintenance_dir(root):
@@ -124,6 +146,24 @@ def _assert_healthy(root, canonical_before):
             if entity_type == ENTITY_SOURCE and not (root / "notes.md").exists():
                 continue
             assert len(store.search_candidates(frozenset({term}), entity_type)) == 1, entity_type
+
+
+@pytest.fixture(params=["bound", "legacy-unbound"])
+def recovery_case(tmp_path, request):
+    if request.param == "bound":
+        root = tmp_path / "brain"
+        cx = _brain(root)
+        check = _assert_healthy
+    else:
+        root, _ = legacy.release_experience_brain(tmp_path, "0.4.0")
+        cx = Urdyn.open(root)
+
+        def check(root, canonical):
+            assert Urdyn.open(root).search_index_state().status == "usable"
+            assert _canonical(cx._db_path) == canonical
+            assert canonical[1] is None
+
+    return root, cx, check
 
 
 # --------------------------------------------------------------------------
@@ -171,6 +211,32 @@ def test_the_handle_methods_use_the_same_entry_and_check_the_handle_identity(tmp
     assert cx.search_index_state().status == "invalid"
     assert cx.rebuild_search_index().status == "usable"
     _assert_healthy(root, canonical)
+
+
+@pytest.mark.parametrize("release", legacy.RELEASES)
+@pytest.mark.parametrize("experience", [False, True])
+def test_recovery_preserves_authentic_unbound_released_brains(tmp_path, release, experience):
+    factory = legacy.release_experience_brain if experience else legacy.release_brain
+    root, _ = factory(tmp_path, release)
+    cx = Urdyn.open(root)
+    canonical = _canonical(cx._db_path)
+    assert canonical[1] is None
+    manifest = (root / ".urdyn" / "manifest.json").read_bytes()
+    version = _sql(cx._db_path, "PRAGMA user_version")
+    _damage_index(cx._db_path)
+    damaged = _fts_snapshot(cx._db_path)
+    _assert_refused_by_open(root)
+
+    recovery = maintenance.recover_search_index(root)
+
+    assert recovery.mode == "recovered" and recovery.state.status == "usable"
+    assert Urdyn.open(root).search_index_state().status == "usable"
+    assert _canonical(cx._db_path) == canonical  # all canonical rows and schema, including history
+    assert _canonical(recovery.backup_path) == canonical
+    assert _sql(cx._db_path, "PRAGMA user_version") == version == [(7,)]
+    assert (root / ".urdyn" / "manifest.json").read_bytes() == manifest
+    assert _fts_snapshot(recovery.backup_path) == damaged
+    assert any(m.startswith("fts5:") for (m,) in _sql(recovery.backup_path, "PRAGMA quick_check"))
 
 
 def test_recovery_on_a_healthy_brain_is_the_ordinary_rebuild_without_a_copy(tmp_path):
@@ -302,6 +368,96 @@ def test_without_fts5_nothing_is_copied_or_written(tmp_path, monkeypatch):
 # --------------------------------------------------------------------------
 
 
+def _replace_binding(connection, state, brain_id):
+    """Fault injection only: replace the binding after the normal checks."""
+    connection.execute("DROP TABLE IF EXISTS brain_identity")
+    if state == "absent":
+        return
+    if state == "bad_columns":
+        connection.execute("CREATE TABLE brain_identity (unexpected TEXT)")
+        return
+    connection.execute("CREATE TABLE brain_identity (singleton INTEGER, brain_id TEXT)")
+    if state == "empty":
+        return
+    value = "invalid" if state == "malformed" else "0" * 32 if state == "discordant" else brain_id
+    assert state != "discordant" or value != brain_id
+    connection.execute("INSERT INTO brain_identity VALUES (1, ?)", (value,))
+    if state == "ambiguous":
+        connection.execute("INSERT INTO brain_identity VALUES (1, ?)", (brain_id,))
+
+
+@pytest.mark.parametrize("side", ["source", "copy"])
+@pytest.mark.parametrize("state", ["empty", "bad_columns", "malformed", "ambiguous", "discordant", "absent", "added"])
+def test_safety_copy_revalidates_both_bindings_against_original_manifest(tmp_path, monkeypatch, side, state):
+    if state == "added":
+        root, _ = legacy.release_brain(tmp_path, "0.4.0")
+        cx = Urdyn.open(root)
+    else:
+        root = tmp_path / "brain"
+        cx = _brain(root)
+    _damage_index(cx._db_path)
+    brain_id = cx.urdyn_id
+    before = _files(root)
+    injected = []
+    connect = sqlite3.connect
+
+    class ChangedBackup(sqlite3.Connection):
+        def backup(self, destination, *args, **kwargs):
+            super().backup(destination, *args, **kwargs)
+            connection = self if side == "source" else destination
+            with connection:
+                _replace_binding(connection, "valid" if state == "added" else state, brain_id)
+            injected.append(_files(root))
+
+    def changed_connect(*args, **kwargs):
+        return connect(*args, **kwargs, factory=ChangedBackup)
+
+    monkeypatch.setattr(maintenance.sqlite3, "connect", changed_connect)
+    if state in {"absent", "added"}:
+        # Isolate the identity-presence comparison from the independent
+        # fingerprint check: None and a valid binding must still differ.
+        monkeypatch.setattr(maintenance, "_canonical_fingerprint", lambda connection: "same fingerprint")
+    error = UrdynStorageUnavailableError if state in {"absent", "added"} else UrdynStorageError
+    with pytest.raises(error) as refused:
+        maintenance.recover_search_index(root)
+    assert len(injected) == 1  # the injection occurred after the real online backup
+    if state in {"absent", "added"}:
+        assert isinstance(refused.value.__cause__, maintenance._Abort)
+    else:
+        assert isinstance(refused.value, UrdynStorageCorruptError if state != "discordant" else UrdynStorageError)
+    assert _files(root) == (injected[0] if side == "source" else before)
+    assert list(_maintenance_dir(root).glob("*.db")) == []
+    assert any(m.startswith("fts5:") for (m,) in _sql(cx._db_path, "PRAGMA quick_check"))
+
+
+@pytest.mark.parametrize("side", ["source", "copy"])
+def test_an_identity_validation_sql_error_is_not_treated_as_unbound(tmp_path, monkeypatch, side):
+    from urdyn import _store
+
+    root, _ = legacy.release_brain(tmp_path, "0.4.0")
+    cx = Urdyn.open(root)
+    _damage_index(cx._db_path)
+    before = _files(root)
+    validate = _store._verify_identity_binding
+    copy_seen = False
+    failure = sqlite3.OperationalError("injected identity read failure")
+
+    def failing_validation(connection, db_path, brain_id=None):
+        nonlocal copy_seen
+        is_copy = db_path != cx._db_path
+        if (side == "copy" and is_copy) or (side == "source" and copy_seen and not is_copy):
+            raise failure
+        copy_seen |= is_copy
+        return validate(connection, db_path, brain_id)
+
+    monkeypatch.setattr(_store, "_verify_identity_binding", failing_validation)
+    with pytest.raises(UrdynStorageUnavailableError) as refused:
+        maintenance.recover_search_index(root)
+    assert refused.value.__cause__ is failure
+    assert _files(root) == before
+    assert list(_maintenance_dir(root).glob("*.db")) == []
+
+
 @pytest.mark.parametrize("failure", ["not_a_directory", "read_only", "copy_mismatch"])
 def test_a_failed_safety_copy_changes_nothing(tmp_path, monkeypatch, failure):
     root = tmp_path / "brain"
@@ -343,16 +499,17 @@ def test_a_failed_safety_copy_changes_nothing(tmp_path, monkeypatch, failure):
 
 
 @pytest.mark.parametrize("where", ["rebuild", "validation"])
-def test_an_error_before_the_commit_rolls_back(tmp_path, monkeypatch, where):
+def test_an_error_before_the_commit_rolls_back(recovery_case, monkeypatch, where):
     import urdyn._store as store_module
 
-    root = tmp_path / "brain"
-    cx = _brain(root)
+    root, cx, check_healthy = recovery_case
     canonical = _canonical(cx._db_path)
     _damage_index(cx._db_path)
     before = _files(root)
     if where == "rebuild":
         def explode(connection):
+            # This hook runs after DROP and CREATE, inside the transaction.
+            assert connection.execute(f"SELECT COUNT(*) FROM {SEARCH_INDEX_TABLE}").fetchone() == (0,)
             raise sqlite3.OperationalError("disk I/O error")
         monkeypatch.setattr(store_module, "_rebuild_search_index", explode)
     else:
@@ -370,12 +527,11 @@ def test_an_error_before_the_commit_rolls_back(tmp_path, monkeypatch, where):
     assert len(copies) == 1 and _canonical(copies[0]) == canonical
     monkeypatch.undo()
     assert maintenance.recover_search_index(root).state.status == "usable"
-    _assert_healthy(root, canonical)
+    check_healthy(root, canonical)
 
 
-def test_a_commit_failure_without_commit_reports_and_changes_nothing(tmp_path, monkeypatch):
-    root = tmp_path / "brain"
-    cx = _brain(root)
+def test_a_commit_failure_without_commit_reports_and_changes_nothing(recovery_case, monkeypatch):
+    root, cx, _ = recovery_case
     _damage_index(cx._db_path)
     before = _files(root)
 
@@ -389,9 +545,8 @@ def test_a_commit_failure_without_commit_reports_and_changes_nothing(tmp_path, m
     _assert_refused_by_open(root)
 
 
-def test_a_commit_that_succeeds_but_reports_an_error_is_confirmed(tmp_path, monkeypatch):
-    root = tmp_path / "brain"
-    cx = _brain(root)
+def test_a_commit_that_succeeds_but_reports_an_error_is_confirmed(recovery_case, monkeypatch):
+    root, cx, check_healthy = recovery_case
     canonical = _canonical(cx._db_path)
     _damage_index(cx._db_path)
 
@@ -401,7 +556,7 @@ def test_a_commit_that_succeeds_but_reports_an_error_is_confirmed(tmp_path, monk
 
     monkeypatch.setattr(maintenance, "_commit", commit_then_fail)
     assert maintenance.recover_search_index(root).state.status == "usable"
-    _assert_healthy(root, canonical)
+    check_healthy(root, canonical)
 
 
 # --------------------------------------------------------------------------
@@ -433,9 +588,8 @@ os._exit(0)
 
 
 @pytest.mark.parametrize("when", ["after_drop", "during_rebuild", "after_commit"])
-def test_a_process_killed_during_recovery(tmp_path, when):
-    root = tmp_path / "brain"
-    cx = _brain(root)
+def test_a_process_killed_during_recovery(recovery_case, when):
+    root, cx, check_healthy = recovery_case
     canonical = _canonical(cx._db_path)
     _damage_index(cx._db_path)
     before = _files(root)
@@ -444,7 +598,7 @@ def test_a_process_killed_during_recovery(tmp_path, when):
                            capture_output=True, text=True, timeout=60)
     assert child.returncode == 17, child.stderr
     if when == "after_commit":
-        _assert_healthy(root, canonical)
+        check_healthy(root, canonical)
     else:
         # The dead process leaves a hot journal; SQLite rolls it back on the
         # next write access. Until then readers see the pre-crash state.
@@ -454,7 +608,7 @@ def test_a_process_killed_during_recovery(tmp_path, when):
         assert _canonical(cx._db_path) == canonical
         assert maintenance.recover_search_index(root).state.status == "usable"
         assert not (root / ".urdyn" / "memory.db-journal").exists()
-        _assert_healthy(root, canonical)
+        check_healthy(root, canonical)
     # One verified safety copy per attempt that reached the copy step.
     assert len(list(_maintenance_dir(root).glob("*.db"))) == (1 if when == "after_commit" else 2)
 
@@ -464,13 +618,15 @@ def test_a_process_killed_during_recovery(tmp_path, when):
 # --------------------------------------------------------------------------
 
 
-def test_the_safety_copy_includes_wal_content(tmp_path):
-    root = tmp_path / "brain"
-    cx = _brain(root)
+def test_the_safety_copy_includes_wal_content(recovery_case):
+    root, cx, check_healthy = recovery_case
     writer = sqlite3.connect(cx._db_path)
     try:
         assert writer.execute("PRAGMA journal_mode = WAL").fetchone() == ("wal",)
         writer.execute("PRAGMA wal_autocheckpoint = 0")
+        initial_rows = writer.execute(f"SELECT COUNT(*) FROM {SEARCH_INDEX_TABLE}_data").fetchone()[0]
+        memory = cx.remember("Committed canonical WAL memory for safety-copy verification.")
+        canonical = _canonical(cx._db_path)
         with writer:
             writer.execute(f"DELETE FROM {SEARCH_INDEX_TABLE}_data WHERE id > 10")
             writer.execute("UPDATE memories SET content = content WHERE 0")  # no-op touch
@@ -479,7 +635,8 @@ def test_the_safety_copy_includes_wal_content(tmp_path):
         main_file_canonical = sqlite3.connect(f"file:{cx._db_path}?mode=ro&nolock=1&immutable=1", uri=True)
         try:
             # Read the main file alone (WAL ignored): the damage is only in the WAL.
-            assert main_file_canonical.execute(f"SELECT COUNT(*) FROM {SEARCH_INDEX_TABLE}_data").fetchone()[0] > 11
+            assert main_file_canonical.execute(f"SELECT COUNT(*) FROM {SEARCH_INDEX_TABLE}_data").fetchone()[0] == initial_rows
+            assert main_file_canonical.execute("SELECT COUNT(*) FROM memories WHERE memory_id = ?", (memory.memory_id,)).fetchone() == (0,)
         finally:
             main_file_canonical.close()
         recovery = maintenance.recover_search_index(root)
@@ -489,7 +646,9 @@ def test_the_safety_copy_includes_wal_content(tmp_path):
     assert recovery.mode == "recovered"
     # The copy holds the WAL state (the damage), not the stale main file.
     assert _sql(copy, f"SELECT COUNT(*) FROM {SEARCH_INDEX_TABLE}_data")[0][0] <= 11
-    assert Urdyn.open(root).search_index_state().status == "usable"
+    assert _canonical(copy) == canonical
+    assert any(m.startswith("fts5:") for (m,) in _sql(copy, "PRAGMA quick_check"))
+    check_healthy(root, canonical)
 
 
 # --------------------------------------------------------------------------

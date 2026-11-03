@@ -245,11 +245,14 @@ def _write_safety_copy(session: _Session) -> tuple[Path, str]:
         copy = sqlite3.connect(target.resolve().as_uri() + "?mode=ro", uri=True)
         try:
             copy_fingerprint = _canonical_fingerprint(copy)
-            copy_identity = copy.execute(f"SELECT * FROM {_store.IDENTITY_TABLE}").fetchall()
+            # Use the original manifest's identity for both validations; the
+            # safety copy has no adjacent manifest. None is valid only when
+            # the binding table is absent (a legacy-unbound Brain).
+            copy_identity = _store._verify_identity_binding(copy, target, session.brain_id)
         finally:
             copy.close()
         source_fingerprint = _canonical_fingerprint(session.connection)
-        source_identity = session.connection.execute(f"SELECT * FROM {_store.IDENTITY_TABLE}").fetchall()
+        source_identity = _store._verify_identity_binding(session.connection, session.db_path, session.brain_id)
         if copy_fingerprint != source_fingerprint or copy_identity != source_identity:
             raise _Abort("the safety copy does not match the Brain")
         with open(target, "rb") as stream:

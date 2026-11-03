@@ -19,8 +19,6 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
-      UV_PROJECT_ENVIRONMENT: ${{ runner.temp }}/test-venv
-      HF_HOME: ${{ runner.temp }}/empty-huggingface-cache
       HF_HUB_OFFLINE: '1'
       TRANSFORMERS_OFFLINE: '1'
       PYTHONDONTWRITEBYTECODE: '1'
@@ -30,6 +28,11 @@ jobs:
       verification_id: ${{ steps.verification.outputs.artifact-id }}
       checksums_sha256: ${{ steps.checksums.outputs.sha256 }}
     steps:
+      - name: Initialize verification paths
+        run: |
+          printf 'UV_PROJECT_ENVIRONMENT=%s/test-venv\nHF_HOME=%s/empty-huggingface-cache\n' \
+            "$RUNNER_TEMP" "$RUNNER_TEMP" >> "$GITHUB_ENV"
+
       - name: Check out the exact revision with historical tags
         uses: actions/checkout@v4
         with:

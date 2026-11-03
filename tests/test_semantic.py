@@ -63,6 +63,7 @@ def fake_semantic(monkeypatch):
     (real revision resolution is tested separately, against the real
     `huggingface_hub` cache, in the real-model integration test)."""
     import urdyn._semantic as semantic
+    monkeypatch.setattr(semantic, "default_runtime_available", lambda: True)
 
     fake_model = _FakeStaticModel()
     monkeypatch.setattr(semantic, "load_model_for_setup", lambda model_id=None: fake_model)
@@ -87,20 +88,12 @@ def fake_semantic(monkeypatch):
 
 
 def _block_semantic_runtime(monkeypatch):
-    """Simulate the `[semantic]` extra not being installed: block
-    `import onnxruntime` and evict any already-imported `_semantic`
-    module so the next `from . import _semantic` re-executes its
-    top-level `import onnxruntime`, hitting the block.
+    """Simulate neither optional semantic extra being installed.
 
-    [A16.3] This blocks `onnxruntime`, the package that actually marks
-    the extra's presence since the backend moved off model2vec. Getting
-    this wrong is not a cosmetic detail: while migrating these tests,
-    blocking the now-unimported `model2vec` made the simulation a silent
-    no-op, and `test_semantic_setup_raises_clear_error_without_the_extra`
-    fell straight through into the REAL setup path and started
-    downloading the model from the network -- the exact thing the suite
-    must never do. Whatever this blocks must stay the package
-    `_semantic.py` genuinely imports.
+    NumPy is the only top-level dependency of `_semantic`: the default
+    ONNX runtime and hub imports are delayed so an external client only
+    needs the lightweight `semantic-backend` extra. Blocking NumPy keeps
+    this test on the genuine missing-extra path without any download.
 
     Deleting `sys.modules["urdyn._semantic"]` alone is not
     enough: once a submodule has been imported anywhere in the process,
@@ -113,7 +106,7 @@ def _block_semantic_runtime(monkeypatch):
     module instead of re-raising ImportError)."""
     import urdyn
 
-    monkeypatch.setitem(sys.modules, "onnxruntime", None)
+    monkeypatch.setitem(sys.modules, "numpy", None)
     monkeypatch.delitem(sys.modules, "urdyn._semantic", raising=False)
     monkeypatch.delattr(urdyn, "_semantic", raising=False)
 
@@ -411,11 +404,14 @@ def test_semantic_setup_persists_model_metadata(tmp_path, fake_semantic):
 
     with SemanticIndexStore.create_or_open(cx._semantic_db_path) as store:
         meta = store.meta()
-    assert meta.provider == semantic.SEMANTIC_PROVIDER
+    # The stored provider is the base provider plus the index's
+    # representation reference (so that older builds refuse the index).
+    from urdyn._representation import base_provider
+    assert base_provider(meta.provider) == semantic.SEMANTIC_PROVIDER != meta.provider
     assert meta.model_id == semantic.SEMANTIC_MODEL_ID
     assert meta.model_revision == "fake-revision"
     assert meta.dimensions == _FAKE_DIM
-    assert meta.normalization == "l2"
+    assert meta.normalization == semantic.SEMANTIC_NORMALIZATION  # versioned, no longer "l2"
     assert meta.status == "ready"
 
 
@@ -801,7 +797,10 @@ def test_semantic_admitted_ids_eligible_ids_does_not_auto_promote_below_floor():
         def encode(self, texts):
             return np.array([[1.0, 0.0]], dtype=np.float32)
 
-    weak_vec = vector_to_blob(np.array([0.05, 0.0], dtype=np.float32))  # cos=0.05, well below 0.20
+    # cos=0.05 with the query, well below 0.20. Stored rows must be
+    # unit vectors (the ranking's own precondition, now enforced on read),
+    # so the weak candidate is a unit vector at that angle, not [0.05, 0].
+    weak_vec = vector_to_blob(np.array([0.05, np.sqrt(1 - 0.05**2)], dtype=np.float32))
     stored_vectors = [("only-eligible", weak_vec)]
 
     result = semantic_admitted_ids(
@@ -1073,11 +1072,16 @@ def test_corroboration_does_not_crash_without_the_extra(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def _meta(model_id, *, provider=None, normalization="l2", dimensions=384, status="ready"):
+def _meta(model_id, *, provider=None, normalization=None, dimensions=384, status="ready"):
     """A `SemanticMeta` built directly, so index-compatibility can be
-    tested without standing up a workspace for every variation."""
+    tested without standing up a workspace for every variation.
+    `normalization` defaults to this build's versioned identity;
+    the legacy 0.4.0 "l2" is refused (see test_semantic_numeric_contract)."""
     import urdyn._semantic as semantic
     from urdyn._semantic_store import SemanticMeta
+
+    if normalization is None:
+        normalization = semantic.SEMANTIC_NORMALIZATION
 
     return SemanticMeta(
         provider=semantic.SEMANTIC_PROVIDER if provider is None else provider,
@@ -1153,6 +1157,7 @@ def test_index_from_a_foreign_model_provider_or_normalization_is_refused():
     assert semantic.artifact_for_index(_meta("")) is None
     assert semantic.artifact_for_index(_meta(good, provider="model2vec")) is None
     assert semantic.artifact_for_index(_meta(good, normalization="none")) is None
+    assert semantic.artifact_for_index(_meta(good, normalization=semantic.LEGACY_SEMANTIC_NORMALIZATION)) is None
     # a well-formed identity naming an artifact this build cannot load
     unknown = f"{semantic.SEMANTIC_MODEL_REPO}@{semantic.SEMANTIC_MODEL_REVISION}#onnx/model_made_up.onnx"
     assert semantic.artifact_for_index(_meta(unknown)) is None
@@ -1201,6 +1206,7 @@ def test_setup_reports_a_urdyn_error_when_the_model_cannot_be_loaded(tmp_path, m
     Urdyn's own error type, not as a raw onnxruntime/huggingface_hub
     traceback (which the CLI would print verbatim)."""
     import urdyn._semantic as semantic
+    monkeypatch.setattr(semantic, "default_runtime_available", lambda: True)
 
     cx = Urdyn.init(tmp_path, "dev")
 
@@ -1319,7 +1325,9 @@ def test_retrieval_never_asks_the_network_for_a_missing_artifact(monkeypatch):
         seen[filename] = local_files_only
         raise OSError("not cached")
 
-    monkeypatch.setattr(semantic.huggingface_hub, "hf_hub_download", _fake_download)
+    monkeypatch.setattr(semantic, "_artifact_path", lambda artifact, *, local_files_only: _fake_download(
+        semantic.SEMANTIC_MODEL_REPO, artifact, local_files_only=local_files_only
+    ))
     with pytest.raises(OSError):
         semantic.load_model_for_retrieval(semantic.ARTIFACT_PORTABLE)
     assert seen and all(local_only is True for local_only in seen.values())

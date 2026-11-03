@@ -54,7 +54,13 @@ def _init_dev(tmp_path, **files) -> Urdyn:
         target = tmp_path / name
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
-    return Urdyn.init(tmp_path, "dev")
+    # storage contract: `init` creates a Brain only in an empty or absent
+    # directory and refuses a populated one (a project whose Brain was lost
+    # looks the same); creating a Brain in an existing project is the
+    # explicit `create`. With files this helper populates the project first,
+    # so it uses `create`; without files the directory is empty and the
+    # `init` path is exercised unchanged.
+    return (Urdyn.create if files else Urdyn.init)(tmp_path, "dev")
 
 
 def _running_pid(cx: Urdyn) -> int | None:

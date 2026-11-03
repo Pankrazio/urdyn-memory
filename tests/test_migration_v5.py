@@ -1,14 +1,13 @@
-"""Backward-compatibility tests: opening and upgrading an A5-A11 (schema
-v4) store to A12.1 (schema v5).
+"""Backward compatibility with A5-A11 (schema v4) stores, and the A12.1
+support relation.
 
-Mirrors the schema-migration test style already established for v1->v2
-(test_migration.py), v1/v2->v3 (test_migration_v3.py), and v3->v4
-(test_migration_v4.py): the older schema is built by hand rather than
-trusted from current code, so a real migration path is exercised.
-
-v5 adds exactly one column, `memory_evidence.role`, backfilled to
-`'related'` for every pre-existing row (A12.1's explicit support
-relation -- see `_store.py`'s module docstring). No new table.
+Schema v4 only existed in Cortex development builds; implicit
+migration (and its `role` backfill) is retired. Migration expectations run on
+the AUTHENTIC v4 Brain written by the historical code (refused, intact). The
+A12.1 reader invariants -- a `verified` memory without explicit support is
+never demoted or rewritten by reading -- stay, on an explicitly built v7 row
+(see the section comment below). The hand-written v4 builder was removed: on
+the v7 store `Urdyn.init` creates it never produced a v4 store.
 """
 
 import datetime as dt
@@ -17,338 +16,182 @@ import uuid
 
 import pytest
 
-from urdyn import Urdyn, UrdynStorageError
+import legacy_brains as legacy
+from urdyn import Urdyn, UrdynStorageError, UrdynStorageSchemaError
+from urdyn import maintenance
 
-_CREATE_MEMORIES_V2_SQL = """
-    CREATE TABLE memories (
-        memory_id TEXT PRIMARY KEY,
-        content TEXT NOT NULL,
-        kind TEXT NOT NULL,
-        epistemic_state TEXT NOT NULL,
-        recorded_at TEXT NOT NULL,
-        supersedes TEXT
-    )
-"""
-
-_CREATE_EVIDENCE_SQL = """
-    CREATE TABLE evidence (
-        evidence_id TEXT PRIMARY KEY,
-        content TEXT NOT NULL,
-        kind TEXT NOT NULL,
-        recorded_at TEXT NOT NULL
-    )
-"""
-
-# The v4 shape: no `role` column. This is exactly what A12.1 adds.
-_CREATE_MEMORY_EVIDENCE_V4_SQL = """
-    CREATE TABLE memory_evidence (
-        memory_id TEXT NOT NULL,
-        evidence_id TEXT NOT NULL,
-        position INTEGER NOT NULL,
-        PRIMARY KEY (memory_id, evidence_id)
-    )
-"""
-
-_CREATE_EVENTS_SQL = """
-    CREATE TABLE events (
-        sequence INTEGER PRIMARY KEY AUTOINCREMENT,
-        event_id TEXT NOT NULL UNIQUE,
-        kind TEXT NOT NULL,
-        subject_id TEXT NOT NULL,
-        occurred_at TEXT NOT NULL
-    )
-"""
-
-_CREATE_ATTEMPTS_SQL = """
-    CREATE TABLE attempts (
-        attempt_id TEXT PRIMARY KEY,
-        task TEXT NOT NULL,
-        approach TEXT NOT NULL,
-        outcome TEXT NOT NULL,
-        recorded_at TEXT NOT NULL
-    )
-"""
-
-_CREATE_ATTEMPT_EVIDENCE_SQL = """
-    CREATE TABLE attempt_evidence (
-        attempt_id TEXT NOT NULL,
-        evidence_id TEXT NOT NULL,
-        position INTEGER NOT NULL,
-        PRIMARY KEY (attempt_id, evidence_id)
-    )
-"""
-
-_CREATE_SKILLS_SQL = """
-    CREATE TABLE skills (
-        skill_id TEXT PRIMARY KEY,
-        name TEXT NOT NULL,
-        purpose TEXT NOT NULL,
-        verification_state TEXT NOT NULL,
-        source_lesson_id TEXT NOT NULL,
-        recorded_at TEXT NOT NULL
-    )
-"""
-
-_CREATE_SKILL_STEPS_SQL = """
-    CREATE TABLE skill_steps (
-        skill_id TEXT NOT NULL,
-        step TEXT NOT NULL,
-        position INTEGER NOT NULL,
-        PRIMARY KEY (skill_id, position)
-    )
-"""
-
-_CREATE_SKILL_CONDITIONS_SQL = """
-    CREATE TABLE skill_conditions (
-        skill_id TEXT NOT NULL,
-        condition TEXT NOT NULL,
-        position INTEGER NOT NULL,
-        PRIMARY KEY (skill_id, position)
-    )
-"""
-
-_CREATE_SKILL_EVIDENCE_SQL = """
-    CREATE TABLE skill_evidence (
-        skill_id TEXT NOT NULL,
-        evidence_id TEXT NOT NULL,
-        position INTEGER NOT NULL,
-        PRIMARY KEY (skill_id, evidence_id)
-    )
-"""
+def _v4(tmp_path):
+    root, generated = legacy.cortex_brain(tmp_path, 4)
+    return root, generated, legacy.db_path(root)
 
 
-def _table_exists(connection, name):
-    return (
-        connection.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?", (name,)
-        ).fetchone()
-        is not None
-    )
+def test_v4_brain_is_refused_and_its_memories_survive_exactly(tmp_path):
+    """Was `test_v4_database_opens_and_memory_survives`."""
+    root, generated, db = _v4(tmp_path)
+    facts = legacy.store_facts(db)
+    before = legacy.snapshot(root)
+    with pytest.raises(UrdynStorageSchemaError):
+        Urdyn.open(root).recall("synthetic")
+    assert legacy.snapshot(root) == before
+    assert legacy.store_facts(db) == facts
+    assert facts["user_version"] == 4 and facts["integrity"] == "ok"
+    assert {row[0] for row in facts["memories"]} == set(generated["written"])
 
 
-def _build_v4_database(
-    db_path,
-    *,
-    memory_id=None,
-    content="a legacy verified lesson from before A12.1",
-    kind="lesson",
-    epistemic_state="user_asserted",
-    evidence_id=None,
-    evidence_kind="test_result",
-):
-    """Insert one more memory into a v4-schema database (no `role` column
-    on `memory_evidence`), creating the schema first if this is the first
-    call for `db_path`. If `evidence_id` is given, links it to the memory
-    exactly as pre-A12.1 code would have: a bare `memory_evidence` row
-    with no support/related distinction."""
-    memory_id = memory_id or uuid.uuid4().hex
-    recorded_at = dt.datetime.now(dt.timezone.utc).isoformat()
-    connection = sqlite3.connect(db_path)
+def test_v4_refusal_adds_no_role_column(tmp_path):
+    """Was `test_v4_migration_reaches_v5_and_adds_role_column`."""
+    root, _, db = _v4(tmp_path)
+    assert "role" not in legacy.store_facts(db)["columns"]["memory_evidence"]
+    for entry in (lambda: Urdyn.open(root).recall("synthetic"), lambda: Urdyn.init(root, "general"),
+                  lambda: maintenance.recover_search_index(root)):
+        with pytest.raises(UrdynStorageSchemaError):
+            entry()
+    facts = legacy.store_facts(db)
+    assert facts["user_version"] == 4
+    assert "role" not in facts["columns"]["memory_evidence"]
+
+
+def test_v4_refusal_backfills_no_role(tmp_path):
+    """Was `test_legacy_memory_evidence_rows_are_backfilled_to_related_not_supporting`
+    (the v4->v5 backfill wrote `related`, never `supporting`). Retired with the
+    migration: the backfill runs zero times -- the authentic v4 links stay
+    exactly as written, with no role at all."""
+    root, _, db = _v4(tmp_path)
+    connection = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
     try:
-        with connection:
-            if not _table_exists(connection, "memories"):
-                connection.execute(_CREATE_MEMORIES_V2_SQL)
-                connection.execute(_CREATE_EVIDENCE_SQL)
-                connection.execute(_CREATE_MEMORY_EVIDENCE_V4_SQL)
-                connection.execute(_CREATE_EVENTS_SQL)
-                connection.execute(_CREATE_ATTEMPTS_SQL)
-                connection.execute(_CREATE_ATTEMPT_EVIDENCE_SQL)
-                connection.execute(_CREATE_SKILLS_SQL)
-                connection.execute(_CREATE_SKILL_STEPS_SQL)
-                connection.execute(_CREATE_SKILL_CONDITIONS_SQL)
-                connection.execute(_CREATE_SKILL_EVIDENCE_SQL)
-                connection.execute("PRAGMA user_version = 4")
-            connection.execute(
-                "INSERT INTO memories (memory_id, content, kind, epistemic_state, recorded_at, supersedes) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (memory_id, content, kind, epistemic_state, recorded_at, None),
-            )
-            connection.execute(
-                "INSERT INTO events (event_id, kind, subject_id, occurred_at) VALUES (?, ?, ?, ?)",
-                (uuid.uuid4().hex, "memory_recorded", memory_id, recorded_at),
-            )
-            if evidence_id is not None:
-                connection.execute(
-                    "INSERT INTO evidence (evidence_id, content, kind, recorded_at) VALUES (?, ?, ?, ?)",
-                    (evidence_id, "legacy qualifying evidence", evidence_kind, recorded_at),
-                )
-                connection.execute(
-                    "INSERT INTO memory_evidence (memory_id, evidence_id, position) VALUES (?, ?, ?)",
-                    (memory_id, evidence_id, 0),
-                )
+        links_before = sorted(connection.execute("SELECT * FROM memory_evidence").fetchall())
     finally:
         connection.close()
-    return memory_id
+    with pytest.raises(UrdynStorageSchemaError):
+        Urdyn.open(root).state()
+    connection = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    try:
+        assert sorted(connection.execute("SELECT * FROM memory_evidence").fetchall()) == links_before
+    finally:
+        connection.close()
 
 
-def test_v4_database_opens_and_memory_survives(tmp_path):
-    cx = Urdyn.init(tmp_path, "dev")
-    memory_id = _build_v4_database(cx._db_path)
+def test_v4_refusal_is_safe_to_repeat(tmp_path):
+    """Was `test_v4_migration_is_safe_to_repeat`."""
+    root, _, _ = _v4(tmp_path)
+    before = legacy.snapshot(root)
+    messages = set()
+    for _ in range(3):
+        with pytest.raises(UrdynStorageSchemaError) as refused:
+            Urdyn.open(root).recall("synthetic")
+        messages.add(str(refused.value))
+    assert len(messages) == 1
+    assert legacy.snapshot(root) == before
 
-    results = cx.recall("legacy verified lesson")
 
-    assert len(results) == 1
-    assert results[0].memory_id == memory_id
+# ---------------------------------------------------------------------------
+# A12.1 reader invariant on the CURRENT schema. A `verified` memory whose
+# only evidence link is `related` (no explicit support) was produced only by the
+# retired v4->v5 migration; no public API of this build or of any release writes
+# one (verification requires explicit supporting evidence). What remains valid
+# is the reader's side: reading never demotes, rewrites or "repairs" such a row.
+# The row is therefore built EXPLICITLY on a v7 store -- declared as such, with
+# its `role` written out -- instead of through a fake v4 builder (which, on the
+# v7 store `Urdyn.init` creates, never produced a v4 store at all).
+# ---------------------------------------------------------------------------
 
 
-def test_v4_migration_reaches_v5_and_adds_role_column(tmp_path):
-    cx = Urdyn.init(tmp_path, "dev")
-    _build_v4_database(cx._db_path)
-
-    # migration v4 -> v5 -> v6 -> v7 happens transparently on first open
-    # (the v5->v6 and v6->v7 steps, added by A13.1 and A19.1, have nothing
-    # to do with `role` and leave this test's own assertions unaffected)
-    cx.recall("legacy verified lesson")
-
+def _v7_verified_memory_with_related_only_evidence(cx, *, content, evidence_kind="test_result"):
+    memory_id, evidence_id = uuid.uuid4().hex, uuid.uuid4().hex
+    recorded_at = dt.datetime.now(dt.timezone.utc).isoformat()
     connection = sqlite3.connect(cx._db_path)
     try:
-        (version,) = connection.execute("PRAGMA user_version").fetchone()
-        columns = [row[1] for row in connection.execute("PRAGMA table_info(memory_evidence)").fetchall()]
+        assert connection.execute("PRAGMA user_version").fetchone() == (7,)
+        assert "role" in [r[1] for r in connection.execute("PRAGMA table_info(memory_evidence)")]
+        with connection:
+            connection.execute(
+                "INSERT INTO memories (memory_id, content, kind, epistemic_state, recorded_at, supersedes) "
+                "VALUES (?, ?, 'lesson', 'verified', ?, NULL)", (memory_id, content, recorded_at))
+            connection.execute(
+                "INSERT INTO events (event_id, kind, subject_id, occurred_at) VALUES (?, 'memory_recorded', ?, ?)",
+                (uuid.uuid4().hex, memory_id, recorded_at))
+            connection.execute(
+                "INSERT INTO evidence (evidence_id, content, kind, recorded_at) VALUES (?, ?, ?, ?)",
+                (evidence_id, "qualifying evidence linked without explicit support", evidence_kind, recorded_at))
+            connection.execute(
+                "INSERT INTO memory_evidence (memory_id, evidence_id, position, role) VALUES (?, ?, 0, 'related')",
+                (memory_id, evidence_id))
+    finally:
+        connection.close()
+    return memory_id, evidence_id
+
+
+def _row(cx, memory_id):
+    connection = sqlite3.connect(f"file:{cx._db_path}?mode=ro", uri=True)
+    try:
+        return (connection.execute("SELECT * FROM memories WHERE memory_id = ?", (memory_id,)).fetchone(),
+                connection.execute("SELECT * FROM memory_evidence WHERE memory_id = ?", (memory_id,)).fetchall())
     finally:
         connection.close()
 
-    assert version == 7
-    assert "role" in columns
 
-
-def test_legacy_verified_memory_stays_verified_with_empty_supporting_ids(tmp_path):
-    """[A12.1 grandfathering, acceptance-critical] A memory recorded
-    `verified` under the pre-A12.1 contract must remain `verified` after
-    migration -- never invalidated, downgraded, or rewritten -- even
-    though it has no explicit supporting Evidence (that concept did not
-    exist when it was recorded). Its generic `evidence_ids` must survive
-    unchanged; `supporting_evidence_ids` is empty, not invented."""
+def test_a_verified_memory_with_only_related_evidence_stays_verified_on_read(tmp_path):
+    """Was `test_legacy_verified_memory_stays_verified_with_empty_supporting_ids`."""
     cx = Urdyn.init(tmp_path, "dev")
-    evidence_id = uuid.uuid4().hex
-    memory_id = _build_v4_database(
-        cx._db_path,
-        content="Migration rollback is atomic.",
-        epistemic_state="verified",
-        evidence_id=evidence_id,
-        evidence_kind="test_result",
-    )
+    memory_id, evidence_id = _v7_verified_memory_with_related_only_evidence(cx, content="Migration rollback is atomic.")
+    stored = _row(cx, memory_id)
 
     (lesson,) = [m for m in cx.state(kind="lesson") if m.memory_id == memory_id]
 
     assert lesson.epistemic_state == "verified"
     assert lesson.evidence_ids == (evidence_id,)
     assert lesson.supporting_evidence_ids == ()
+    assert _row(cx, memory_id) == stored  # read wrote nothing
 
 
-def test_legacy_verified_lesson_still_surfaces_in_preflight_after_migration(tmp_path):
-    """`preflight().verified_lessons` filters only
-    on `epistemic_state == "verified"` (see `_workspace.py`'s
-    `Urdyn.preflight`) -- it has never depended on
-    `supporting_evidence_ids` and must not start doing so now. A
-    v4-migrated verified lesson with empty `supporting_evidence_ids`
-    must keep appearing in preflight exactly as it did before A12.1,
-    for a lexically matching task."""
+def test_a_verified_memory_with_only_related_evidence_still_surfaces_in_preflight(tmp_path):
+    """Was `test_legacy_verified_lesson_still_surfaces_in_preflight_after_migration`:
+    `verified_lessons` filters on `epistemic_state` only, never on explicit support."""
     cx = Urdyn.init(tmp_path, "dev")
-    memory_id = _build_v4_database(
-        cx._db_path,
-        content="Migration rollback is atomic under process crashes.",
-        epistemic_state="verified",
-        evidence_id=uuid.uuid4().hex,
-        evidence_kind="test_result",
-    )
+    memory_id, _ = _v7_verified_memory_with_related_only_evidence(
+        cx, content="Migration rollback is atomic under process crashes.")
 
     result = cx.preflight("Migration rollback is atomic under process crashes.")
 
-    matched = {m.memory_id for m in result.verified_lessons}
-    assert memory_id in matched
     (surfaced,) = [m for m in result.verified_lessons if m.memory_id == memory_id]
     assert surfaced.supporting_evidence_ids == ()
 
 
-def test_legacy_memory_evidence_rows_are_backfilled_to_related_not_supporting(tmp_path):
-    """The migration must never invent an explicit support assertion a
-    pre-A12.1 caller never made."""
+def test_a_verified_memory_with_only_related_evidence_coexists_with_a_new_supported_lesson(tmp_path):
+    """Was `test_v4_migrated_lesson_preserved_after_new_supporting_lesson_recorded`."""
     cx = Urdyn.init(tmp_path, "dev")
-    evidence_id = uuid.uuid4().hex
-    memory_id = _build_v4_database(
-        cx._db_path,
-        epistemic_state="verified",
-        evidence_id=evidence_id,
-    )
-
-    cx.recall("legacy")  # trigger the migration
-
-    connection = sqlite3.connect(cx._db_path)
-    try:
-        (role,) = connection.execute(
-            "SELECT role FROM memory_evidence WHERE memory_id = ? AND evidence_id = ?",
-            (memory_id, evidence_id),
-        ).fetchone()
-    finally:
-        connection.close()
-
-    assert role == "related"
-
-
-def test_v4_migrated_lesson_preserved_after_new_supporting_lesson_recorded(tmp_path):
-    """The legacy row and a freshly-recorded, properly-supported lesson
-    coexist without interference after migration."""
-    cx = Urdyn.init(tmp_path, "dev")
-    legacy_evidence_id = uuid.uuid4().hex
-    legacy_id = _build_v4_database(
-        cx._db_path,
-        content="Legacy verified claim.",
-        epistemic_state="verified",
-        evidence_id=legacy_evidence_id,
-    )
+    old_id, _ = _v7_verified_memory_with_related_only_evidence(cx, content="Earlier verified claim.")
+    stored = _row(cx, old_id)
 
     validation = cx.add_evidence("Fresh check passed.", kind="test_result")
     fresh = cx.learn("Fresh verified claim.", supporting_evidence=[validation], verified=True)
 
     lessons = {m.memory_id: m for m in cx.state(kind="lesson")}
-    assert lessons[legacy_id].epistemic_state == "verified"
-    assert lessons[legacy_id].supporting_evidence_ids == ()
+    assert lessons[old_id].epistemic_state == "verified"
+    assert lessons[old_id].supporting_evidence_ids == ()
     assert lessons[fresh.memory_id].supporting_evidence_ids == (validation.evidence_id,)
+    assert _row(cx, old_id) == stored
 
 
-def test_v4_migration_is_safe_to_repeat(tmp_path):
-    cx = Urdyn.init(tmp_path, "dev")
-    memory_id = _build_v4_database(cx._db_path)
-
-    first = cx.recall("legacy verified lesson")
-    second = cx.recall("legacy verified lesson")
-
-    assert [m.memory_id for m in first] == [memory_id]
-    assert [m.memory_id for m in second] == [memory_id]
-
-
-def test_v4_migration_does_not_destroy_data_on_failure(tmp_path):
-    """Migration atomicity (same standard as the v3->v4 test): sabotage
-    the single `ALTER TABLE` `_migrate_v4_to_v5` issues by pre-adding a
-    colliding `role` column by hand, forcing SQLite to reject the real
-    `ALTER TABLE ... ADD COLUMN role` with a duplicate-column error
-    partway through the migration's own transaction. The schema version
-    must not advance and the pre-existing canonical row must survive
-    untouched."""
-    cx = Urdyn.init(tmp_path, "dev")
-    memory_id = _build_v4_database(cx._db_path, content="must survive a failed migration")
-
-    connection = sqlite3.connect(cx._db_path)
-    try:
-        connection.execute("ALTER TABLE memory_evidence ADD COLUMN role TEXT")
-        connection.commit()
-    finally:
-        connection.close()
+def test_v4_sabotaged_store_fails_closed_untouched(tmp_path):
+    """Was `test_v4_migration_does_not_destroy_data_on_failure`: a
+    pre-added `role` column made the v4->v5 `ALTER TABLE` fail and roll back
+    (still v4, row intact). On the AUTHENTIC v4 Brain the store is refused
+    before any step: still v4, one `role` column (the sabotage, not a second
+    one), memories intact, every byte kept."""
+    root, generated = legacy.cortex_brain(tmp_path, 4)
+    db = legacy.db_path(root)
+    legacy.sabotage(db, "ALTER TABLE memory_evidence ADD COLUMN role TEXT")
+    before = legacy.snapshot(root)
 
     with pytest.raises(UrdynStorageError):
-        cx.recall("must survive")
+        Urdyn.open(root).recall("must survive")
 
-    connection = sqlite3.connect(cx._db_path)
-    try:
-        (version,) = connection.execute("PRAGMA user_version").fetchone()
-        row = connection.execute(
-            "SELECT memory_id, content FROM memories WHERE memory_id = ?", (memory_id,)
-        ).fetchone()
-    finally:
-        connection.close()
-
-    assert version == 4
-    assert row == (memory_id, "must survive a failed migration")
+    assert legacy.snapshot(root) == before
+    facts = legacy.store_facts(db)
+    assert facts["user_version"] == 4
+    assert facts["columns"]["memory_evidence"].count("role") == 1
+    assert {row[0] for row in facts["memories"]} == set(generated["written"])
 
 
 # ---------------------------------------------------------------------------
@@ -390,7 +233,15 @@ def test_user_version_5_with_missing_role_column_raises_cleanly(tmp_path):
     schema integrity already applied to every other version (table-level
     checks in `_ensure_schema`, `sqlite3.DatabaseError` wrapped
     consistently everywhere else in this module). Nothing recreates the
-    table automatically and no data is lost."""
+    table automatically and no data is lost.
+
+    Under the storage contract (`docs/storage-contract.md`: `open`
+    requires a valid canonical DB, never creates or migrates) the refusal
+    comes earlier, at `Urdyn.open` itself, as `UrdynStorageCorruptError`;
+    a handle opened before the damage refuses its reads the same way. The
+    damaged table is not rebuilt and the bytes are unchanged."""
+    from urdyn import UrdynStorageCorruptError
+
     cx = Urdyn.init(tmp_path, "dev")
     original = cx.remember("seed content that must survive", kind="note")
 
@@ -409,17 +260,23 @@ def test_user_version_5_with_missing_role_column_raises_cleanly(tmp_path):
     # already created this store directly at v7; the assertion tracks
     # that literal, not the v5 this test predates.
     assert version == 7  # sabotage did not touch the version stamp
+    damaged = cx._db_path.read_bytes()
 
-    reopened = Urdyn.open(tmp_path)
-    with pytest.raises(UrdynStorageError):
-        reopened.recall("seed")
+    with pytest.raises(UrdynStorageCorruptError):
+        Urdyn.open(tmp_path)
+    with pytest.raises(UrdynStorageCorruptError):
+        cx.recall("seed")
 
-    # the canonical row itself was never touched or lost by the sabotage
+    assert cx._db_path.read_bytes() == damaged
+    # the canonical row itself was never touched or lost by the sabotage,
+    # and the damaged table was not silently rebuilt with its `role` column
     connection = sqlite3.connect(cx._db_path)
     try:
         row = connection.execute(
             "SELECT memory_id, content FROM memories WHERE memory_id = ?", (original.memory_id,)
         ).fetchone()
+        columns = {name for _, name, *_ in connection.execute("PRAGMA table_info(memory_evidence)")}
     finally:
         connection.close()
     assert row == (original.memory_id, "seed content that must survive")
+    assert "role" not in columns

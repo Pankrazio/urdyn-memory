@@ -43,6 +43,7 @@ import uuid
 
 import pytest
 
+import legacy_brains as legacy
 from urdyn import Urdyn, UrdynStorageError
 from urdyn._retrieval import ENTITY_MEMORY
 from urdyn._store import SEARCH_INDEX_TABLE, STORE_SCHEMA_VERSION, MemoryStore, db_path_for
@@ -85,6 +86,39 @@ def _run_workers(workspace_dir, contents, *, timeout=60):
         process.join(timeout=timeout)
         assert process.exitcode == 0, f"worker process exited with {process.exitcode}"
     return results
+
+
+def _worker_rebuild(workspace_dir, barrier, queue):
+    try:
+        barrier.wait(timeout=30)
+        from urdyn import Urdyn as _Urdyn
+
+        queue.put(("ok", _Urdyn.open(workspace_dir).rebuild_search_index().status))
+    except BaseException as exc:  # noqa: BLE001 - reported to the parent, not swallowed
+        queue.put(("error", f"{type(exc).__name__}: {exc}"))
+
+
+def _run_rebuilders(workspace_dir, count, *, timeout=60):
+    ctx = mp.get_context("spawn")
+    barrier = ctx.Barrier(count)
+    queue = ctx.Queue()
+    processes = [ctx.Process(target=_worker_rebuild, args=(workspace_dir, barrier, queue)) for _ in range(count)]
+    for process in processes:
+        process.start()
+    results = [queue.get(timeout=timeout) for _ in processes]
+    for process in processes:
+        process.join(timeout=timeout)
+        assert process.exitcode == 0, f"worker process exited with {process.exitcode}"
+    return results
+
+
+def _index_objects(db_path):
+    connection = sqlite3.connect(db_path)
+    try:
+        return [row[0] for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE name LIKE ?", (f"{SEARCH_INDEX_TABLE}%",)).fetchall()]
+    finally:
+        connection.close()
 
 
 def _assert_no_worker_failed(results):
@@ -139,6 +173,12 @@ def _drop_search_index(db_path):
 
 class TestExistingStoreIndexAbsent:
     def test_a_six_concurrent_openers_initialize_the_index_exactly_once(self, tmp_path):
+        """Under the search-index contract (`docs/search-index.md`)
+        openers never initialize the index: six
+        concurrent writers leave it missing, untouched. The initialization
+        is the explicit rebuild, and six concurrent rebuilds must still
+        leave exactly ONE complete index -- fully backfilled, never
+        truncated or duplicated by a process racing behind another."""
         cx = Urdyn.init(tmp_path, "dev")
         cx.remember("canonical fact that predates the derived index", kind="note")
         db_path = db_path_for(tmp_path / ".urdyn")
@@ -149,15 +189,24 @@ class TestExistingStoreIndexAbsent:
 
         _assert_no_worker_failed(results)
         assert len({memory_id for _, memory_id in results}) == _PROC_COUNT
+        assert _index_objects(db_path) == []  # no opener repaired anything
+
+        rebuilt = _run_rebuilders(tmp_path, _PROC_COUNT)
+        _assert_no_worker_failed(rebuilt)
+        assert {status for _, status in rebuilt} == {"usable"}
 
         facts = _db_facts(db_path)
         assert facts["integrity_check"] == "ok"
         assert facts["user_version"] == STORE_SCHEMA_VERSION
         assert facts["memories"] == _PROC_COUNT + 1
         assert facts["events"] == _PROC_COUNT + 1
-        # Exactly one initial build, fully backfilled and never
-        # truncated by a second process racing behind the winner.
+        # Exactly one complete build: every memory once, nothing else.
         assert facts["index_rows"] == _PROC_COUNT + 1
+        connection = sqlite3.connect(db_path)
+        try:
+            assert connection.execute(f"SELECT COUNT(*) FROM {SEARCH_INDEX_TABLE}").fetchone() == (_PROC_COUNT + 1,)
+        finally:
+            connection.close()
 
         assert _index_is_usable(db_path, {"predates"}) != []
 
@@ -187,11 +236,41 @@ class TestExistingStoreIndexAbsent:
 # ---------------------------------------------------------------------------
 
 
+def _published_empty_store(db_path):
+    """Under the storage contract (`docs/storage-contract.md`)
+    `Urdyn.init` on an empty location is `create`: the canonical schema,
+    its identity binding and the derived search index are built in
+    staging and published by rename, before any other process can open
+    the Brain. A burst can no longer start from an absent `memory.db`; it
+    starts from this published, EMPTY store, which already holds an empty
+    index. Pin that starting point, and return what the burst must leave
+    untouched (identity binding, index object) so the tests can prove no
+    racer rebuilt the schema, rebound the store or recreated the index."""
+    assert db_path.exists()
+    facts = _db_facts(db_path)
+    assert facts == {"integrity_check": "ok", "user_version": STORE_SCHEMA_VERSION,
+                     "memories": 0, "events": 0, "index_rows": 0}
+    return _structure(db_path)
+
+
+def _structure(db_path):
+    connection = sqlite3.connect(db_path)
+    try:
+        return {
+            "identity": connection.execute("SELECT * FROM brain_identity").fetchall(),
+            "index_sql": connection.execute(
+                "SELECT sql FROM sqlite_master WHERE name = ?", (SEARCH_INDEX_TABLE,)
+            ).fetchall(),
+        }
+    finally:
+        connection.close()
+
+
 class TestFreshDatabase:
     def test_a_identical_first_writes_from_six_processes(self, tmp_path):
         Urdyn.init(tmp_path, "dev")
         db_path = db_path_for(tmp_path / ".urdyn")
-        assert not db_path.exists()
+        structure = _published_empty_store(db_path)
 
         results = _run_workers(tmp_path, ["the same first fact"] * _PROC_COUNT)
 
@@ -207,6 +286,7 @@ class TestFreshDatabase:
         assert facts["memories"] == 1
         assert facts["events"] == 1
         assert facts["index_rows"] == 1
+        assert _structure(db_path) == structure
 
         assert [entity_id for entity_id, _ in _index_is_usable(db_path, {"first"})] == [
             next(iter(memory_ids))
@@ -217,7 +297,7 @@ class TestFreshDatabase:
         search indexing at once: every process both creates and writes."""
         Urdyn.init(tmp_path, "dev")
         db_path = db_path_for(tmp_path / ".urdyn")
-        assert not db_path.exists()
+        structure = _published_empty_store(db_path)
 
         contents = [f"distinct first fact number {i}" for i in range(_PROC_COUNT)]
         results = _run_workers(tmp_path, contents)
@@ -232,6 +312,7 @@ class TestFreshDatabase:
         assert facts["memories"] == _PROC_COUNT
         assert facts["events"] == _PROC_COUNT
         assert facts["index_rows"] == _PROC_COUNT
+        assert _structure(db_path) == structure
 
         # every distinct memory is individually findable through the index
         for index in range(_PROC_COUNT):
@@ -346,6 +427,10 @@ class TestWinnerFailureRollsBack:
         can mistake a half-built index for a complete one. Canonical
         data is untouched, and the next open simply builds it again.
         No retry machinery is involved.
+
+        The build is now the explicit `rebuild_search_index`
+        (opening never builds, `docs/search-index.md`): its failure is a typed `UrdynStorageError` keeping
+        the cause, and the next explicit rebuild builds it completely.
         """
         import urdyn._store as store_module
 
@@ -358,8 +443,9 @@ class TestWinnerFailureRollsBack:
 
         monkeypatch.setattr(store_module, "_rebuild_search_index", explode)
 
-        with pytest.raises(UrdynStorageError):
-            MemoryStore.create_or_open(cx._db_path)
+        with pytest.raises(UrdynStorageError) as info:
+            cx.rebuild_search_index()
+        assert isinstance(info.value.__cause__, sqlite3.OperationalError)
 
         connection = sqlite3.connect(cx._db_path)
         try:
@@ -378,8 +464,11 @@ class TestWinnerFailureRollsBack:
         assert memory_count == 1
         assert integrity == "ok"
 
-        # unpatched, the very next open rebuilds it completely
+        # an open alone builds nothing; unpatched, the next explicit rebuild builds it completely
         monkeypatch.undo()
+        Urdyn.open(tmp_path).state()
+        assert _index_objects(cx._db_path) == []
+        assert cx.rebuild_search_index().status == "usable"
         assert _index_is_usable(cx._db_path, {"canonical"}) != []
 
 
@@ -525,34 +614,36 @@ def _build_standalone_v4_database(db_path, *, content):
     return memory_id
 
 
-def test_migrated_store_with_absent_index_initializes_it_once_under_concurrency(tmp_path):
-    """A store that reached v7 through the v4->v7 MIGRATION chain, not
-    through fresh creation, must hit the same repaired derived-index
-    boundary. The migration itself is performed serially first (a single
-    open), so this test isolates the derived boundary -- concurrent
-    execution of the migration chain is a separate, pre-existing defect
-    at a different critical section (covered separately)
-    and is deliberately not what is asserted here.
-    """
-    Urdyn.init(tmp_path, "dev")
-    db_path = db_path_for(tmp_path / ".urdyn")
-    legacy_id = _build_standalone_v4_database(db_path, content="a pre-A7 lesson worth finding")
-
-    migrated = Urdyn.open(tmp_path)
-    assert len(migrated.state()) == 1
+@pytest.mark.parametrize("release", legacy.RELEASES)
+def test_migrated_store_with_absent_index_initializes_it_once_under_concurrency(tmp_path, release):
+    """Originally: a store that reached v7 through the implicit
+    v4->v7 migration, index absent, six concurrent writers -> the index built
+    exactly once with the pre-existing memory backfilled. Implicit migration
+    no longer exists; what still exists is a v7 store NOT created by this build:
+    the AUTHENTIC Brain of a released Urdyn (legacy-unbound). On it, with the
+    index removed: six concurrent writers all succeed and never build the
+    index (no automatic repair); six concurrent explicit rebuilds then
+    leave exactly ONE complete index, backfilling every pre-existing memory
+    exactly once. The store stays unbound."""
+    root, generated = legacy.release_brain(tmp_path, release)
+    db_path = legacy.db_path(root)
     _drop_search_index(db_path)
+    existing = len(generated["written"])
 
-    contents = [f"post-migration fact number {i}" for i in range(_PROC_COUNT)]
-    results = _run_workers(tmp_path, contents)
-
+    contents = [f"post-upgrade fact number {i}" for i in range(_PROC_COUNT)]
+    results = _run_workers(root, contents)
     _assert_no_worker_failed(results)
+    assert _index_objects(db_path) == []
+
+    rebuilt = _run_rebuilders(root, _PROC_COUNT)
+    _assert_no_worker_failed(rebuilt)
+    assert {status for _, status in rebuilt} == {"usable"}
 
     facts = _db_facts(db_path)
     assert facts["integrity_check"] == "ok"
     assert facts["user_version"] == STORE_SCHEMA_VERSION
-    assert facts["memories"] == _PROC_COUNT + 1
-    assert facts["events"] == _PROC_COUNT + 1
-    assert facts["index_rows"] == _PROC_COUNT + 1
-
-    # the migrated pre-A7 memory is backfilled into the index exactly once
-    assert [entity_id for entity_id, _ in _index_is_usable(db_path, {"pre"})] == [legacy_id]
+    assert facts["memories"] == _PROC_COUNT + existing
+    assert facts["index_rows"] == _PROC_COUNT + existing
+    found = {entity_id for entity_id, _ in _index_is_usable(db_path, {"synthetic"})}
+    assert found == set(generated["written"])
+    assert "brain_identity" not in legacy.store_facts(db_path)["tables"]

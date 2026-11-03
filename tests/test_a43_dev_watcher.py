@@ -71,7 +71,13 @@ def _init_dev(tmp_path, **files) -> Urdyn:
         target = tmp_path / name
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
-    return Urdyn.init(tmp_path, "dev")
+    # storage contract: `init` creates a Brain only in an empty or absent
+    # directory and refuses a populated one (a project whose Brain was lost
+    # looks the same); creating a Brain in an existing project is the
+    # explicit `create`. With files this helper populates the project first,
+    # so it uses `create`; without files the directory is empty and the
+    # `init` path is exercised unchanged.
+    return (Urdyn.create if files else Urdyn.init)(tmp_path, "dev")
 
 
 def _running_pid(cx: Urdyn) -> int | None:
@@ -378,7 +384,9 @@ def test_duplicate_watcher_prevented(tmp_path):
 def test_repeated_init_dev_does_not_duplicate_watcher(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     (tmp_path / "README.md").write_text("x\n", encoding="utf-8")
-    cli_main(["init", "dev"])
+    # Populated project: the Brain is created explicitly;
+    # the REPEATED `init dev` below, on the existing Brain, is what is tested.
+    cli_main(["create", "dev"])
     capsys.readouterr()
     cx = Urdyn.open(tmp_path)
     first_pid = _running_pid(cx)
@@ -455,7 +463,7 @@ def test_watcher_from_subdirectory_binds_workspace_root(tmp_path, monkeypatch, c
     nested.mkdir(parents=True)
     (tmp_path / "README.md").write_text("x\n", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
-    cli_main(["init", "dev"])
+    cli_main(["create", "dev"])  # populated project: explicit creation
     capsys.readouterr()
 
     monkeypatch.chdir(nested)

@@ -48,6 +48,7 @@ from urdyn._semantic_store import (
     DETAIL_MODEL_MISMATCH,
     DETAIL_MODEL_UNCACHED,
     DETAIL_NOT_SET_UP,
+    DETAIL_QUERY_FAILED,
     DETAIL_REFRESH_FAILED,
     SEMANTIC_DISABLED,
     SEMANTIC_READY,
@@ -493,11 +494,20 @@ def test_partial_refresh_progress_is_kept_and_still_reads_as_stale(tmp_path, fak
 
     result = cx.preflight(A26_TASK)
 
-    assert result.retrieval.status == SEMANTIC_STALE
+    # This fake fails EVERY later embed, the query's included, so no
+    # semantic read of this call succeeded. Previously the call still said
+    # "stale" (semantic channel used on partial coverage) -- a hidden failure
+    # the per-call outcome forbids; it now says so. The publication-boundary property this test
+    # is about is the INDEX classification, which `semantic_state()` reports
+    # and which must still be stale. (The same scenario with a working query
+    # embed keeps the per-call "stale": test_semantic_backend_contract.py.)
+    assert result.retrieval.status == SEMANTIC_UNAVAILABLE
+    assert result.retrieval.detail == DETAIL_QUERY_FAILED
+    assert cx.semantic_state().status == SEMANTIC_STALE
     with SemanticIndexStore.create_or_open(cx._semantic_db_path) as store:
         assert len(store.indexed_ids(ENTITY_ATTEMPT)) == 1  # progress was kept
         assert store.indexed_ids(ENTITY_MEMORY) == set()
-    monkeypatch.undo()
+    monkeypatch.setattr(semantic, "embed", real_embed)
     assert cx.preflight(A26_TASK).retrieval.status == SEMANTIC_READY  # and completes on retry
 
 
@@ -649,7 +659,7 @@ def test_a_canonical_write_during_refresh_leaves_a_recomputable_answer(tmp_path,
     monkeypatch.setattr(semantic, "embed", _embed_then_write)
 
     cx.preflight(A26_TASK)
-    monkeypatch.undo()
+    monkeypatch.setattr(semantic, "embed", real_embed)
 
     # recomputed from scratch, against canonical state as it now is
     state = cx.semantic_state()

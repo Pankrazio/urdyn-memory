@@ -20,6 +20,7 @@ import sqlite3
 
 import pytest
 
+import legacy_brains as legacy
 from urdyn import Conflict, Urdyn
 
 
@@ -347,203 +348,128 @@ def test_forged_memory_object_cannot_bypass_canonical_lookup(tmp_path):
 # -- 22-26. migration v5->v6 -----------------------------------------------------
 
 
-def _build_v5_database(db_path, *, memory_id=None, content="a legacy v5 memory"):
-    import uuid
-
-    memory_id = memory_id or uuid.uuid4().hex
-    recorded_at = dt.datetime.now(dt.timezone.utc).isoformat()
-    connection = sqlite3.connect(db_path)
-    try:
-        with connection:
-            if not _table_exists(connection, "memories"):
-                connection.execute(
-                    "CREATE TABLE memories (memory_id TEXT PRIMARY KEY, content TEXT NOT NULL, "
-                    "kind TEXT NOT NULL, epistemic_state TEXT NOT NULL, recorded_at TEXT NOT NULL, "
-                    "supersedes TEXT)"
-                )
-                connection.execute(
-                    "CREATE TABLE evidence (evidence_id TEXT PRIMARY KEY, content TEXT NOT NULL, "
-                    "kind TEXT NOT NULL, recorded_at TEXT NOT NULL)"
-                )
-                connection.execute(
-                    "CREATE TABLE memory_evidence (memory_id TEXT NOT NULL, evidence_id TEXT NOT NULL, "
-                    "position INTEGER NOT NULL, role TEXT NOT NULL DEFAULT 'related', "
-                    "PRIMARY KEY (memory_id, evidence_id))"
-                )
-                connection.execute(
-                    "CREATE TABLE events (sequence INTEGER PRIMARY KEY AUTOINCREMENT, "
-                    "event_id TEXT NOT NULL UNIQUE, kind TEXT NOT NULL, subject_id TEXT NOT NULL, "
-                    "occurred_at TEXT NOT NULL)"
-                )
-                connection.execute(
-                    "CREATE TABLE attempts (attempt_id TEXT PRIMARY KEY, task TEXT NOT NULL, "
-                    "approach TEXT NOT NULL, outcome TEXT NOT NULL, recorded_at TEXT NOT NULL)"
-                )
-                connection.execute(
-                    "CREATE TABLE attempt_evidence (attempt_id TEXT NOT NULL, evidence_id TEXT NOT NULL, "
-                    "position INTEGER NOT NULL, PRIMARY KEY (attempt_id, evidence_id))"
-                )
-                connection.execute(
-                    "CREATE TABLE skills (skill_id TEXT PRIMARY KEY, name TEXT NOT NULL, "
-                    "purpose TEXT NOT NULL, verification_state TEXT NOT NULL, "
-                    "source_lesson_id TEXT NOT NULL, recorded_at TEXT NOT NULL)"
-                )
-                connection.execute(
-                    "CREATE TABLE skill_steps (skill_id TEXT NOT NULL, step TEXT NOT NULL, "
-                    "position INTEGER NOT NULL, PRIMARY KEY (skill_id, position))"
-                )
-                connection.execute(
-                    "CREATE TABLE skill_conditions (skill_id TEXT NOT NULL, condition TEXT NOT NULL, "
-                    "position INTEGER NOT NULL, PRIMARY KEY (skill_id, position))"
-                )
-                connection.execute(
-                    "CREATE TABLE skill_evidence (skill_id TEXT NOT NULL, evidence_id TEXT NOT NULL, "
-                    "position INTEGER NOT NULL, PRIMARY KEY (skill_id, evidence_id))"
-                )
-                connection.execute("PRAGMA user_version = 5")
-            connection.execute(
-                "INSERT INTO memories (memory_id, content, kind, epistemic_state, recorded_at, supersedes) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (memory_id, content, "note", "user_asserted", recorded_at, None),
-            )
-            connection.execute(
-                "INSERT INTO events (event_id, kind, subject_id, occurred_at) VALUES (?, ?, ?, ?)",
-                (uuid.uuid4().hex, "memory_recorded", memory_id, recorded_at),
-            )
-    finally:
-        connection.close()
-    return memory_id
+def _v5(tmp_path):
+    root, generated = legacy.cortex_brain(tmp_path, 5)
+    return root, generated, legacy.db_path(root)
 
 
-def _table_exists(connection, name):
-    return (
-        connection.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?", (name,)
-        ).fetchone()
-        is not None
-    )
+def test_v5_brain_is_refused_and_its_memories_survive_exactly(tmp_path):
+    """Was `test_v5_database_migrates_to_v6_and_memory_survives` (its
+    hand-written v5 builder only ever wrote into the v7 store `Urdyn.init`
+    creates). On the AUTHENTIC v5 Brain: refused, every byte and memory kept."""
+    from urdyn import UrdynStorageSchemaError
+
+    root, generated, db = _v5(tmp_path)
+    facts = legacy.store_facts(db)
+    before = legacy.snapshot(root)
+    with pytest.raises(UrdynStorageSchemaError):
+        Urdyn.open(root).recall("synthetic")
+    assert legacy.snapshot(root) == before
+    assert legacy.store_facts(db) == facts
+    assert facts["user_version"] == 5 and facts["integrity"] == "ok"
+    assert {row[0] for row in facts["memories"]} == set(generated["written"])
 
 
-def test_v5_database_migrates_to_v6_and_memory_survives(tmp_path):
-    cx = Urdyn.init(tmp_path, "dev")
-    memory_id = _build_v5_database(cx._db_path)
+def test_v5_refusal_creates_no_memory_conflicts_table(tmp_path):
+    """Was `test_v5_migration_reaches_current_schema_and_adds_memory_conflicts_table`."""
+    from urdyn import UrdynStorageSchemaError, maintenance
 
-    results = cx.recall("legacy v5 memory")
-
-    assert len(results) == 1
-    assert results[0].memory_id == memory_id
-
-
-def test_v5_migration_reaches_current_schema_and_adds_memory_conflicts_table(tmp_path):
-    cx = Urdyn.init(tmp_path, "dev")
-    _build_v5_database(cx._db_path)
-
-    cx.recall("legacy")  # triggers the v5->v6->v7 migration chain
-
-    connection = sqlite3.connect(cx._db_path)
-    try:
-        (version,) = connection.execute("PRAGMA user_version").fetchone()
-        table_present = _table_exists(connection, "memory_conflicts")
-    finally:
-        connection.close()
-
-    assert version == 7
-    assert table_present
+    root, _, db = _v5(tmp_path)
+    for entry in (lambda: Urdyn.open(root).recall("synthetic"), lambda: Urdyn.init(root, "general"),
+                  lambda: maintenance.recover_search_index(root)):
+        with pytest.raises(UrdynStorageSchemaError):
+            entry()
+    facts = legacy.store_facts(db)
+    assert facts["user_version"] == 5
+    assert "memory_conflicts" not in facts["tables"]
 
 
-def test_v5_migrated_memories_can_participate_in_a_new_conflict(tmp_path):
-    cx = Urdyn.init(tmp_path, "dev")
-    a_id = _build_v5_database(cx._db_path, content="legacy claim A")
-    b_id = _build_v5_database(cx._db_path, content="legacy claim B")
+@pytest.mark.parametrize("release", legacy.RELEASES)
+def test_memories_recorded_by_a_release_can_participate_in_a_new_conflict(tmp_path, release):
+    """Was `test_v5_migrated_memories_can_participate_in_a_new_conflict`.
+    The valid part -- memories an EARLIER build recorded can be put in a new
+    Conflict by this one, which is then open and persistent, without touching
+    the memories -- on the AUTHENTIC notes written by each release."""
+    root, generated = legacy.release_experience_brain(tmp_path, release)
+    cx = Urdyn.open(root)
+    notes = {m.memory_id: m for m in cx.timeline() if m.memory_id in generated["notes"]}
+    assert set(notes) == set(generated["notes"])
+    stored = sorted((m.memory_id, m.content, m.epistemic_state) for m in notes.values())
+    a, b = (notes[i] for i in generated["notes"])
 
-    (a,) = [m for m in cx.timeline() if m.memory_id == a_id]
-    (b,) = [m for m in cx.timeline() if m.memory_id == b_id]
     conflict = cx.record_conflict(a, b)
 
-    assert set(conflict.memory_ids) == {a_id, b_id}
+    assert set(conflict.memory_ids) == set(generated["notes"])
+    reopened = Urdyn.open(root)
+    assert [set(c.memory_ids) for c in reopened.open_conflicts()] == [set(generated["notes"])]
+    assert sorted((m.memory_id, m.content, m.epistemic_state)
+                  for m in reopened.timeline() if m.memory_id in notes) == stored
 
 
-def test_v5_migration_is_repeatable(tmp_path):
-    cx = Urdyn.init(tmp_path, "dev")
-    memory_id = _build_v5_database(cx._db_path)
+def test_v5_refusal_is_repeatable(tmp_path):
+    """Was `test_v5_migration_is_repeatable`."""
+    from urdyn import UrdynStorageSchemaError
 
-    first = cx.recall("legacy v5 memory")
-    second = cx.recall("legacy v5 memory")
+    root, _, _ = _v5(tmp_path)
+    before = legacy.snapshot(root)
+    messages = set()
+    for _ in range(3):
+        with pytest.raises(UrdynStorageSchemaError) as refused:
+            Urdyn.open(root).recall("synthetic")
+        messages.add(str(refused.value))
+    assert len(messages) == 1
+    assert legacy.snapshot(root) == before
 
-    assert [m.memory_id for m in first] == [memory_id]
-    assert [m.memory_id for m in second] == [memory_id]
 
-
-def test_v5_migration_does_not_destroy_data_on_failure(tmp_path):
-    """Migration atomicity, same standard as v3->v4/v4->v5: sabotage the
-    single `CREATE TABLE memory_conflicts` `_migrate_v5_to_v6` issues by
-    pre-creating a colliding table by hand, forcing SQLite to reject the
-    migration partway through its own transaction. The schema version
-    must not advance and the pre-existing canonical row must survive."""
+def test_v5_sabotaged_store_fails_closed_untouched(tmp_path):
+    """Was `test_v5_migration_does_not_destroy_data_on_failure`: a
+    colliding `memory_conflicts` made the v5->v6 step fail and roll back
+    (still v5, row intact). On the AUTHENTIC v5 Brain the store is refused
+    before any step: still v5, memories intact, the sabotage table untouched,
+    every byte kept."""
     from urdyn import UrdynStorageError
 
-    cx = Urdyn.init(tmp_path, "dev")
-    memory_id = _build_v5_database(cx._db_path, content="must survive a failed migration")
-
-    connection = sqlite3.connect(cx._db_path)
-    try:
-        connection.execute(
-            "CREATE TABLE memory_conflicts (bogus_column TEXT)"
-        )
-        connection.commit()
-    finally:
-        connection.close()
+    root, generated = legacy.cortex_brain(tmp_path, 5)
+    db = legacy.db_path(root)
+    legacy.sabotage(db, "CREATE TABLE memory_conflicts (bogus_column TEXT)")
+    before = legacy.snapshot(root)
 
     with pytest.raises(UrdynStorageError):
-        cx.recall("must survive")
+        Urdyn.open(root).recall("must survive")
 
-    connection = sqlite3.connect(cx._db_path)
+    assert legacy.snapshot(root) == before
+    facts = legacy.store_facts(db)
+    assert facts["user_version"] == 5
+    assert {row[0] for row in facts["memories"]} == set(generated["written"])
+    connection = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
     try:
-        (version,) = connection.execute("PRAGMA user_version").fetchone()
-        row = connection.execute(
-            "SELECT memory_id, content FROM memories WHERE memory_id = ?", (memory_id,)
-        ).fetchone()
+        assert [r[1] for r in connection.execute("PRAGMA table_info(memory_conflicts)")] == ["bogus_column"]
     finally:
         connection.close()
 
-    assert version == 5
-    assert row == (memory_id, "must survive a failed migration")
 
+@pytest.mark.parametrize("version", legacy.CORTEX_VERSIONS)
+def test_no_cortex_version_reaches_the_current_chain(tmp_path, version):
+    """Was `test_v1_to_current_full_migration_chain_still_works`
+    (implicit v1->v7, `memory_conflicts` created on the way). On every
+    AUTHENTIC Cortex Brain v1-v6 the open is refused: the version, the tables
+    (`memory_conflicts` present only if the historical v6 code created it) and
+    the memories stay exactly as written."""
+    from urdyn import UrdynStorageSchemaError
 
-def test_v1_to_current_full_migration_chain_still_works(tmp_path):
-    """The pre-existing v1->v5 chain must keep working unmodified with the
-    new v5->v6 step appended after it."""
-    cx = Urdyn.init(tmp_path, "dev")
-    connection = sqlite3.connect(cx._db_path)
-    try:
-        with connection:
-            connection.execute(
-                "CREATE TABLE memories (memory_id TEXT PRIMARY KEY, content TEXT NOT NULL, "
-                "kind TEXT NOT NULL, epistemic_state TEXT NOT NULL, recorded_at TEXT NOT NULL)"
-            )
-            memory_id = "a" * 32
-            connection.execute(
-                "INSERT INTO memories (memory_id, content, kind, epistemic_state, recorded_at) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (memory_id, "a v1-era memory", "note", "user_asserted", dt.datetime.now(dt.timezone.utc).isoformat()),
-            )
-            connection.execute("PRAGMA user_version = 1")
-    finally:
-        connection.close()
+    root, generated = legacy.cortex_brain(tmp_path, version)
+    db = legacy.db_path(root)
+    facts = legacy.store_facts(db)
+    before = legacy.snapshot(root)
 
-    reopened = Urdyn.open(tmp_path)
-    results = reopened.recall("v1-era memory")
+    with pytest.raises(UrdynStorageSchemaError):
+        Urdyn.open(root).recall("synthetic")
 
-    connection = sqlite3.connect(reopened._db_path)
-    try:
-        (version,) = connection.execute("PRAGMA user_version").fetchone()
-        conflicts_present = _table_exists(connection, "memory_conflicts")
-    finally:
-        connection.close()
-
-    assert len(results) == 1
-    assert version == 7
-    assert conflicts_present
+    assert legacy.snapshot(root) == before
+    assert legacy.store_facts(db) == facts
+    assert facts["user_version"] == version
+    assert ("memory_conflicts" in facts["tables"]) == (version == 6)
+    assert {row[0] for row in facts["memories"]} == set(generated["written"])
 
 
 # -- 27. no Event emitted for a conflict declaration -----------------------------
@@ -607,8 +533,15 @@ def test_user_version_6_with_missing_memory_conflicts_table_raises_cleanly(tmp_p
     schema is actually shaped like v6: if `memory_conflicts` is missing
     (a corrupted or incomplete upgrade), opening the store fails loudly as
     `UrdynStorageError` -- no auto-repair, no silent recreation, same
-    standard already applied to every other version in `_ensure_schema`."""
-    from urdyn import UrdynStorageError
+    standard already applied to every other version in `_ensure_schema`.
+
+    Under the storage contract (`docs/storage-contract.md`: `open`
+    requires a valid canonical DB and never creates tables) the refusal
+    comes earlier, at `Urdyn.open` itself, as `UrdynStorageCorruptError`;
+    a handle opened before the damage refuses its reads the same way.
+    Nothing is repaired: the table stays missing and the bytes are
+    unchanged."""
+    from urdyn import UrdynStorageCorruptError
 
     cx = Urdyn.init(tmp_path, "dev")
     original = cx.remember("seed content that must survive", kind="note")
@@ -619,19 +552,26 @@ def test_user_version_6_with_missing_memory_conflicts_table_raises_cleanly(tmp_p
         connection.commit()
     finally:
         connection.close()
+    damaged = cx._db_path.read_bytes()
 
-    reopened = Urdyn.open(tmp_path)
-    with pytest.raises(UrdynStorageError):
-        reopened.recall("seed")
+    with pytest.raises(UrdynStorageCorruptError):
+        Urdyn.open(tmp_path)
+    with pytest.raises(UrdynStorageCorruptError):
+        cx.recall("seed")
 
+    assert cx._db_path.read_bytes() == damaged
     connection = sqlite3.connect(cx._db_path)
     try:
         row = connection.execute(
             "SELECT memory_id, content FROM memories WHERE memory_id = ?", (original.memory_id,)
         ).fetchone()
+        recreated = connection.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name = 'memory_conflicts'"
+        ).fetchone()[0]
     finally:
         connection.close()
     assert row == (original.memory_id, "seed content that must survive")
+    assert recreated == 0
 
 
 def test_orphan_conflict_raises_cleanly_instead_of_being_returned(tmp_path):

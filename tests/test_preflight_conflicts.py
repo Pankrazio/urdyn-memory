@@ -91,6 +91,7 @@ class _FakeStaticModel:
 @pytest.fixture
 def fake_semantic(monkeypatch):
     import urdyn._semantic as semantic
+    monkeypatch.setattr(semantic, "default_runtime_available", lambda: True)
 
     fake_model = _FakeStaticModel()
     monkeypatch.setattr(semantic, "load_model_for_setup", lambda model_id=None: fake_model)
@@ -1154,20 +1155,24 @@ class TestTimelinePartitioningEquivalence:
         reopened = Urdyn.open(tmp_path)
         self._assert_equivalent_for_all_kinds(reopened)
 
-    def test_legacy_migrated_workspace(self, tmp_path):
-        """The workspace's row wasn't ever written by the
-        current `remember()`/`learn()` code path -- it comes from a
-        hand-built pre-A12.1 (schema v4) database, migrated transparently
-        on first open (same technique as `test_migration_v5.py`). Proves
-        the partitioning equivalence holds regardless of a memory's
-        migration history, not just for rows this session wrote itself."""
-        from test_migration_v5 import _build_v4_database
+    @pytest.mark.parametrize("release", ["0.1.0", "0.2.0", "0.3.0", "0.4.0"])
+    @pytest.mark.parametrize("fixture", ["release_brain", "release_experience_brain"])
+    def test_workspace_written_by_a_release(self, tmp_path, release, fixture):
+        """Was `test_legacy_migrated_workspace`: rows not written by the
+        current `remember()`/`learn()` path. It imported a hand-written "v4"
+        builder that, on the v7 store `Urdyn.init` creates, only inserted into
+        the CURRENT tables (no v4 store, no migration ever ran). The surviving
+        claim -- equivalence holds regardless of which code wrote a row -- now
+        runs on AUTHENTIC Brains written by each released Urdyn: memories with a
+        supersession, and a user-asserted lesson next to notes."""
+        import legacy_brains as legacy
 
-        cx = Urdyn.init(tmp_path, "dev")
-        _build_v4_database(cx._db_path, content="a legacy verified lesson", kind="lesson")
-        _build_v4_database(cx._db_path, content="a legacy root cause", kind="root_cause")
-
-        cx.recall("legacy")  # triggers the v4->v5->v6 migration chain
+        root, generated = getattr(legacy, fixture)(tmp_path, release)
+        cx = Urdyn.open(root)
+        if fixture == "release_experience_brain":
+            assert [m.memory_id for m in cx.state(kind="lesson")] == [generated["lesson"]]  # non-trivial partition
+        else:
+            assert any(m.supersedes for m in cx.timeline())  # a superseded row is in play
         self._assert_equivalent_for_all_kinds(cx)
 
     def test_copied_workspace(self, tmp_path):

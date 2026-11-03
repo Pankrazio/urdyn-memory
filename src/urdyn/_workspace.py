@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import contextvars
 import dataclasses
 import datetime as dt
+import functools
 import uuid
 from collections.abc import Callable, Sequence
+from contextlib import contextmanager
 from pathlib import Path
 
 from ._attempt import OUTCOME_FAILED, VALID_OUTCOMES, Attempt
@@ -23,6 +26,7 @@ from ._errors import (
     UrdynNotFoundError,
     UrdynSemanticUnavailableError,
     UrdynStorageError,
+    UrdynStorageUnavailableError,
 )
 from ._event import (
     EVENT_KIND_ATTEMPT_RECORDED,
@@ -32,7 +36,7 @@ from ._event import (
     Event,
 )
 from ._evidence import DEFAULT_EVIDENCE_KIND, VALID_EVIDENCE_KINDS, VERIFICATION_EVIDENCE_KINDS, Evidence
-from ._gitignore import ensure_gitignore_entry
+from ._gitignore import GitProtection, protect_workspace
 from ._guard import GuardResult, build_guard_result
 from ._manifest import (
     CANONICAL_PROFILES,
@@ -80,13 +84,19 @@ from ._semantic_store import (
     DETAIL_MODEL_MISMATCH,
     DETAIL_MODEL_UNCACHED,
     DETAIL_NOT_SET_UP,
+    DETAIL_QUERY_FAILED,
+    DETAIL_QUERY_VECTORS_INVALID,
     DETAIL_REFRESH_FAILED,
+    DETAIL_REPRESENTATION_MISMATCH,
+    DETAIL_REPRESENTATION_UNVERIFIED,
     SEMANTIC_DISABLED,
     SEMANTIC_READY,
     SEMANTIC_STALE,
     SEMANTIC_UNAVAILABLE,
+    STATUS_BUILDING,
     STATUS_READY,
     SemanticIndexStore,
+    SemanticMeta,
     SemanticState,
     semantic_db_path_for,
 )
@@ -100,7 +110,13 @@ from ._source import (
     read_seed_candidate,
     resolve_seed_path,
 )
-from ._store import MemoryStore, db_path_for
+from ._lifecycle import lifecycle, sync_directory, guarded, normalize_location, inference_slot
+from . import _encoding_plan
+from . import _representation
+import os
+import stat
+from ._store import MemoryStore, SearchIndexState, db_path_for
+from .semantic_backend import SemanticBackend, SemanticBackendIdentity
 
 URDYN_DIRNAME = ".urdyn"
 DEFAULT_RECALL_LIMIT = 20
@@ -140,6 +156,7 @@ class _ExperienceMaterial:
     retrieval: "SemanticState"
     current_source_evidence: list[tuple[Source, Evidence]]
     source_fts_candidates: list[tuple[str, str]]
+    search_index: str | None = None  # `missing` / `unchecked`, see MemoryStore.search_index_presence
 
     @classmethod
     def empty(cls, *, retrieval: "SemanticState") -> "_ExperienceMaterial":
@@ -323,6 +340,193 @@ class SemanticSetupResult:
     source_evidence_count: int = 0
 
 
+# ---------------------------------------------------------------------------
+# Per-call semantic outcome
+# ---------------------------------------------------------------------------
+#
+# `semantic_state()` answers "is the derived INDEX usable" (built, compatible,
+# covering canonical state). It does not, and must not, answer "did THIS call
+# manage to use it": a stored row can fail the numeric contract on read, the
+# index can be rebuilt concurrently, a backend can raise. Every semantic helper
+# below degrades such a failure to "no semantic candidates", which -- without
+# this -- was indistinguishable from the channel running and abstaining: the
+# A26 failure mode, one level lower.
+#
+# One public retrieval call (`preflight`/`context`/`guard`) therefore records
+# what its semantic reads actually did, in a ContextVar: per thread and per
+# task, never shared between calls, never persisted, no cache. If the index was
+# declared usable and any semantic read failed, the call is answered AGAIN with
+# the semantic channel switched off, so the published answer is exactly the
+# lexical/FTS answer and its `retrieval` says `unavailable` -- the existing
+# state whose meaning is precisely "lexical only". No partial mixture of
+# semantic pools that worked with pools that did not is ever published under a
+# healthy label. The second pass reads canonical state afresh, performs no
+# refresh and no semantic read; it only runs on the failure path.
+
+
+@dataclasses.dataclass
+class _SemanticCallOutcome:
+    forced: SemanticState | None = None  # second pass: semantic channel off, report this state
+    prepared: SemanticState | None = None  # what `_semantic_prepare` declared for this call
+    failures: set[str] = dataclasses.field(default_factory=set)
+
+    def degraded_state(self) -> SemanticState | None:
+        if self.forced is not None or not self.failures or self.prepared is None:
+            return None
+        if not self.prepared.is_usable():
+            return None  # already reported as not usable; nothing was hidden
+        # A representation refusal names its own remedy (rebuild);
+        # it wins over the generic outcomes, never over nothing.
+        for detail in (DETAIL_REPRESENTATION_UNVERIFIED, DETAIL_REPRESENTATION_MISMATCH,
+                       DETAIL_QUERY_VECTORS_INVALID, DETAIL_QUERY_FAILED):
+            if detail in self.failures:
+                break
+        return SemanticState(
+            status=SEMANTIC_UNAVAILABLE,
+            detail=detail,
+            missing=self.prepared.missing,
+            indexed=self.prepared.indexed,
+            refreshed=self.prepared.refreshed,
+        )
+
+
+_SEMANTIC_CALL: contextvars.ContextVar[_SemanticCallOutcome | None] = contextvars.ContextVar(
+    "urdyn_semantic_call", default=None
+)
+
+
+def _semantic_suppressed() -> bool:
+    outcome = _SEMANTIC_CALL.get()
+    return outcome is not None and outcome.forced is not None
+
+
+def _note_semantic_failure(exc: BaseException | None) -> None:
+    """Record that a semantic read of the current call did not complete.
+    `exc is None` means the channel vanished after preparation (e.g. a
+    rebuild started mid-call)."""
+    outcome = _SEMANTIC_CALL.get()
+    if outcome is None:
+        return
+    semantic = _load_semantic_module() if exc is not None else None
+    # Only bytes read back from the index count as "a stored vector
+    # failed validation"; an invalid QUERY vector (encoder output) is a
+    # failure of this query's semantic retrieval, not of the index.
+    invalid = semantic is not None and isinstance(exc, semantic.InvalidStoredVectors)
+    if semantic is not None and isinstance(exc, semantic.RepresentationUnverified):
+        outcome.failures.add(DETAIL_REPRESENTATION_UNVERIFIED)
+    elif semantic is not None and isinstance(exc, semantic.RepresentationMismatch):
+        outcome.failures.add(DETAIL_REPRESENTATION_MISMATCH)
+    else:
+        outcome.failures.add(DETAIL_QUERY_VECTORS_INVALID if invalid else DETAIL_QUERY_FAILED)
+
+
+def _semantic_outcome_guarded(method):
+    """Wrap one public retrieval call; see the section comment above."""
+
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        trace = kwargs.get("_project_evidence_trace")
+        trace_length = len(trace) if trace is not None else 0
+        outcome = _SemanticCallOutcome()
+        token = _SEMANTIC_CALL.set(outcome)
+        try:
+            result = method(self, *args, **kwargs)
+        finally:
+            _SEMANTIC_CALL.reset(token)
+        degraded = outcome.degraded_state()
+        if degraded is None:
+            return result
+        if trace is not None:
+            del trace[trace_length:]  # the discarded pass must leave no instrumentation behind
+        token = _SEMANTIC_CALL.set(_SemanticCallOutcome(forced=degraded))
+        try:
+            return method(self, *args, **kwargs)
+        finally:
+            _SEMANTIC_CALL.reset(token)
+
+    return wrapper
+
+
+# How long a call waits for this Brain's encoder while another call
+# of the same process is using it, before answering without the semantic
+# channel (reported in the call's outcome). A bounded WAIT, not a cancellation: the call that
+# holds the encoder keeps running.
+INFERENCE_SLOT_TIMEOUT_SECONDS = 30.0
+# Plans per call: the first, plus one more if the storage was
+# replaced (restore) or the index encoder changed before publication.
+_INFERENCE_PLANS_PER_CALL = 2
+
+
+class _SetupNotPublished(UrdynSemanticUnavailableError):
+    """Semantic setup published nothing because the state it was
+    prepared for changed, or the encoder stayed busy. Internal subclass:
+    callers see `UrdynSemanticUnavailableError` with an explicit message."""
+
+
+@dataclasses.dataclass(frozen=True)
+class _SetupTicket:
+    """What a rebuild was prepared for: the Brain (`brain_id`,
+    re-checked by `@guarded`), its storage files (`incarnation`), the
+    `building` marker it wrote, the backend it was captured with, and the
+    canonical texts it embeds (`pools`, immutable tuples)."""
+
+    brain_id: str
+    incarnation: tuple
+    marker: "SemanticMeta"
+    backend: object
+    backend_identity: object
+    pools: tuple
+
+
+def _encoder_slot(backend) -> object:
+    """The inference slot an encoder is serialized under: one per
+    client backend object, one for the built-in encoder."""
+    return None if backend is None else ("external", id(backend))
+
+
+def _inference_outside_lock(query_parameter: str):
+    """Outermost decorator of a retrieval call whose encoder work
+    can be planned from its query (`preflight`, `context`, `guard`): see
+    `_encoding_plan` for the protocol and `Urdyn._run_with_prepared_encodings`
+    for the steps. The decorated (guarded) method is unchanged."""
+
+    def decorate(method):
+        @functools.wraps(method)
+        def call(self, *args, **kwargs):
+            query = args[0] if args else kwargs.get(query_parameter)
+            return self._run_with_prepared_encodings(query, method, self, *args, **kwargs)
+
+        return call
+
+    return decorate
+
+
+def _raise_missing_brain(workspace: Path, *, creating_hint: bool = False) -> None:
+    """`workspace` has no `.urdyn` entry. Say which of the three
+    situations this is, never a manifest problem that does not exist."""
+    stage = workspace / ".urdyn.creating"
+    restore = [workspace.parent / ("." + workspace.name + suffix) for suffix in (".stage", ".rollback")]
+    if os.path.lexists(stage):
+        raise UrdynStorageUnavailableError(
+            f"Brain creation at {workspace} was interrupted: {stage} exists and nothing was published. "
+            "Inspect it and publish it explicitly with Urdyn.recover_creation(path); "
+            "it is never recreated or removed automatically."
+        )
+    residues = [str(path) for path in restore if os.path.lexists(path)]
+    if residues:
+        raise UrdynStorageUnavailableError(
+            f"A restore of {workspace} was interrupted ({', '.join(residues)}); "
+            "run urdyn.backup.recover_interrupted_restore(path) before using this Brain."
+        )
+    if creating_hint:
+        raise UrdynNotFoundError(
+            f"No Urdyn Brain at {workspace}, and the directory is not empty: 'urdyn init' creates a Brain only in "
+            "an empty or absent directory. To create one in this existing directory, run 'urdyn create [profile]' "
+            "(Python: Urdyn.create(path, profile))."
+        )
+    raise UrdynNotFoundError(f"No Urdyn Brain at {workspace}")
+
+
 class Urdyn:
     """A discovered or newly initialized Urdyn workspace."""
 
@@ -330,6 +534,91 @@ class Urdyn:
         self._path = path
         self._profile = profile
         self._urdyn_id = urdyn_id
+        self._semantic_backend: SemanticBackend | None = None
+        self._semantic_backend_identity: SemanticBackendIdentity | None = None
+        # Set by create/recover_creation/init: what is known about the
+        # Git protection of `.urdyn/` (reported by the CLI). None for `open`.
+        self._git_protection: GitProtection | None = None
+
+    @guarded
+    def configure_semantic_backend(self, backend: SemanticBackend) -> None:
+        """Attach a local encoder to this instance, retaining Urdyn's index rules.
+
+        A reopened workspace must attach the backend again. With no
+        backend attached, the existing Python ONNX behavior is unchanged.
+        """
+        semantic = _load_semantic_module()
+        if semantic is None:
+            raise UrdynSemanticUnavailableError("External semantic backends require NumPy")
+        identity = backend.identity
+        semantic.validate_external_identity(identity)
+        if not callable(backend.available) or not callable(backend.encode):
+            raise TypeError("semantic backend must provide available() and encode()")
+        self._semantic_backend = backend
+        self._semantic_backend_identity = identity
+
+    def _external_semantic_ready(self) -> bool:
+        return self._backend_ready(self._semantic_backend, self._semantic_backend_identity)
+
+    @staticmethod
+    def _backend_ready(backend, identity) -> bool:
+        if backend is None or identity is None:
+            return False
+        try:
+            return backend.identity == identity and bool(backend.available())
+        except Exception:
+            return False
+
+    def _external_identity_matches(self, meta) -> bool:
+        identity = self._semantic_backend_identity
+        if identity is None:
+            return False
+        # The columns the identity has always been checked against,
+        # on the base provider; the representation is checked separately.
+        meta = dataclasses.replace(meta, provider=_representation.base_provider(meta.provider))
+        return not (not meta.matches(
+            provider=identity.index_provider, model_id=identity.model_id, normalization=identity.normalization
+        ) or meta.dimensions != identity.dimensions or meta.model_revision != identity.model_revision)
+
+    def _encoder_key(self, meta, semantic):
+        """Which encoder answers `meta`'s index on this handle, as
+        a value (never the encoder object), or None if none can. A prepared
+        result is bound to it (`_encoding_plan`); the same conditions as
+        `_semantic_model_for_index` below, without loading anything."""
+        # The stored provider carries the index's representation
+        # reference: a plan is bound to that representation, so an index
+        # rebuilt under another one meanwhile never receives its rows. An
+        # index whose representation this handle cannot produce has no key
+        # (no model is loaded just to be refused).
+        if semantic.representation_problem(meta, self._semantic_backend_identity) is not None:
+            return None
+        if self._semantic_backend is None:
+            artifact = semantic.artifact_for_index(meta)
+            return None if artifact is None else ("onnx", artifact, meta.dimensions, meta.provider)
+        if not self._external_identity_matches(meta):
+            return None
+        return ("external", id(self._semantic_backend), self._semantic_backend_identity, meta.dimensions,
+                meta.provider)
+
+    def _semantic_model_for_index(self, meta, semantic):
+        prepared = _encoding_plan.active()
+        if prepared is not None:
+            # Inside a planned call: the same checks, then an encoder
+            # that only serves what was encoded outside the lifecycle lock.
+            key = self._encoder_key(meta, semantic)
+            if key is None:
+                return None
+            if self._semantic_backend is not None and not self._external_semantic_ready():
+                return None
+            return prepared.encoder_for(key)
+        if self._semantic_backend is None:
+            return semantic.load_model_for_index(meta)
+        identity = self._semantic_backend_identity
+        if not self._external_identity_matches(meta):
+            return None
+        if not self._external_semantic_ready():
+            return None
+        return semantic.bind_representation(semantic.ExternalEncoder(self._semantic_backend, identity), meta)
 
     @property
     def path(self) -> Path:
@@ -347,48 +636,138 @@ class Urdyn:
         return f"Urdyn(path={str(self._path)!r}, profile={self._profile!r})"
 
     @classmethod
-    def init(cls, path: str | Path = ".", profile: str = "general") -> "Urdyn":
-        """Initialize (or safely re-open) a Urdyn workspace at `path`."""
+    def create(cls, path: str | Path, profile: str = "general") -> "Urdyn":
+        """Explicit creation; publish a complete store without overwriting data."""
         if profile not in CANONICAL_PROFILES:
-            raise ValueError(f"Unknown profile {profile!r}; expected one of {sorted(CANONICAL_PROFILES)}")
-
-        workspace = Path(path).resolve()
-        urdyn_dir = workspace / URDYN_DIRNAME
-
-        if urdyn_dir.exists() and not urdyn_dir.is_dir():
-            raise UrdynManifestError(f"{urdyn_dir} exists but is not a directory")
-
-        if urdyn_dir.is_dir():
-            data = read_manifest(urdyn_dir)
-            if data["profile"] != profile:
+            raise ValueError("Unknown profile")
+        workspace = normalize_location(path)
+        with lifecycle(workspace):
+            if any((workspace.parent / ("." + workspace.name + suffix)).exists() for suffix in (".stage", ".rollback")):
+                raise UrdynAlreadyInitializedError("Restore recovery required before creation")
+            workspace.mkdir(parents=True, exist_ok=True)
+            sync_directory(workspace.parent)
+            target = workspace / URDYN_DIRNAME
+            stage = workspace / ".urdyn.creating"
+            if os.path.lexists(stage):
                 raise UrdynAlreadyInitializedError(
-                    f"Urdyn workspace at {workspace} is already initialized with profile "
-                    f"{data['profile']!r}; refusing to switch to {profile!r}. "
-                    f"Remove {urdyn_dir} to reinitialize."
+                    f"Brain creation at {workspace} was interrupted ({stage} exists); "
+                    "publish it explicitly with Urdyn.recover_creation(path)"
                 )
-            ensure_gitignore_entry(workspace)
-            return cls(workspace, data["profile"], data[LEGACY_WORKSPACE_ID_KEY])
+            if os.path.lexists(target):
+                raise UrdynAlreadyInitializedError(
+                    f"{target} already exists (a Brain, or an entry that is not one); "
+                    "create never replaces it -- open the Brain or inspect that entry"
+                )
+            # Before anything is staged: if `.urdyn/` cannot be put
+            # out of Git's reach (entry not writable, files already tracked,
+            # an explicit user negation), no Brain is created at all.
+            protection = protect_workspace(workspace)
+            try:
+                stage.mkdir(mode=0o700)
+            except OSError as exc:  # nothing exists yet: a typed, explicit failure
+                raise UrdynStorageUnavailableError(f"Cannot create a Brain in {workspace}: {exc.strerror}") from exc
+            identity = uuid.uuid4().hex
+            write_manifest(stage, {"schema_version": SCHEMA_VERSION, "profile": profile,
+                                   LEGACY_WORKSPACE_ID_KEY: identity})
+            with MemoryStore.create_new(db_path_for(stage)):
+                pass
+            for name in ("manifest.json", "memory.db"):
+                with (stage / name).open("rb") as stream: os.fsync(stream.fileno())
+            sync_directory(stage)
+            os.rename(stage, target)
+            sync_directory(workspace)
+            engine = cls.open(workspace)
+            engine._git_protection = protection
+            return engine
 
-        urdyn_dir.mkdir(parents=True)
-        urdyn_id = uuid.uuid4().hex
-        data = {
-            "schema_version": SCHEMA_VERSION,
-            LEGACY_WORKSPACE_ID_KEY: urdyn_id,
-            "profile": profile,
-        }
-        write_manifest(urdyn_dir, data)
-        ensure_gitignore_entry(workspace)
-        return cls(workspace, profile, urdyn_id)
+    @classmethod
+    def recover_creation(cls, path: str | Path) -> "Urdyn":
+        """Explicitly publish a complete interrupted create; preserve invalid staging."""
+        workspace = normalize_location(path)
+        with lifecycle(workspace):
+            stage = workspace / ".urdyn.creating"
+            target = workspace / URDYN_DIRNAME
+            if target.exists():
+                if stage.exists():
+                    raise UrdynAlreadyInitializedError("Ambiguous creation state")
+                return cls.open(workspace)
+            # The staged store must be bound to the staged manifest:
+            # a discordant stage is refused and preserved, never rebound.
+            staged = read_manifest(stage)
+            MemoryStore.verify_existing(db_path_for(stage), brain_id=staged[LEGACY_WORKSPACE_ID_KEY])
+            protection = protect_workspace(workspace)  # same rule as create, before publishing
+            for name in ("manifest.json", "memory.db"):
+                with (stage / name).open("rb") as stream: os.fsync(stream.fileno())
+            sync_directory(stage)
+            os.rename(stage, target)
+            sync_directory(workspace)
+            engine = cls.open(workspace)
+            engine._git_protection = protection
+            return engine
+
+    @classmethod
+    def init(cls, path: str | Path = ".", profile: str = "general") -> "Urdyn":
+        """Create absent roots; existing roots must contain a valid Brain.
+
+        Use create explicitly to initialize an existing project directory.
+        Manifest-only legacy archives are deliberately rejected.
+
+        A non-empty directory holding no Brain is refused with
+        `UrdynNotFoundError` naming the remedy (`create`): it cannot be told
+        apart from a project whose Brain was lost, so `init` never creates
+        there implicitly. Re-initializing an existing Brain (re)applies the
+        Git protection of `create` (0.4.0 did the same); it never rewrites
+        the Brain.
+        """
+        workspace = normalize_location(path)
+        with lifecycle(workspace):
+            if any((workspace.parent / ("." + workspace.name + suffix)).exists() for suffix in (".stage", ".rollback")) and not workspace.exists():
+                raise UrdynAlreadyInitializedError("Restore recovery required")
+            try:
+                empty = not workspace.exists() or (workspace.is_dir() and not any(workspace.iterdir()))
+            except OSError as exc:
+                raise UrdynStorageUnavailableError(f"Brain location {workspace} cannot be inspected: {exc.strerror}") from exc
+            if empty:
+                return cls.create(workspace, profile)
+            if not os.path.lexists(workspace / URDYN_DIRNAME):
+                _raise_missing_brain(workspace, creating_hint=True)
+            engine = cls.open(workspace)
+            if engine.profile != profile:
+                raise UrdynAlreadyInitializedError("Profile mismatch")
+            engine._git_protection = protect_workspace(workspace)
+            return engine
 
     @classmethod
     def open(cls, path: str | Path = ".") -> "Urdyn":
-        """Open a Urdyn workspace whose root is exactly `path`."""
-        workspace = Path(path).resolve()
-        urdyn_dir = workspace / URDYN_DIRNAME
-        if not urdyn_dir.is_dir():
-            raise UrdynNotFoundError(f"No Urdyn workspace found at {workspace}")
-        data = read_manifest(urdyn_dir)
-        return cls(workspace, data["profile"], data[LEGACY_WORKSPACE_ID_KEY])
+        workspace = normalize_location(path)
+        with lifecycle(workspace):
+            # Absent and present-but-invalid are different answers:
+            # no `.urdyn` entry at all is "not found" (or an interrupted
+            # create/restore, which is neither missing nor valid); anything
+            # else is read and validated by `read_manifest`.
+            try:
+                entry = os.lstat(workspace / URDYN_DIRNAME)
+            except FileNotFoundError:
+                _raise_missing_brain(workspace)
+            except NotADirectoryError:
+                raise UrdynNotFoundError(f"No Urdyn Brain at {workspace}: it is not a directory") from None
+            except OSError as exc:
+                raise UrdynStorageUnavailableError(f"Brain location {workspace} cannot be inspected: {exc.strerror}") from exc
+            if stat.S_ISREG(entry.st_mode) or not (stat.S_ISDIR(entry.st_mode) or stat.S_ISLNK(entry.st_mode)):
+                raise UrdynManifestError(f"{workspace / URDYN_DIRNAME} exists but is not a directory")
+            data = read_manifest(workspace / URDYN_DIRNAME)
+            engine = cls(workspace, data["profile"], data[LEGACY_WORKSPACE_ID_KEY])
+            engine.verify_storage()
+            return engine
+
+    def verify_storage(self) -> None:
+        """Fail closed unless existing canonical storage passes read-only checks.
+
+        Does not create, migrate, or repair storage. A legacy workspace without
+        a database is ambiguous and is rejected even if it might be empty.
+        This point-in-time check does not make later operations atomic.
+        """
+        MemoryStore.verify_existing(self._db_path, brain_id=self._urdyn_id)  # the handle's identity
 
     @classmethod
     def discover(cls, start: str | Path | None = None) -> "Urdyn":
@@ -398,12 +777,13 @@ class Urdyn:
             urdyn_dir = candidate / URDYN_DIRNAME
             if urdyn_dir.is_dir():
                 data = read_manifest(urdyn_dir)
-                return cls(candidate, data["profile"], data[LEGACY_WORKSPACE_ID_KEY])
+                return cls.open(candidate)
         raise UrdynNotFoundError(
             f"No Urdyn workspace found in {current} or any parent directory. "
-            "Run 'urdyn init' to create one."
+            "Create one with 'urdyn create' (or 'urdyn init' in an empty directory)."
         )
 
+    @guarded
     def remember(
         self,
         content: str,
@@ -588,7 +968,7 @@ class Urdyn:
                 )
             )
 
-        with MemoryStore.create_or_open(self._db_path) as store:
+        with MemoryStore.open_existing(self._db_path, brain_id=self._urdyn_id) as store:
             persisted = store.add(memory, events)
 
         # `store.add` returns the pre-existing memory instead of writing
@@ -599,6 +979,7 @@ class Urdyn:
         # that recorded it.
         return persisted, persisted.memory_id == memory.memory_id
 
+    @guarded
     def recall(
         self, query: str, *, limit: int = DEFAULT_RECALL_LIMIT, include_superseded: bool = False
     ) -> list[Memory]:
@@ -613,12 +994,13 @@ class Urdyn:
         if limit <= 0:
             raise ValueError("limit must be a positive integer")
 
-        store = MemoryStore.open_if_exists(self._db_path)
+        store = MemoryStore.open_if_exists(self._db_path, brain_id=self._urdyn_id)
         if store is None:
             return []
         with store:
             return store.search(query, limit, current_only=not include_superseded)
 
+    @guarded
     def timeline(self, *, kind: str | None = None) -> list[Memory]:
         """Return the full recorded history, oldest first, optionally
         filtered by `kind`. Includes both current and superseded memories:
@@ -626,12 +1008,13 @@ class Urdyn:
         if kind is not None and kind not in VALID_KINDS:
             raise ValueError(f"Unknown memory kind {kind!r}; expected one of {sorted(VALID_KINDS)}")
 
-        store = MemoryStore.open_if_exists(self._db_path)
+        store = MemoryStore.open_if_exists(self._db_path, brain_id=self._urdyn_id)
         if store is None:
             return []
         with store:
             return store.timeline(kind)
 
+    @guarded
     def state(self, *, kind: str | None = None) -> list[Memory]:
         """Return only the currently-valid memories, oldest first, optionally
         filtered by `kind`. This is the history projected onto "what Urdyn
@@ -639,13 +1022,14 @@ class Urdyn:
         if kind is not None and kind not in VALID_KINDS:
             raise ValueError(f"Unknown memory kind {kind!r}; expected one of {sorted(VALID_KINDS)}")
 
-        store = MemoryStore.open_if_exists(self._db_path)
+        store = MemoryStore.open_if_exists(self._db_path, brain_id=self._urdyn_id)
         if store is None:
             return []
         with store:
             current_ids = store.current_ids()
             return [memory for memory in store.timeline(kind) if memory.memory_id in current_ids]
 
+    @guarded
     def record_conflict(self, memory_a: Memory, memory_b: Memory) -> Conflict:
         """Explicitly declare that two Memories cannot both be treated as a
         coherent description of the same state, and return the canonical
@@ -675,21 +1059,23 @@ class Urdyn:
         one or change its original `recorded_at`.
         """
         recorded_at = dt.datetime.now(dt.timezone.utc)
-        with MemoryStore.create_or_open(self._db_path) as store:
+        with MemoryStore.open_existing(self._db_path, brain_id=self._urdyn_id) as store:
             return store.add_conflict(memory_a.memory_id, memory_b.memory_id, recorded_at)
 
+    @guarded
     def conflicts(self) -> list[Conflict]:
         """Return every declared conflict relation, oldest first: the full
         canonical history, including conflicts no longer open because one
         or both participants stopped being current. Never rewritten or
         removed by a later supersession/invalidation -- see
         `open_conflicts()` for the current-state projection."""
-        store = MemoryStore.open_if_exists(self._db_path)
+        store = MemoryStore.open_if_exists(self._db_path, brain_id=self._urdyn_id)
         if store is None:
             return []
         with store:
             return store.list_conflicts()
 
+    @guarded
     def open_conflicts(self) -> list[Conflict]:
         """Return only the conflicts that are currently operative: a
         `Conflict` is included here if and only if BOTH memories it names
@@ -707,12 +1093,13 @@ class Urdyn:
         both call sites share ONE definition of "open" rather than two
         copies that could drift apart.
         """
-        store = MemoryStore.open_if_exists(self._db_path)
+        store = MemoryStore.open_if_exists(self._db_path, brain_id=self._urdyn_id)
         if store is None:
             return []
         with store:
             return _open_conflicts_projection(store.list_conflicts(), store.current_ids())
 
+    @guarded
     def add_evidence(self, content: str, *, kind: str = DEFAULT_EVIDENCE_KIND) -> Evidence:
         """Persist a new piece of evidence and return it.
 
@@ -731,15 +1118,16 @@ class Urdyn:
             recorded_at=dt.datetime.now(dt.timezone.utc),
         )
 
-        with MemoryStore.create_or_open(self._db_path) as store:
+        with MemoryStore.open_existing(self._db_path, brain_id=self._urdyn_id) as store:
             store.add_evidence(evidence)
 
         return evidence
 
+    @guarded
     def get_evidence(self, evidence_id: str) -> Evidence:
         """Resolve an evidence_id (e.g. from `Memory.evidence_ids`) to its
         persisted `Evidence`. Raises `ValueError` if unknown."""
-        store = MemoryStore.open_if_exists(self._db_path)
+        store = MemoryStore.open_if_exists(self._db_path, brain_id=self._urdyn_id)
         evidence = None
         if store is not None:
             with store:
@@ -748,6 +1136,7 @@ class Urdyn:
             raise ValueError(f"Unknown evidence {evidence_id!r}")
         return evidence
 
+    @guarded
     def seed(self, paths: Sequence[str | Path]) -> list[SeedResult]:
         """Record one observation of each given project file and return
         what happened to each, in the order given.
@@ -797,7 +1186,7 @@ class Urdyn:
             return []
 
         results = []
-        with MemoryStore.create_or_open(self._db_path) as store:
+        with MemoryStore.open_existing(self._db_path, brain_id=self._urdyn_id) as store:
             for candidate in candidates:
                 status, source, evidence = store.observe_source(
                     path=candidate.path,
@@ -811,6 +1200,7 @@ class Urdyn:
                 results.append(SeedResult(status=status, source=source, evidence=evidence))
         return results
 
+    @guarded
     def sources(self) -> list[Source]:
         """Every project file Urdyn tracks, ordered by path, each with its
         full observation history (oldest first).
@@ -823,7 +1213,7 @@ class Urdyn:
         `changed` IS that check, performed explicitly rather than as a
         side effect of listing.
         """
-        store = MemoryStore.open_if_exists(self._db_path)
+        store = MemoryStore.open_if_exists(self._db_path, brain_id=self._urdyn_id)
         if store is None:
             return []
         with store:
@@ -836,6 +1226,7 @@ class Urdyn:
                 f"this workspace is {self._profile!r}. Seed explicit paths instead."
             )
 
+    @guarded
     def seed_candidates(self) -> list[str]:
         """Project files a `dev` workspace could seed, as workspace-relative
         POSIX paths, sorted.
@@ -855,6 +1246,7 @@ class Urdyn:
         self._require_dev_discovery()
         return discover_candidate_paths(self._path, URDYN_DIRNAME)
 
+    @guarded
     def seed_candidate_report(self) -> SeedCandidateReport:
         """`seed_candidates()`, split into what seeding each candidate
         WOULD do: never-seeded, tracked-and-changed, tracked-and-identical
@@ -883,6 +1275,7 @@ class Urdyn:
             new=tuple(new), changed=tuple(changed), unchanged=tuple(unchanged)
         )
 
+    @guarded
     def tracked_scope(self) -> frozenset[str]:
         """The CHEAP half of `watcher_scope()`: paths already tracked as a
         `Source`. One indexed read of canonical data, no filesystem walk
@@ -890,6 +1283,7 @@ class Urdyn:
         poll tick (see `_watcher.py`'s scope-cadence note)."""
         return frozenset(source.path for source in self.sources())
 
+    @guarded
     def discovered_scope(self) -> frozenset[str]:
         """The EXPENSIVE half of `watcher_scope()`: the bounded recursive
         discovery walk. Separated from `tracked_scope()` so a caller that
@@ -902,6 +1296,7 @@ class Urdyn:
         non-dev caller, which no caller expects."""
         return frozenset(discover_candidate_paths(self._path, URDYN_DIRNAME))
 
+    @guarded
     def watcher_scope(self) -> frozenset[str]:
         """Workspace-relative paths the Dev watcher may observe:
         every path already tracked as a `Source`, unioned with everything
@@ -917,6 +1312,7 @@ class Urdyn:
         """
         return frozenset(self.tracked_scope() | self.discovered_scope())
 
+    @guarded
     def learn(
         self,
         content: str,
@@ -948,6 +1344,7 @@ class Urdyn:
             supporting_evidence=supporting_evidence,
         )
 
+    @guarded
     def record_attempt(
         self,
         *,
@@ -984,7 +1381,7 @@ class Urdyn:
             occurred_at=recorded_at,
         )
 
-        with MemoryStore.create_or_open(self._db_path) as store:
+        with MemoryStore.open_existing(self._db_path, brain_id=self._urdyn_id) as store:
             store.add_attempt(attempt, event)
 
         return attempt
@@ -1007,7 +1404,7 @@ class Urdyn:
         lives in the caller (`preflight()`'s call to `build_preflight`,
         `context()`'s call to `compile_context`), never here.
         """
-        store = MemoryStore.open_if_exists(self._db_path)
+        store = MemoryStore.open_if_exists(self._db_path, brain_id=self._urdyn_id)
         if store is None:
             # (A27) Even a workspace with nothing recorded reports HOW it
             # looked: "nothing found" and "nothing could be found" are
@@ -1294,8 +1691,12 @@ class Urdyn:
                 retrieval=retrieval,
                 current_source_evidence=current_source_evidence,
                 source_fts_candidates=source_fts_candidates,
+                search_index=store.search_index_presence(),
             )
 
+    @_inference_outside_lock("task")  # encoder work planned, then run without the lock
+    @guarded  # both passes of the call run under ONE lifecycle hold
+    @_semantic_outcome_guarded
     def preflight(self, task: str) -> Preflight:
         """Select prior experience relevant to `task`, before starting it.
 
@@ -1331,8 +1732,12 @@ class Urdyn:
             open_conflicts=material.open_conflict_list,
             conflict_participants=material.current_memory_by_id,
             retrieval=material.retrieval,
+            search_index=material.search_index,
         )
 
+    @_inference_outside_lock("task")  # encoder work planned, then run without the lock
+    @guarded  # both passes of the call run under ONE lifecycle hold
+    @_semantic_outcome_guarded
     def context(
         self,
         task: str,
@@ -1410,6 +1815,7 @@ class Urdyn:
             open_conflicts=material.open_conflict_list,
             conflict_participants=material.current_memory_by_id,
             retrieval=material.retrieval,
+            search_index=material.search_index,
         )
 
         # [A29.1] Reuses `build_preflight`'s OWN selection for four of
@@ -1517,6 +1923,7 @@ class Urdyn:
             open_conflicts=material.open_conflict_list,
             retrieval=material.retrieval,
             project_evidence=relevant_project_evidence,
+            search_index=material.search_index,
         )
         if _project_evidence_trace is not None:
             sufficient_keys = frozenset(
@@ -1531,6 +1938,7 @@ class Urdyn:
             )
         return compiled
 
+    @guarded
     def promote(
         self,
         lesson: Memory,
@@ -1592,7 +2000,7 @@ class Urdyn:
             occurred_at=recorded_at,
         )
 
-        with MemoryStore.create_or_open(self._db_path) as store:
+        with MemoryStore.open_existing(self._db_path, brain_id=self._urdyn_id) as store:
             skill = store.add_skill(
                 skill_id,
                 name=name,
@@ -1606,10 +2014,11 @@ class Urdyn:
 
         return skill
 
+    @guarded
     def get_skill(self, skill_id: str) -> Skill:
         """Resolve a skill_id to its persisted `Skill`. Raises `ValueError`
         if unknown."""
-        store = MemoryStore.open_if_exists(self._db_path)
+        store = MemoryStore.open_if_exists(self._db_path, brain_id=self._urdyn_id)
         skill = None
         if store is not None:
             with store:
@@ -1618,14 +2027,18 @@ class Urdyn:
             raise ValueError(f"Unknown skill {skill_id!r}")
         return skill
 
+    @guarded
     def skills(self) -> list[Skill]:
         """Return every recorded Skill, oldest first."""
-        store = MemoryStore.open_if_exists(self._db_path)
+        store = MemoryStore.open_if_exists(self._db_path, brain_id=self._urdyn_id)
         if store is None:
             return []
         with store:
             return store.list_skills()
 
+    @_inference_outside_lock("action")  # encoder work planned, then run without the lock
+    @guarded  # both passes of the call run under ONE lifecycle hold
+    @_semantic_outcome_guarded
     def guard(self, action: str) -> GuardResult:
         """Check whether prior experience directly bears on an action
         about to be taken.
@@ -1642,7 +2055,7 @@ class Urdyn:
         if not isinstance(action, str) or not action.strip():
             raise ValueError("Guard action must not be empty or whitespace-only")
 
-        store = MemoryStore.open_if_exists(self._db_path)
+        store = MemoryStore.open_if_exists(self._db_path, brain_id=self._urdyn_id)
         if store is None:
             return GuardResult(
                 action=action,
@@ -1710,6 +2123,7 @@ class Urdyn:
                 skill_semantic_admitted=skill_semantic_admitted,
                 attempt_semantic_admitted=attempt_semantic_admitted,
                 retrieval=retrieval,
+                search_index=store.search_index_presence(),
             )
 
     def _count_memories(self) -> int:
@@ -1719,7 +2133,7 @@ class Urdyn:
         API: the future semantics of "count" (current vs. superseded vs.
         invalidated memories) are not yet stable enough to commit to.
         """
-        store = MemoryStore.open_if_exists(self._db_path)
+        store = MemoryStore.open_if_exists(self._db_path, brain_id=self._urdyn_id)
         if store is None:
             return 0
         with store:
@@ -1757,83 +2171,288 @@ class Urdyn:
         at `status='building'`, which `_semantic_context` refuses to use.
         Either way the outcome is a workspace that falls back to
         lexical/FTS, never one that reads a half-built index.
-        """
-        semantic = _load_semantic_module()
-        if semantic is None:
-            raise UrdynSemanticUnavailableError(
-                "Semantic retrieval requires the 'semantic' optional dependency. "
-                "Install it with: pip install 'urdyn-memory[semantic]'"
-            )
 
-        try:
-            model = semantic.load_model_for_setup()
-            dimensions = semantic.model_dimensions(model)
-        except Exception as exc:  # onnxruntime/tokenizers/hub failures are not ours to leak
-            raise UrdynSemanticUnavailableError(
-                f"Could not load the semantic model: {exc}"
-            ) from exc
-        revision = semantic.resolve_local_revision()
+        The same states, without holding the lifecycle lock while
+        the model loads or embeds: (1) checks under the lock; (2) model load
+        and dimension probe, no lock -- a failure here still leaves the
+        existing index untouched; (3) under the lock, the `building` marker
+        and a snapshot of the canonical texts; (4) embedding, no lock -- a
+        failure leaves the marker, as before; (5) under the lock, the
+        rebuild is published in one transaction (`publish_rebuild`), only if
+        the Brain, its storage files, the handle's backend, every snapshot
+        record and the marker itself are unchanged. Records written meanwhile
+        are not in it: the index is then `stale` and the next retrieval call
+        refreshes it. Anything else changed: nothing is published and
+        `UrdynSemanticUnavailableError` says so; there is no automatic
+        retry. Other operations on the Brain proceed while it embeds; while
+        the marker is there they read the index as unavailable, exactly as
+        a rebuild in progress has always been reported.
+        """
+        semantic, backend, identity = self._setup_capture()
+        model, provider, model_id, revision, normalization = self._setup_load_model(semantic, backend, identity)
+        # The representation this rebuild produces, from the encoder
+        # just loaded (core-verified, backend-declared or unattested); the
+        # index records it, and only it, with every vector.
+        representation = semantic.representation_of(model)
+        with self._setup_slot(backend):
+            try:
+                dimensions = semantic.model_dimensions(model)
+                if backend is not None and dimensions != identity.dimensions:
+                    raise ValueError("external semantic backend dimensions changed")
+                declared_width = representation.descriptor["encoder"].get("recipe", {}).get("dimensions")  # verified only
+                if declared_width is not None and declared_width != dimensions:
+                    raise ValueError("the encoder output width disagrees with its representation")
+            except Exception as exc:  # onnxruntime/tokenizers/hub failures are not ours to leak
+                if backend is not None:
+                    raise UrdynSemanticUnavailableError("Could not load the external semantic model") from None
+                raise UrdynSemanticUnavailableError(f"Could not load the semantic model: {exc}") from exc
         # NOT `SEMANTIC_MODEL_ID`: setup may have fallen back to a
         # different artifact than this machine prefers, and the index
         # must record the one it was actually built with (see
         # `_semantic.artifact_for_index`).
-        model_id = semantic.model_identity(model)
-        created_at = dt.datetime.now(dt.timezone.utc).isoformat()
+        marker = SemanticMeta(
+            provider=_representation.tag_provider(provider, representation),
+            model_id=model_id,
+            model_revision=revision,
+            dimensions=dimensions,
+            normalization=normalization,
+            created_at=dt.datetime.now(dt.timezone.utc).isoformat(),
+            status=STATUS_BUILDING,
+        )
+        ticket = self._setup_begin(marker, backend, identity)
+        rows = self._setup_encode(semantic, model, ticket)
+        self._setup_publish(ticket, rows)
 
-        store = MemoryStore.open_if_exists(self._db_path)
-        if store is None:
-            pools: tuple[tuple[str, list[tuple[str, str]]], ...] = (
-                (ENTITY_ATTEMPT, []),
-                (ENTITY_MEMORY, []),
-                (ENTITY_SKILL, []),
-                (ENTITY_SOURCE_CHUNK, []),
-            )
-        else:
-            with store:
-                pools = _semantic_pool_entries(store)
-        counts = {entity_type: len(entries) for entity_type, entries in pools}
+        counts = {entity_type: len(entries) for entity_type, entries in ticket.pools}
         # [A54.3] `counts[ENTITY_SOURCE_CHUNK]` is a CHUNK count, not a
         # document count -- `SemanticSetupResult.source_evidence_count` is
         # public API and must keep meaning "how many seeded documents",
         # so it is derived separately as the number of DISTINCT parent
         # Evidence ids among the chunk pool's own ids, never the row count.
         source_document_ids = {
-            parse_chunk_semantic_id(chunk_id)[0] for chunk_id, _ in dict(pools)[ENTITY_SOURCE_CHUNK]
+            parse_chunk_semantic_id(chunk_id)[0] for chunk_id, _ in dict(ticket.pools)[ENTITY_SOURCE_CHUNK]
         }
-
-        with SemanticIndexStore.create_or_open(self._semantic_db_path) as semantic_store:
-            semantic_store.begin_rebuild(
-                provider=semantic.SEMANTIC_PROVIDER,
-                model_id=model_id,
-                model_revision=revision,
-                dimensions=dimensions,
-                normalization=semantic.SEMANTIC_NORMALIZATION,
-                created_at=created_at,
-            )
-            for entity_type, entries in pools:
-                if not entries:
-                    continue
-                ids = [entity_id for entity_id, _ in entries]
-                texts = [text for _, text in entries]
-                vectors = semantic.embed(model, texts)
-                rows = [(entity_id, semantic.vector_to_blob(vec)) for entity_id, vec in zip(ids, vectors)]
-                semantic_store.add_vectors(entity_type, rows)
-            semantic_store.finish_rebuild()
-
         return SemanticSetupResult(
-            provider=semantic.SEMANTIC_PROVIDER,
+            provider=provider,
             model_id=model_id,
             model_revision=revision,
             dimensions=dimensions,
-            normalization=semantic.SEMANTIC_NORMALIZATION,
+            normalization=normalization,
             attempt_count=counts[ENTITY_ATTEMPT],
             memory_count=counts[ENTITY_MEMORY],
             skill_count=counts[ENTITY_SKILL],
             source_evidence_count=len(source_document_ids),
         )
 
+    # -- semantic setup outside the lifecycle lock -----------------
+
+    @guarded
+    def _setup_capture(self):
+        """Step 1 (lifecycle hold): the checks that always ran first, and the
+        backend this rebuild will use, captured so a reconfiguration of the
+        handle meanwhile is detected instead of mixed in."""
+        semantic = _load_semantic_module()
+        if semantic is None:
+            raise UrdynSemanticUnavailableError(
+                "Semantic retrieval requires the 'semantic' optional dependency. "
+                "Install it with: pip install 'urdyn-memory[semantic]'"
+            )
+        if self._semantic_backend is None and not semantic.default_runtime_available():
+            raise UrdynSemanticUnavailableError(
+                "Semantic retrieval requires the 'semantic' optional dependency. "
+                "Install it with: pip install 'urdyn-memory[semantic]'"
+            )
+        return semantic, self._semantic_backend, self._semantic_backend_identity
+
+    def _setup_load_model(self, semantic, backend, identity):
+        """Step 2 (no lock): load the model -- the one place allowed to
+        download -- from what step 1 captured. Fails before any index is
+        touched, with the same errors as before."""
+        try:
+            if backend is None:
+                model = semantic.load_model_for_setup()
+                return (model, semantic.SEMANTIC_PROVIDER, semantic.model_identity(model),
+                        semantic.resolve_local_revision(), semantic.SEMANTIC_NORMALIZATION)
+            if not self._backend_ready(backend, identity):
+                raise ValueError("external semantic backend is unavailable")
+            if identity is None:
+                raise ValueError("external semantic backend has no identity")
+            return (semantic.ExternalEncoder(backend, identity), identity.index_provider, identity.model_id,
+                    identity.model_revision, identity.normalization)
+        except Exception as exc:  # onnxruntime/tokenizers/hub failures are not ours to leak
+            if backend is not None:
+                raise UrdynSemanticUnavailableError("Could not load the external semantic model") from None
+            raise UrdynSemanticUnavailableError(f"Could not load the semantic model: {exc}") from exc
+
+    @contextmanager
+    def _setup_slot(self, backend):
+        """This Brain's inference slot for `backend` (bounded wait, see
+        `INFERENCE_SLOT_TIMEOUT_SECONDS`); busy means not run, never queued."""
+        with inference_slot(self._path, INFERENCE_SLOT_TIMEOUT_SECONDS, _encoder_slot(backend)) as acquired:
+            if not acquired:
+                raise _SetupNotPublished(
+                    "This Brain's semantic encoder stayed busy with another call; semantic setup did not run "
+                    "to completion and published nothing. Run it again."
+                )
+            yield
+
+    @contextmanager
+    def _rebuild_errors(self, backend):
+        """The error mapping the rebuild steps always had: a client
+        backend's own errors are not leaked."""
+        try:
+            yield
+        except _SetupNotPublished:
+            raise
+        except Exception:
+            if backend is not None:
+                raise UrdynSemanticUnavailableError("External semantic index rebuild failed") from None
+            raise
+
+    @guarded
+    def _setup_begin(self, marker, backend, identity) -> "_SetupTicket":
+        """Step 3 (lifecycle hold): snapshot of the canonical texts and the
+        `building` marker, in the same hold. From here on the index reads
+        as unavailable until step 5 publishes, as a rebuild always has."""
+        reason = self._setup_backend_changed(backend, identity)
+        if reason:
+            raise _SetupNotPublished(f"Semantic setup was not started: {reason}.")
+        store = MemoryStore.open_if_exists(self._db_path, brain_id=self._urdyn_id)
+        if store is None:
+            pools = ((ENTITY_ATTEMPT, ()), (ENTITY_MEMORY, ()), (ENTITY_SKILL, ()), (ENTITY_SOURCE_CHUNK, ()))
+        else:
+            with store:
+                pools = tuple((entity_type, tuple(entries)) for entity_type, entries in _semantic_pool_entries(store))
+        with self._rebuild_errors(backend):
+            with SemanticIndexStore.create_or_open(self._semantic_db_path) as semantic_store:
+                semantic_store.begin_rebuild(
+                    provider=marker.provider,
+                    model_id=marker.model_id,
+                    model_revision=marker.model_revision,
+                    dimensions=marker.dimensions,
+                    normalization=marker.normalization,
+                    created_at=marker.created_at,
+                )
+        return _SetupTicket(
+            brain_id=self._urdyn_id,
+            incarnation=self._storage_incarnation(),
+            marker=marker,
+            backend=backend,
+            backend_identity=identity,
+            pools=pools,
+        )
+
+    def _setup_encode(self, semantic, model, ticket) -> list[tuple[str, str, bytes]]:
+        """Step 4 (no lock, no SQLite connection): one `embed` per pool, the
+        batches of the previous implementation, each under the inference
+        slot. Rows become bytes at once: nothing mutable survives."""
+        rows: list[tuple[str, str, bytes]] = []
+        for entity_type, entries in ticket.pools:
+            if not entries:
+                continue
+            ids = [entity_id for entity_id, _ in entries]
+            texts = [text for _, text in entries]
+            with self._setup_slot(ticket.backend), self._rebuild_errors(ticket.backend):
+                try:
+                    # One validated, unit-norm row per text, of the
+                    # probed width -- or no index. A contract violation here
+                    # leaves the index at status='building' (never published
+                    # as ready) and canonical memory untouched.
+                    vectors = semantic.require_unit_rows(
+                        semantic.embed(model, texts), rows=len(texts), dimensions=ticket.marker.dimensions
+                    )
+                except semantic.InvalidSemanticVectors as exc:
+                    raise UrdynSemanticUnavailableError(
+                        f"The semantic encoder produced invalid vectors; the index was not built: {exc}"
+                    ) from exc
+            rows.extend(
+                (entity_type, entity_id, semantic.vector_to_blob(vector))
+                for entity_id, vector in zip(ids, vectors, strict=True)
+            )
+        return rows
+
+    def _setup_backend_changed(self, backend, identity) -> str | None:
+        if self._semantic_backend is not backend or self._semantic_backend_identity != identity:
+            return "the semantic backend of this handle changed"
+        return None
+
+    def _setup_superseded_by(self, ticket) -> str | None:
+        """Why the prepared rebuild no longer describes this Brain, or None.
+        The guarded call has already re-checked the Brain's identity; this
+        adds what `cortex_id` alone cannot prove."""
+        reason = self._setup_backend_changed(ticket.backend, ticket.backend_identity)
+        if reason:
+            return reason
+        if self._storage_incarnation() != ticket.incarnation:
+            return "its storage files were replaced"
+        with MemoryStore.open_if_exists(self._db_path, brain_id=self._urdyn_id) as store:
+            current = {entity_type: dict(entries) for entity_type, entries in _semantic_pool_entries(store)}
+        for entity_type, entries in ticket.pools:
+            pool = current.get(entity_type, {})
+            if any(pool.get(entity_id) != text for entity_id, text in entries):
+                return "a record it covers changed or disappeared"
+        return None
+
+    @guarded
+    def _setup_publish(self, ticket, rows) -> None:
+        """Step 5 (lifecycle hold): verify, then publish in one transaction."""
+        reason = self._setup_superseded_by(ticket)
+        if reason:
+            raise _SetupNotPublished(
+                f"The Brain changed while its semantic index was being rebuilt ({reason}); "
+                "nothing was published. Run semantic setup again."
+            )
+        with self._rebuild_errors(ticket.backend):
+            with SemanticIndexStore.create_or_open(self._semantic_db_path) as semantic_store:
+                published = semantic_store.publish_rebuild(ticket.marker, rows)
+        if not published:
+            raise _SetupNotPublished(
+                "Another semantic setup of this Brain started or finished while this one was running; "
+                "this rebuild was not published and the other one stands."
+            )
+
+    # -- derived search index --------------------------------------
+
+    def search_index_state(self) -> SearchIndexState:
+        """Whether this SQLite runtime has FTS5, and whether the
+        derived search index is `missing`, `usable`, `invalid` or
+        `unchecked` relative to canonical data, for every indexed entity
+        type (memory, attempt, skill, source). Observational: never writes,
+        never repairs (see `rebuild_search_index`). Cost grows with the
+        number of records: it is a diagnostic, not a per-query check.
+
+        Runs through `urdyn.maintenance` (lifecycle lock,
+        this handle's identity and profile checked against the manifest,
+        then the ordinary `verify_existing`), so it can still DIAGNOSE a
+        Brain that ordinary operations refuse only because its FTS5 index
+        is damaged; any other refusal is raised unchanged."""
+        from . import maintenance
+
+        return maintenance.inspect_search_index(self._path, _expected=(self._urdyn_id, self._profile))
+
+    def rebuild_search_index(self) -> SearchIndexState:
+        """Explicitly (re)build the derived search index from
+        canonical data, recovering it from any state, including total
+        absence. Atomic: one SQLite transaction under the Brain's lifecycle
+        lock, rolled back entirely on failure. Canonical data is never
+        modified. The result is validated INSIDE that transaction and
+        committed only if `usable`; otherwise everything is rolled back and
+        `UrdynStorageError` is raised. Raises `UrdynStorageUnavailableError`
+        (nothing written) when this runtime has no FTS5. Returns the state
+        validated before the commit.
+
+        Same entry as `urdyn.maintenance.recover_search_index`
+        (bound to this handle's identity): a Brain refused only because its
+        FTS5 projection is damaged is recovered through the exceptional,
+        backed-up path; the safety copy's location is reported by
+        `recover_search_index` and kept in `<parent>/.urdyn-maintenance/`."""
+        from . import maintenance
+
+        return maintenance.recover_search_index(self._path, _expected=(self._urdyn_id, self._profile)).state
+
     # -- semantic lifecycle (A27) ------------------------------------------
 
+    @guarded
     def semantic_state(self) -> SemanticState:
         """[A27] Whether the derived semantic index is currently a usable,
         up-to-date view of canonical state -- the question `preflight()`
@@ -1857,7 +2476,7 @@ class Urdyn:
         """
         if not self._semantic_db_path.exists():
             return SemanticState(status=SEMANTIC_DISABLED, detail=DETAIL_NOT_SET_UP)
-        store = MemoryStore.open_if_exists(self._db_path)
+        store = MemoryStore.open_if_exists(self._db_path, brain_id=self._urdyn_id)
         if store is None:
             return self._semantic_state_for(())
         with store:
@@ -1912,14 +2531,34 @@ class Urdyn:
             return SemanticState(
                 status=SEMANTIC_UNAVAILABLE, detail=DETAIL_EXTRA_MISSING, indexed=indexed_count
             )
-        if semantic.artifact_for_index(meta) is None:
-            return SemanticState(
-                status=SEMANTIC_UNAVAILABLE, detail=DETAIL_MODEL_MISMATCH, indexed=indexed_count
-            )
-        if not semantic.artifacts_available(meta):
-            return SemanticState(
-                status=SEMANTIC_UNAVAILABLE, detail=DETAIL_MODEL_UNCACHED, indexed=indexed_count
-            )
+        if self._semantic_backend is None:
+            if not semantic.default_runtime_available():
+                return SemanticState(
+                    status=SEMANTIC_UNAVAILABLE, detail=DETAIL_EXTRA_MISSING, indexed=indexed_count
+                )
+            if semantic.artifact_for_index(meta) is None:
+                return SemanticState(
+                    status=SEMANTIC_UNAVAILABLE, detail=DETAIL_MODEL_MISMATCH, indexed=indexed_count
+                )
+            problem = semantic.representation_problem(meta)
+            if problem is not None:
+                return SemanticState(status=SEMANTIC_UNAVAILABLE, detail=problem, indexed=indexed_count)
+            if not semantic.artifacts_available(meta):
+                return SemanticState(
+                    status=SEMANTIC_UNAVAILABLE, detail=DETAIL_MODEL_UNCACHED, indexed=indexed_count
+                )
+        else:
+            if not self._external_identity_matches(meta):
+                return SemanticState(
+                    status=SEMANTIC_UNAVAILABLE, detail=DETAIL_MODEL_MISMATCH, indexed=indexed_count
+                )
+            problem = semantic.representation_problem(meta, self._semantic_backend_identity)
+            if problem is not None:
+                return SemanticState(status=SEMANTIC_UNAVAILABLE, detail=problem, indexed=indexed_count)
+            if not self._external_semantic_ready():
+                return SemanticState(
+                    status=SEMANTIC_UNAVAILABLE, detail=DETAIL_MODEL_UNCACHED, indexed=indexed_count
+                )
 
         missing = sum(
             1 for entity_type, entries in pools for entity_id, _ in entries if entity_id not in indexed[entity_type]
@@ -1929,6 +2568,18 @@ class Urdyn:
         return SemanticState(status=SEMANTIC_READY, indexed=indexed_count)
 
     def _semantic_prepare(self, pools: tuple[tuple[str, list[tuple[str, str]]], ...]) -> SemanticState:
+        """Records the declared state for the current call
+        (see `_SemanticCallOutcome`); on the lexical-only second pass it
+        returns the degraded state without classifying or refreshing again."""
+        outcome = _SEMANTIC_CALL.get()
+        if outcome is not None and outcome.forced is not None:
+            return outcome.forced
+        state = self._semantic_prepare_index(pools)
+        if outcome is not None:
+            outcome.prepared = state
+        return state
+
+    def _semantic_prepare_index(self, pools: tuple[tuple[str, list[tuple[str, str]]], ...]) -> SemanticState:
         """[A27] The lifecycle step `preflight()`/`guard()` run before
         consulting the semantic channel: classify, and repair if the only
         thing wrong is that canonical work has happened since the last
@@ -1990,6 +2641,8 @@ class Urdyn:
         semantic = _load_semantic_module()
         if semantic is None:
             return None
+        if self._semantic_backend is None and not semantic.default_runtime_available():
+            return None
         try:
             index = SemanticIndexStore.open_if_exists(self._semantic_db_path)
             if index is None:
@@ -1998,24 +2651,37 @@ class Urdyn:
                 meta = index.meta()
                 if meta is None or meta.status != STATUS_READY:
                     return None
-                model = semantic.load_model_for_index(meta)
+                model = self._semantic_model_for_index(meta, semantic)
                 if model is None:
                     return None
+                index.expect(meta)  # write only into the index read here
                 refreshed = 0
                 for entity_type, entries in pools:
-                    known = index.indexed_ids(entity_type)
-                    pending = [(entity_id, text) for entity_id, text in entries if entity_id not in known]
+                    pending = self._pending_entries(index, entity_type, entries)
                     if not pending:
                         continue
-                    vectors = semantic.embed(model, [text for _, text in pending])
-                    index.add_vectors(
+                    if isinstance(model, _encoding_plan.PreparedEncoder):
+                        # Only records still pending with the text
+                        # encoded outside the lock; later writes stay pending.
+                        ids, raw = model.refresh_rows(entity_type, pending)
+                        if not ids:
+                            continue
+                    else:
+                        ids, raw = [entity_id for entity_id, _ in pending], semantic.embed(
+                            model, [text for _, text in pending]
+                        )
+                    # Same numeric contract as setup, against the
+                    # width the index recorded; a violation aborts the refresh
+                    # (caught below) before anything of this pool is written.
+                    vectors = semantic.require_unit_rows(raw, rows=len(ids), dimensions=meta.dimensions)
+                    # Written only into the index this refresh read
+                    # (same marker, same representation), in one transaction.
+                    if index.add_vectors(
                         entity_type,
-                        [
-                            (entity_id, semantic.vector_to_blob(vector))
-                            for (entity_id, _), vector in zip(pending, vectors)
-                        ],
-                    )
-                    refreshed += len(pending)
+                        [(entity_id, semantic.vector_to_blob(vector)) for entity_id, vector in zip(ids, vectors, strict=True)],
+                    ) is False:
+                        return None
+                    refreshed += len(ids)
                 return refreshed
         except Exception:
             # Every failure mode of a DERIVED, OPTIONAL channel -- model
@@ -2025,6 +2691,155 @@ class Urdyn:
             # the caller still gets its full lexical answer, plus a
             # retrieval line saying the semantic view is incomplete.
             return None
+
+    # -- inference outside the lifecycle lock ----------------------
+
+    @staticmethod
+    def _pending_entries(index, entity_type: str, entries: list[tuple[str, str]]) -> list[tuple[str, str]]:
+        """The records of one pool the index does not cover yet, in pool
+        order: the refresh's work list, shared by planning and refresh."""
+        known = index.indexed_ids(entity_type)
+        return [(entity_id, text) for entity_id, text in entries if entity_id not in known]
+
+    def _storage_incarnation(self) -> tuple:
+        """`(memory.db, semantic_index.db)` file identities `(st_dev,
+        st_ino)`, or None for a missing file. A replacement signal under the
+        cooperating lifecycle (a restore publishes new files while the old
+        ones still exist); never an identity, and never sufficient alone.
+        `os.stat` only: opening and closing a database file here could drop
+        SQLite's POSIX locks held by another connection of this process."""
+        def one(path: Path):
+            try:
+                st = os.stat(path)
+            except FileNotFoundError:
+                return None
+            return (st.st_dev, st.st_ino)
+
+        return (one(self._db_path), one(self._semantic_db_path))
+
+    def _current_encoder_key(self, semantic):
+        """The encoder key a call would plan for right now, or None when the
+        semantic channel would not be consulted (no index, index not ready,
+        incompatible, external backend not ready). Read-only."""
+        if semantic is None or (self._semantic_backend is None and not semantic.default_runtime_available()):
+            return None
+        if not self._semantic_db_path.exists():
+            return None
+        index = SemanticIndexStore.open_if_exists(self._semantic_db_path)
+        if index is None:
+            return None
+        with index:
+            meta = index.meta()
+        if meta is None or meta.status != STATUS_READY:
+            return None
+        key = self._encoder_key(meta, semantic)
+        if key is None or (self._semantic_backend is not None and not self._external_semantic_ready()):
+            return None
+        return key
+
+    def _plan_inference(self, query) -> "_encoding_plan.EncodingTicket | None":
+        """Step 1 (lifecycle hold, read-only): what this call will ask the
+        encoder for. Never raises and never authorizes anything -- the
+        guarded call re-checks everything; on any doubt there is no plan."""
+        try:
+            semantic = _load_semantic_module()
+            if semantic is None or not self._semantic_db_path.exists():
+                return None
+            with lifecycle(self._path):
+                manifest = read_manifest(self._path / URDYN_DIRNAME)
+                if (manifest[LEGACY_WORKSPACE_ID_KEY], manifest["profile"]) != (self._urdyn_id, self._profile):
+                    return None  # the guarded call reports it
+                key = self._current_encoder_key(semantic)
+                if key is None:
+                    return None
+                with MemoryStore.open_if_exists(self._db_path, brain_id=self._urdyn_id) as store:
+                    pools = _semantic_pool_entries(store)
+                stale = self._semantic_state_for(pools).status == SEMANTIC_STALE
+                with SemanticIndexStore.open_if_exists(self._semantic_db_path) as index:
+                    meta = index.meta()
+                    # exactly the work `_semantic_prepare_index` would do now:
+                    # refresh only a stale index, pool by pool, in pool order
+                    refresh = tuple(
+                        (entity_type, tuple(pending))
+                        for entity_type, entries in pools
+                        if stale and (pending := self._pending_entries(index, entity_type, entries))
+                    )
+                    stored = index.vector_count()
+                if self._encoder_key(meta, semantic) != key:
+                    return None
+                return _encoding_plan.EncodingTicket(
+                    brain_id=self._urdyn_id,
+                    incarnation=self._storage_incarnation(),
+                    encoder_key=key,
+                    meta=meta,
+                    backend=self._semantic_backend,
+                    backend_identity=self._semantic_backend_identity,
+                    query=query if stored or refresh else None,  # an empty index is never queried
+                    refresh=refresh,
+                )
+        except Exception:
+            return None
+
+    def _infer_outside_lock(self, ticket) -> "_encoding_plan.PreparedEncodings":
+        """Step 2: no lifecycle hold and no SQLite connection. The encoder is
+        built from what the ticket captured, not from the handle, and runs
+        under this Brain's in-process inference slot."""
+        if ticket is None or not ticket.has_work:
+            return _encoding_plan.PreparedEncodings(ticket)
+        semantic = _load_semantic_module()
+        if ticket.backend is None:
+            def build_model():
+                return semantic.load_model_for_index(ticket.meta)
+        else:
+            def build_model():
+                return semantic.bind_representation(
+                    semantic.ExternalEncoder(ticket.backend, ticket.backend_identity), ticket.meta)
+
+        with inference_slot(self._path, INFERENCE_SLOT_TIMEOUT_SECONDS, _encoder_slot(ticket.backend)) as acquired:
+            if not acquired:
+                return _encoding_plan.PreparedEncodings(ticket, failure=_encoding_plan.EncoderBusy(
+                    "this Brain's encoder is still busy with another call"))
+            return _encoding_plan.infer(
+                ticket,
+                build_model=build_model,
+                embed=lambda model, texts: semantic.embed(model, texts),
+                validate_refresh=lambda rows, count: semantic.require_unit_rows(
+                    rows, rows=count, dimensions=ticket.meta.dimensions),
+            )
+
+    def _plan_still_usable(self, ticket) -> bool:
+        """Under the lifecycle lock, just before publication: whether the
+        plan was made for the encoder and the storage files that exist now.
+        Content is re-checked anyway, row by row; this only decides whether
+        one fresh plan is worth making (restore, index rebuilt by another
+        model, semantic channel appearing). Errors: keep the plan, the
+        guarded call reports what is wrong."""
+        try:
+            key = self._current_encoder_key(_load_semantic_module())
+            if ticket is None:
+                return key is None
+            return key == ticket.encoder_key and self._storage_incarnation() == ticket.incarnation
+        except Exception:
+            return True
+
+    def _run_with_prepared_encodings(self, query, method, *args, **kwargs):
+        """Plan (lifecycle hold), infer (no hold), publish (lifecycle
+        hold, the unchanged guarded `method`). At most
+        `_INFERENCE_PLANS_PER_CALL` plans; the last one is always used, its
+        rows still served only for the same encoder and texts."""
+        if not (isinstance(query, str) and query.strip()):
+            # rejected by the method itself, before any semantic work: no plan
+            with _encoding_plan.activated(_encoding_plan.PreparedEncodings(None)):
+                return method(*args, **kwargs)
+        for plan in range(_INFERENCE_PLANS_PER_CALL):
+            ticket = self._plan_inference(query)
+            prepared = self._infer_outside_lock(ticket)
+            with lifecycle(self._path):
+                if plan + 1 < _INFERENCE_PLANS_PER_CALL and not self._plan_still_usable(ticket):
+                    continue
+                with _encoding_plan.activated(prepared):
+                    return method(*args, **kwargs)
+        raise AssertionError("unreachable")  # pragma: no cover
 
     def _semantic_context(self):
         """Shared degraded-condition handling for every semantic entry
@@ -2046,6 +2861,8 @@ class Urdyn:
         semantic = _load_semantic_module()
         if semantic is None:
             return None
+        if self._semantic_backend is None and not semantic.default_runtime_available():
+            return None
         semantic_store = SemanticIndexStore.open_if_exists(self._semantic_db_path)
         if semantic_store is None:
             return None
@@ -2053,7 +2870,7 @@ class Urdyn:
             meta = semantic_store.meta()
             if meta is None or meta.status != "ready":
                 return None
-        model = semantic.load_model_for_index(meta)
+        model = self._semantic_model_for_index(meta, semantic)
         if model is None:
             return None
         return semantic, model, meta
@@ -2085,9 +2902,12 @@ class Urdyn:
         are usable. `None` means "no restriction" (attempts in
         preflight(), skills in guard() -- see call sites).
         """
+        if _semantic_suppressed():
+            return frozenset()
         try:
             context = self._semantic_context()
             if context is None:
+                _note_semantic_failure(None)
                 return frozenset()
             semantic, model, meta = context
             stored_vectors = self._semantic_vectors(entity_type)
@@ -2101,7 +2921,8 @@ class Urdyn:
                 dimensions=meta.dimensions,
                 eligible_ids=eligible_ids,
             )
-        except Exception:
+        except Exception as exc:
+            _note_semantic_failure(exc)
             return frozenset()
 
     def _preflight_lesson_semantic_admitted(
@@ -2135,9 +2956,12 @@ class Urdyn:
         Falls back to empty -- never raises -- on any degraded
         condition, exactly like `_semantic_widen`.
         """
+        if _semantic_suppressed():
+            return frozenset()
         try:
             context = self._semantic_context()
             if context is None:
+                _note_semantic_failure(None)
                 return frozenset()
             semantic, model, meta = context
             memory_vectors = self._semantic_vectors(ENTITY_MEMORY)
@@ -2151,7 +2975,8 @@ class Urdyn:
                 eligible_ids=lesson_eligible_ids,
             )
             return semantic.set_admitted_ids(ranked, floor=semantic.LESSON_SEMANTIC_FLOOR)
-        except Exception:
+        except Exception as exc:
+            _note_semantic_failure(exc)
             return frozenset()
 
     def _context_invariant_semantic_admitted(
@@ -2190,9 +3015,12 @@ class Urdyn:
         Falls back to empty -- never raises -- on any degraded condition,
         exactly like `_semantic_widen`.
         """
+        if _semantic_suppressed():
+            return frozenset()
         try:
             context = self._semantic_context()
             if context is None:
+                _note_semantic_failure(None)
                 return frozenset()
             semantic, model, meta = context
             memory_vectors = self._semantic_vectors(ENTITY_MEMORY)
@@ -2210,7 +3038,8 @@ class Urdyn:
                 floor=semantic.INVARIANT_SEMANTIC_FLOOR,
                 limit=semantic.INVARIANT_ADMISSION_LIMIT,
             )
-        except Exception:
+        except Exception as exc:
+            _note_semantic_failure(exc)
             return frozenset()
 
     def _context_evidence_semantic_admitted(
@@ -2267,9 +3096,12 @@ class Urdyn:
         Falls back to empty -- never raises -- on any degraded
         condition, exactly like `_semantic_widen`.
         """
+        if _semantic_suppressed():
+            return frozenset(), {}
         try:
             context = self._semantic_context()
             if context is None:
+                _note_semantic_failure(None)
                 return frozenset(), {}
             semantic, model, meta = context
             chunk_vectors = self._semantic_vectors(ENTITY_SOURCE_CHUNK)
@@ -2310,7 +3142,8 @@ class Urdyn:
                 limit=semantic.EVIDENCE_ADMISSION_LIMIT,
             )
             return admitted, source_scores
-        except Exception:
+        except Exception as exc:
+            _note_semantic_failure(exc)
             return frozenset(), {}
 
     def _preflight_memory_semantic_widen(
@@ -2375,9 +3208,12 @@ class Urdyn:
         Falls back to empty -- never raises -- on any degraded
         condition, exactly like `_semantic_widen`.
         """
+        if _semantic_suppressed():
+            return frozenset()
         try:
             context = self._semantic_context()
             if context is None:
+                _note_semantic_failure(None)
                 return frozenset()
             semantic, model, meta = context
             memory_vectors = self._semantic_vectors(ENTITY_MEMORY)
@@ -2455,7 +3291,8 @@ class Urdyn:
                 return frozenset()
 
             return top_cluster
-        except Exception:
+        except Exception as exc:
+            _note_semantic_failure(exc)
             return frozenset()
 
     def _preflight_corroboration_admitted(
@@ -2491,9 +3328,12 @@ class Urdyn:
         score is not even within a wide sanity band of its pool's floor
         -- this is not a rescue path for arbitrarily weak matches.
         """
+        if _semantic_suppressed():
+            return frozenset()
         try:
             context = self._semantic_context()
             if context is None:
+                _note_semantic_failure(None)
                 return frozenset()
             semantic, model, meta = context
             memory_vectors = self._semantic_vectors(ENTITY_MEMORY)
@@ -2550,5 +3390,6 @@ class Urdyn:
             if semantically_independent:
                 return frozenset({top_id})
             return frozenset()
-        except Exception:
+        except Exception as exc:
+            _note_semantic_failure(exc)
             return frozenset()

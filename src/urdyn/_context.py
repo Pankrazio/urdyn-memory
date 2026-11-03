@@ -226,6 +226,7 @@ class CompiledContext:
     used: int
     omitted: int
     invariants_excluded: int
+    search_index: str | None = None  # see `Preflight.search_index`; not rendered, not budgeted
 
     def is_empty(self) -> bool:
         return not self.sections
@@ -405,6 +406,7 @@ def compile_context(
     open_conflicts: list[Conflict],
     retrieval: SemanticState | None,
     project_evidence: tuple[tuple[Evidence, str, EvidenceChunk], ...] = (),
+    search_index: str | None = None,
 ) -> CompiledContext:
     """Pure composition/budgeting/rendering logic over ALREADY
     relevance-admitted candidates. `Urdyn.context()` is the only caller
@@ -595,4 +597,5 @@ def compile_context(
         used=used,
         omitted=total_candidates - selected_count,
         invariants_excluded=invariants_excluded,
+        search_index=search_index,
     )

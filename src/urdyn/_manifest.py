@@ -11,7 +11,7 @@ import os
 import re
 from pathlib import Path
 
-from ._errors import UrdynManifestError
+from ._errors import UrdynManifestError, UrdynStorageUnavailableError
 
 SCHEMA_VERSION = 1
 MANIFEST_FILENAME = "manifest.json"
@@ -40,11 +40,21 @@ def read_manifest(urdyn_dir: Path) -> dict:
     """Read and validate the manifest, failing explicitly on malformed data."""
     manifest_path = urdyn_dir / MANIFEST_FILENAME
     try:
+        if urdyn_dir.is_symlink() or manifest_path.is_symlink():
+            raise UrdynManifestError("Canonical manifest symlinks are not supported")
         raw = manifest_path.read_text(encoding="utf-8")
     except FileNotFoundError as exc:
         raise UrdynManifestError(
             f"Urdyn directory {urdyn_dir} exists but has no manifest at {manifest_path}"
         ) from exc
+    except UnicodeDecodeError as exc:
+        raise UrdynManifestError(f"Malformed Urdyn manifest at {manifest_path}: not UTF-8 text") from exc
+    except NotADirectoryError as exc:
+        raise UrdynManifestError(f"{urdyn_dir} exists but is not a directory") from exc
+    except OSError as exc:
+        # Present but unreadable (permissions, I/O) is an access
+        # problem, not a missing or malformed manifest.
+        raise UrdynStorageUnavailableError(f"Urdyn manifest at {manifest_path} cannot be read: {exc.strerror}") from exc
 
     try:
         data = json.loads(raw)

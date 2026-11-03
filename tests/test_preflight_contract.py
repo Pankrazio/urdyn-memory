@@ -56,6 +56,11 @@ def test_preflight_dataclass_shape_has_no_matching_strategy_leakage():
     # channel weights, nothing about "shared lexical tokens" -- and
     # `test_retrieval_state_exposes_lifecycle_not_matching_internals`
     # below pins that distinction rather than leaving it to this comment.
+    #
+    # `search_index` (`docs/search-index.md`) is admitted on the same ground as `retrieval`: it says
+    # only whether the derived FTS5 index existed for this call (`missing`)
+    # or was present and used unverified (`unchecked`) -- a lifecycle fact
+    # about stored state, never a token, score, threshold or weight.
     assert field_names == {
         "task",
         "known_failures",
@@ -67,6 +72,7 @@ def test_preflight_dataclass_shape_has_no_matching_strategy_leakage():
         "open_conflicts",
         "pending",
         "retrieval",
+        "search_index",
     }
 
 

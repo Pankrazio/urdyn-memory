@@ -32,6 +32,12 @@ the on-disk state is a `semantic_meta` row stuck at `status='building'`
 -- `is_ready()` returns False for that, so the index is correctly
 treated as incomplete/unavailable rather than silently used half-built.
 
+`Urdyn.semantic_setup` no longer embeds between the two calls:
+it writes the `building` marker (`begin_rebuild()`), embeds with the
+lifecycle lock released, then publishes everything at once with
+`publish_rebuild()`. The on-disk states, and what an interruption leaves,
+are the same as above.
+
 [A27] FRESHNESS. That status answers "did the last full rebuild
 finish", which is a question about a PROCESS. It says nothing about
 whether the index still represents the canonical store, and A26 measured
@@ -98,6 +104,19 @@ DETAIL_MODEL_MISMATCH = "the index was built with a different model"
 DETAIL_MODEL_UNCACHED = "the model files are not in the local cache"
 DETAIL_INDEX_UNREADABLE = "the index is unreadable"
 DETAIL_REFRESH_FAILED = "the automatic refresh could not run"
+# The index names no verifiable representation (built before representation references,
+# or its representation reference is malformed or of an unknown schema) / it
+# names one this process cannot produce (different assets, recipe, runtime or
+# environment). Both are remedied by an explicit rebuild; canonical memory is
+# never touched, and the index is never relabelled in place.
+DETAIL_REPRESENTATION_UNVERIFIED = "the index has no verifiable representation identity"
+DETAIL_REPRESENTATION_MISMATCH = "the index was built with a different representation"
+# Per-call outcomes, carried only on the `retrieval` of a
+# Preflight/CompiledContext/GuardResult (never by `semantic_state()`, which
+# describes the index): the index was declared usable, but THIS call could
+# not use the semantic channel, so it was answered lexically and says so.
+DETAIL_QUERY_VECTORS_INVALID = "a stored vector failed validation during this query"
+DETAIL_QUERY_FAILED = "semantic retrieval failed during this query"
 
 _SETUP_HINT = "run: urdyn semantic setup"
 # One state needs a different remedy, and saying otherwise would send the
@@ -109,6 +128,9 @@ _SETUP_HINT = "run: urdyn semantic setup"
 # exactly what to do instead.
 _REMEDY_BY_DETAIL = {
     DETAIL_INDEX_UNREADABLE: f"delete .urdyn/{SEMANTIC_DB_FILENAME}, then {_SETUP_HINT}",
+    # A transient cause (a concurrent rebuild, a locked file) clears on retry;
+    # a persistent one is what a rebuild fixes.
+    DETAIL_QUERY_FAILED: f"retry; if it persists, {_SETUP_HINT}",
 }
 
 _CREATE_META_SQL = """
@@ -246,6 +268,7 @@ class SemanticIndexStore:
 
     def __init__(self, connection: sqlite3.Connection) -> None:
         self._connection = connection
+        self._expected: SemanticMeta | None = None
 
     @classmethod
     def create_or_open(cls, db_path: Path) -> "SemanticIndexStore":
@@ -316,7 +339,12 @@ class SemanticIndexStore:
         except sqlite3.DatabaseError as exc:
             raise UrdynStorageError(f"Failed to begin Urdyn semantic index rebuild: {exc}") from exc
 
-    def add_vectors(self, entity_type: str, rows: list[tuple[str, bytes]]) -> None:
+    def expect(self, meta: SemanticMeta) -> None:
+        """From now on, `add_vectors` on this connection writes only
+        while the index is still exactly `meta` (see `add_vectors`)."""
+        self._expected = meta
+
+    def add_vectors(self, entity_type: str, rows: list[tuple[str, bytes]]) -> bool:
         """Persist a batch of `(entity_id, vector_blob)` pairs for
         `entity_type`.
 
@@ -338,15 +366,38 @@ class SemanticIndexStore:
         text -- so the loser of that race must be a no-op, not a
         `UNIQUE constraint failed` that aborts a `preflight()`. This is
         what makes duplicate refresh harmless instead of merely unlikely.
+
+        After `expect(meta)` (the incremental refresh), the rows are
+        written only if the index is still exactly that `meta` -- same marker,
+        hence the same representation, which `provider` carries -- checked in
+        the same transaction (BEGIN IMMEDIATE); otherwise nothing is written
+        and False is returned. This closes the window in which a writer
+        outside the cooperating lifecycle lock (an older build, another lock
+        domain) replaced the index between the refresh's read and its write:
+        vectors of one representation are never added under another.
         """
         if not rows:
-            return
+            return True
+        values = [(entity_type, entity_id, blob) for entity_id, blob in rows]
+        expected = getattr(self, "_expected", None)
+        sql = "INSERT OR REPLACE INTO semantic_vectors (entity_type, entity_id, vector) VALUES (?, ?, ?)"
         try:
-            with self._connection:
-                self._connection.executemany(
-                    "INSERT OR REPLACE INTO semantic_vectors (entity_type, entity_id, vector) VALUES (?, ?, ?)",
-                    [(entity_type, entity_id, blob) for entity_id, blob in rows],
-                )
+            if expected is None:
+                with self._connection:
+                    self._connection.executemany(sql, values)
+                return True
+            connection = self._connection
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                if self.meta() != expected:
+                    connection.rollback()
+                    return False
+                connection.executemany(sql, values)
+            except BaseException:
+                connection.rollback()
+                raise
+            connection.commit()
+            return True
         except sqlite3.DatabaseError as exc:
             raise UrdynStorageError(f"Failed to persist Urdyn semantic vectors: {exc}") from exc
 
@@ -358,6 +409,38 @@ class SemanticIndexStore:
                 )
         except sqlite3.DatabaseError as exc:
             raise UrdynStorageError(f"Failed to finalize Urdyn semantic index rebuild: {exc}") from exc
+
+    def publish_rebuild(self, expected: SemanticMeta, rows: list[tuple[str, str, bytes]]) -> bool:
+        """Publish a rebuild whose vectors were computed elsewhere,
+        in ONE transaction: only if this index is still exactly the
+        `building` marker that rebuild wrote with `begin_rebuild()`
+        (`expected`), replace every vector with `rows` (`(entity_type,
+        entity_id, blob)`) and flip the status to `ready`. Returns False and
+        changes nothing if the marker is not there any more (another rebuild
+        started or finished meanwhile). A crash or error inside rolls back:
+        readers see the marker or the complete new index, never a partial
+        one. Same schema, same `ready` meaning as `finish_rebuild()`."""
+        if expected.status != STATUS_BUILDING:
+            raise ValueError("publish_rebuild expects the building marker of a rebuild")
+        connection = self._connection
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                if self.meta() != expected:
+                    connection.rollback()
+                    return False
+                connection.execute("DELETE FROM semantic_vectors")
+                connection.executemany(
+                    "INSERT INTO semantic_vectors (entity_type, entity_id, vector) VALUES (?, ?, ?)", rows
+                )
+                connection.execute("UPDATE semantic_meta SET status = ? WHERE id = 1", (STATUS_READY,))
+            except BaseException:
+                connection.rollback()
+                raise
+            connection.commit()
+            return True
+        except sqlite3.DatabaseError as exc:
+            raise UrdynStorageError(f"Failed to publish Urdyn semantic index rebuild: {exc}") from exc
 
     def all_vectors(self, entity_type: str) -> list[tuple[str, bytes]]:
         try:

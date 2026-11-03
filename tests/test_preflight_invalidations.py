@@ -47,6 +47,7 @@ class _FakeStaticModel:
 @pytest.fixture
 def fake_semantic(monkeypatch):
     import urdyn._semantic as semantic
+    monkeypatch.setattr(semantic, "default_runtime_available", lambda: True)
 
     fake_model = _FakeStaticModel()
     monkeypatch.setattr(semantic, "load_model_for_setup", lambda model_id=None: fake_model)
@@ -532,6 +533,7 @@ def test_guard_result_has_no_invalidation_field(tmp_path):
         "applicable_skills",
         "recommended_validation",
         "retrieval",
+        "search_index",  # FTS index lifecycle state, see Preflight.search_index
     }
 
 

@@ -1,4 +1,10 @@
-"""Tests for .gitignore safety around the .urdyn/ directory."""
+"""Tests for .gitignore safety around the .urdyn/ directory.
+
+A pre-existing `.gitignore` makes the directory a populated project:
+under the storage contract `init` refuses it and the Brain is created with the
+explicit `create`, which writes the same entry. Tests that start from an empty
+directory keep using `init`, the documented path for an empty or absent directory.
+"""
 
 from urdyn import Urdyn
 
@@ -14,7 +20,7 @@ def test_creates_gitignore_when_missing(tmp_path):
 def test_appends_to_existing_gitignore(tmp_path):
     (tmp_path / ".gitignore").write_text("*.log\nnode_modules/\n")
 
-    Urdyn.init(tmp_path, "dev")
+    Urdyn.create(tmp_path, "dev")
 
     lines = (tmp_path / ".gitignore").read_text().splitlines()
     assert lines[:2] == ["*.log", "node_modules/"]
@@ -24,7 +30,7 @@ def test_appends_to_existing_gitignore(tmp_path):
 def test_does_not_duplicate_existing_entry(tmp_path):
     (tmp_path / ".gitignore").write_text("*.log\n.urdyn/\n")
 
-    Urdyn.init(tmp_path, "dev")
+    Urdyn.create(tmp_path, "dev")
 
     content = (tmp_path / ".gitignore").read_text()
     assert content.count(".urdyn/") == 1
@@ -33,7 +39,7 @@ def test_does_not_duplicate_existing_entry(tmp_path):
 def test_handles_missing_trailing_newline(tmp_path):
     (tmp_path / ".gitignore").write_text("*.log")
 
-    Urdyn.init(tmp_path, "dev")
+    Urdyn.create(tmp_path, "dev")
 
     content = (tmp_path / ".gitignore").read_text()
     lines = content.splitlines()
@@ -44,7 +50,7 @@ def test_handles_missing_trailing_newline(tmp_path):
 def test_handles_empty_gitignore_file(tmp_path):
     (tmp_path / ".gitignore").write_text("")
 
-    Urdyn.init(tmp_path, "dev")
+    Urdyn.create(tmp_path, "dev")
 
     assert (tmp_path / ".gitignore").read_text() == ".urdyn/\n"
 

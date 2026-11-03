@@ -4,7 +4,7 @@ import sqlite3
 
 import pytest
 
-from urdyn import Urdyn, UrdynStorageError
+from urdyn import Urdyn, UrdynStorageError, UrdynStorageUnavailableError
 
 
 def test_unsupported_schema_version_is_rejected_without_data_loss(tmp_path):
@@ -38,19 +38,40 @@ def test_garbage_db_file_fails_explicitly_instead_of_raw_traceback(tmp_path):
     assert db_path.read_bytes() == b"this is not a sqlite database"
 
 
-def test_recall_does_not_create_store_file_when_none_exists(tmp_path):
+def _brain_whose_store_file_is_gone(tmp_path):
+    """Under the storage contract (`docs/storage-contract.md`) the
+    store file exists from `init` on, so "no store file" is no longer the
+    state of a new Brain: it is a Brain whose canonical DB went missing
+    behind an open handle. The contract for that case: reads do not turn
+    absence into an empty answer, and nothing recreates the file."""
     cx = Urdyn.init(tmp_path, "dev")
+    urdyn_dir = tmp_path / ".urdyn"
+    (urdyn_dir / "memory.db").unlink()
+    remaining = {p.name: p.read_bytes() for p in urdyn_dir.iterdir()}
+    assert list(remaining) == ["manifest.json"]
+    return cx, urdyn_dir, remaining
 
-    cx.recall("anything")
 
-    assert not (tmp_path / ".urdyn" / "memory.db").exists()
+def test_recall_does_not_create_store_file_when_none_exists(tmp_path):
+    cx, urdyn_dir, remaining = _brain_whose_store_file_is_gone(tmp_path)
+
+    with pytest.raises(UrdynStorageUnavailableError):
+        cx.recall("anything")
+
+    assert not (urdyn_dir / "memory.db").exists()
+    assert {p.name: p.read_bytes() for p in urdyn_dir.iterdir()} == remaining
 
 
 def test_status_does_not_create_store_file_when_none_exists(tmp_path):
-    cx = Urdyn.init(tmp_path, "dev")
+    cx, urdyn_dir, remaining = _brain_whose_store_file_is_gone(tmp_path)
 
-    assert cx._count_memories() == 0
-    assert not (tmp_path / ".urdyn" / "memory.db").exists()
+    with pytest.raises(UrdynStorageUnavailableError):
+        cx._count_memories()
+    with pytest.raises(UrdynStorageUnavailableError):
+        Urdyn.open(tmp_path)
+
+    assert not (urdyn_dir / "memory.db").exists()
+    assert {p.name: p.read_bytes() for p in urdyn_dir.iterdir()} == remaining
 
 
 def test_corrupted_kind_value_is_rejected_explicitly(tmp_path):

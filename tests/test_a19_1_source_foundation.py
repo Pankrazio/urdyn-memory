@@ -46,7 +46,7 @@ def _dev_workspace(tmp_path, **files):
         target = tmp_path / name
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
-    return Urdyn.init(tmp_path, "dev")
+    return Urdyn.create(tmp_path, "dev")
 
 
 def _raw_counts(cx):
@@ -283,7 +283,7 @@ class TestSeedPathSecurity:
             with pytest.raises(UrdynSourceError, match="credential"):
                 cx.seed([path])
 
-        assert not db_path_for(tmp_path / ".urdyn").exists()
+        assert all(count == 0 for count in _raw_counts(cx).values())
 
     def test_urdyn_own_directory_is_refused(self, tmp_path):
         cx = _dev_workspace(tmp_path, **{"README.md": "x\n"})
@@ -324,7 +324,7 @@ class TestSeedPathSecurity:
         with pytest.raises(UrdynSourceError, match="empty"):
             cx.seed(["EMPTY.md"])
 
-        assert not db_path_for(tmp_path / ".urdyn").exists()
+        assert all(count == 0 for count in _raw_counts(cx).values())
 
     def test_whitespace_only_file_is_refused(self, tmp_path):
         cx = _dev_workspace(tmp_path, **{"BLANK.md": "  \n\t\n"})
@@ -425,18 +425,18 @@ class TestDiscovery:
 
         cx.seed_candidates()
 
-        assert not db_path_for(tmp_path / ".urdyn").exists()
+        assert all(count == 0 for count in _raw_counts(cx).values())
         assert cx.sources() == []
 
     def test_discovery_is_dev_only(self, tmp_path):
-        cx = Urdyn.init(tmp_path, "general")
+        cx = Urdyn.create(tmp_path, "general")
         (tmp_path / "README.md").write_text("r\n", encoding="utf-8")
 
         with pytest.raises(ValueError, match="dev"):
             cx.seed_candidates()
 
     def test_explicit_seed_works_outside_dev(self, tmp_path):
-        cx = Urdyn.init(tmp_path, "general")
+        cx = Urdyn.create(tmp_path, "general")
         (tmp_path / "README.md").write_text("r\n", encoding="utf-8")
 
         (result,) = cx.seed(["README.md"])
@@ -466,7 +466,7 @@ class TestSources:
         cx = _dev_workspace(tmp_path)
 
         assert cx.sources() == []
-        assert not db_path_for(tmp_path / ".urdyn").exists()
+        assert all(count == 0 for count in _raw_counts(cx).values())
 
 
 # ---------------------------------------------------------------------------
@@ -797,7 +797,7 @@ def _integrity(db_path):
 class TestConcurrentSeed:
     def test_concurrent_first_seed_produces_one_source(self, tmp_path):
         cx = _dev_workspace(tmp_path, **{"README.md": "shared\n"})
-        assert not db_path_for(tmp_path / ".urdyn").exists()
+        assert all(count == 0 for count in _raw_counts(cx).values())
 
         results = _run_seed_workers(tmp_path, "README.md")
 
@@ -908,7 +908,7 @@ class TestSeededDocumentsStayOutOfMemoryRetrieval:
         (tmp_path / "docs").mkdir()
         (tmp_path / "docs" / "architecture.md").write_text("# arch\n", encoding="utf-8")
         main_ = cli_main
-        main_(["init", "dev"])
+        main_(["create", "dev"])
         main_(["seed", "docs/architecture.md"])
         capsys.readouterr()
 
@@ -939,7 +939,7 @@ class TestSourcesCli:
         monkeypatch.chdir(tmp_path)
         (tmp_path / "docs").mkdir()
         (tmp_path / "docs" / "architecture.md").write_text(content, encoding="utf-8")
-        cli_main(["init", "dev"])
+        cli_main(["create", "dev"])
         cli_main(["seed", "docs/architecture.md"])
 
     def test_listing_stays_compact_and_dumps_no_snapshot(self, tmp_path, monkeypatch, capsys):
@@ -986,7 +986,7 @@ class TestSourcesCli:
     def test_seed_discloses_local_content_storage(self, tmp_path, monkeypatch, capsys):
         monkeypatch.chdir(tmp_path)
         (tmp_path / "internal-design.md").write_text("private plans\n", encoding="utf-8")
-        cli_main(["init", "dev"])
+        cli_main(["create", "dev"])
         capsys.readouterr()
 
         cli_main(["seed", "internal-design.md"])
@@ -1065,30 +1065,23 @@ def _downgrade_to_v6(db_path):
         connection.execute("PRAGMA user_version = 6")
 
 
-class TestMigrationV6ToV7:
-    def test_v6_store_migrates_and_keeps_its_existing_data(self, tmp_path):
-        cx = _dev_workspace(tmp_path, **{"README.md": "post-migration\n"})
-        memory = cx.remember("a belief recorded before A19.1", kind="note")
-        legacy = cx.add_evidence("see the README", kind="file_reference")
-        _downgrade_to_v6(cx._db_path)
-
-        reopened = Urdyn.open(tmp_path)
-
-        # Nothing is backfilled: a pre-v7 `file_reference` was never an
-        # observation of a tracked Source, and guessing one out of its
-        # free text is exactly what the structured columns exist to avoid.
-        assert reopened.sources() == []
-        assert reopened.get_evidence(legacy.evidence_id).kind == "file_reference"
-        assert [item.memory_id for item in reopened.state()] == [memory.memory_id]
-        assert _integrity(cx._db_path) == ("ok", STORE_SCHEMA_VERSION)
-
-    def test_migrated_store_can_seed_normally(self, tmp_path):
-        cx = _dev_workspace(tmp_path, **{"README.md": "post-migration\n"})
+class TestLegacySchemaRequiresExplicitReview:
+    def test_v6_open_preserves_existing_data_without_migration(self, tmp_path):
+        cx = _dev_workspace(tmp_path, **{"README.md": "legacy source"})
         cx.remember("a belief recorded before A19.1", kind="note")
+        cx.add_evidence("see README", kind="file_reference")
         _downgrade_to_v6(cx._db_path)
+        original = cx._db_path.read_bytes()
+        with pytest.raises(UrdynStorageError):
+            Urdyn.open(tmp_path)
+        assert cx._db_path.read_bytes() == original
+        assert _integrity(cx._db_path) == ("ok", 6)
 
-        (result,) = Urdyn.open(tmp_path).seed(["README.md"])
-
-        assert result.status == SEED_ADDED
-        assert result.evidence.content == "post-migration\n"
-        assert result.evidence.kind == EVIDENCE_KIND_DOCUMENT_OBSERVATION
+    def test_v6_existing_handle_cannot_seed_or_migrate(self, tmp_path):
+        cx = _dev_workspace(tmp_path, **{"README.md": "legacy source"})
+        cx.remember("existing belief")
+        _downgrade_to_v6(cx._db_path)
+        original = cx._db_path.read_bytes()
+        with pytest.raises(UrdynStorageError):
+            cx.seed(["README.md"])
+        assert cx._db_path.read_bytes() == original

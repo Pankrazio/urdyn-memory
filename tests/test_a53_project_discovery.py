@@ -23,6 +23,7 @@ directory.
 
 from __future__ import annotations
 
+import hashlib
 import time
 
 import pytest
@@ -52,7 +53,30 @@ def _write(root, relative: str, content: str = "content\n") -> None:
 def _dev(tmp_path, **files) -> Urdyn:
     for name, content in files.items():
         _write(tmp_path, name, content)
-    return Urdyn.init(tmp_path, "dev")
+    # storage contract: `init` creates a Brain only in an empty or absent
+    # directory and refuses a populated one (a project whose Brain was lost
+    # looks the same); creating a Brain in an existing project is the
+    # explicit `create`. With files this helper populates the project first,
+    # so it uses `create`; without files the directory is empty and the
+    # `init` path is exercised unchanged.
+    return (Urdyn.create if files else Urdyn.init)(tmp_path, "dev")
+
+
+def _tree_snapshot(root) -> dict[str, tuple]:
+    """Every entry under `root` (the Brain included): kind, size,
+    mtime and SHA-256 of regular files, link targets. Any write, creation,
+    deletion or rename anywhere in the workspace changes it."""
+    snapshot: dict[str, tuple] = {}
+    for entry in sorted(root.rglob("*")):
+        info = entry.lstat()
+        key = entry.relative_to(root).as_posix()
+        if entry.is_symlink():
+            snapshot[key] = ("link", str(entry.readlink()))
+        elif entry.is_file():
+            snapshot[key] = ("file", info.st_size, info.st_mtime_ns, hashlib.sha256(entry.read_bytes()).hexdigest())
+        else:
+            snapshot[key] = ("dir",)
+    return snapshot
 
 
 def _rules(text: str) -> IgnoreRules:
@@ -228,11 +252,19 @@ class TestRecursiveDiscovery:
         assert cx.seed_candidates() == ["README.md", "docs/research/new.md"]
 
     def test_discovery_writes_nothing_even_when_recursive(self, tmp_path):
+        # Under 0.4.0 the store was created lazily, so "memory.db
+        # does not exist" proved that discovery wrote nothing. Now `create` publishes
+        # a complete store at creation (manifest + memory.db), so that
+        # precondition no longer holds; the invariant itself -- discovery
+        # writes nothing -- is asserted directly on the whole workspace,
+        # Brain included, byte for byte.
         cx = _dev(tmp_path, **{"docs/a/b/c.md": "deep\n"})
+        assert db_path_for(tmp_path / ".urdyn").exists()
+        before = _tree_snapshot(tmp_path)
 
-        cx.seed_candidates()
+        assert cx.seed_candidates() == ["docs/a/b/c.md"]
 
-        assert not db_path_for(tmp_path / ".urdyn").exists()
+        assert _tree_snapshot(tmp_path) == before
         assert cx.sources() == []
 
     def test_workspace_without_git_still_discovers(self, tmp_path):
@@ -580,12 +612,19 @@ class TestSeedCandidateReport:
         assert report.paths == cx.seed_candidates()
 
     def test_report_writes_nothing_and_creates_no_store(self, tmp_path):
+        # See test_discovery_writes_nothing_even_when_recursive: the
+        # store exists from creation, so "no store is created" becomes
+        # "the report changes nothing at all", checked on the whole
+        # workspace (store, manifest, sidecar files) byte for byte.
         cx = _dev(tmp_path, **{"README.md": "r\n"})
+        assert db_path_for(tmp_path / ".urdyn").exists()
+        before = _tree_snapshot(tmp_path)
 
         report = cx.seed_candidate_report()
 
         assert report.new == ("README.md",)
-        assert not db_path_for(tmp_path / ".urdyn").exists()
+        assert _tree_snapshot(tmp_path) == before
+        assert cx.sources() == []
 
     def test_report_is_dev_only(self, tmp_path):
         cx = Urdyn.init(tmp_path, "general")

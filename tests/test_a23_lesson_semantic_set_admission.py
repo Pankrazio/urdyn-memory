@@ -101,6 +101,7 @@ def scored_semantic(monkeypatch):
     Returns the installer so each test states the exact score geometry it
     is about."""
     import urdyn._semantic as semantic
+    monkeypatch.setattr(semantic, "default_runtime_available", lambda: True)
 
     def install(cosines: dict[str, float]):
         model = _ScoredModel(cosines)

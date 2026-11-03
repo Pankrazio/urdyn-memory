@@ -13,6 +13,7 @@ import uuid
 
 import pytest
 
+import legacy_brains as legacy
 from urdyn import Urdyn, UrdynStorageError
 from urdyn._evidence import Evidence
 from urdyn._retrieval import ENTITY_MEMORY
@@ -159,28 +160,57 @@ def test_search_index_survives_reopening_without_duplication(tmp_path):
     assert count == 1
 
 
-def test_v4_workspace_search_index_is_backfilled_on_first_open(tmp_path):
-    """A pre-A7 (schema v4) database, built entirely by hand without
-    ever touching `Urdyn`, must get its search index created and
-    backfilled from the pre-existing data the first time A7's code
-    opens it -- recovery, not just fresh-database initialization."""
-    db_path = tmp_path / ".urdyn" / "memory.db"
-    db_path.parent.mkdir(parents=True)
-    _build_standalone_v4_database(
-        db_path, lesson_content="A long-forgotten insight about database connection pool exhaustion."
-    )
+@pytest.mark.parametrize("version", [1, 2, 3])
+def test_a_cortex_store_without_index_is_refused_and_no_index_is_created(tmp_path, version):
+    """Was `test_v4_workspace_search_index_is_backfilled_on_first_open`
+    (a hand-built pre-A7 store got its index created and backfilled by the
+    first open). Neither half survives the current contracts: legacy schemas
+    are refused and no open creates an index. On the AUTHENTIC
+    Cortex Brains that really have no index (v1-v3), the store layer, the open
+    and the FTS maintenance entry all refuse, and no index object appears."""
+    from urdyn import UrdynStorageSchemaError, maintenance
 
-    connection = sqlite3.connect(db_path)
+    root, _ = legacy.cortex_brain(tmp_path, version)
+    db = legacy.db_path(root)
+    assert SEARCH_INDEX_TABLE not in legacy.store_facts(db)["tables"]
+    before = legacy.snapshot(root)
+
+    with pytest.raises(UrdynStorageSchemaError):
+        MemoryStore.open_existing(db)
+    with pytest.raises(UrdynStorageSchemaError):
+        Urdyn.open(root)
+    with pytest.raises(UrdynStorageSchemaError):
+        maintenance.recover_search_index(root)
+
+    assert legacy.snapshot(root) == before
+    assert not [t for t in legacy.store_facts(db)["tables"] if t.startswith(SEARCH_INDEX_TABLE)]
+
+
+@pytest.mark.parametrize("release", legacy.RELEASES)
+def test_a_released_brain_index_is_rebuilt_from_its_existing_data_only_on_request(tmp_path, release):
+    """The part of the original that survives: recovery of the index
+    from data that PREDATES it, not just fresh initialization -- on an AUTHENTIC
+    Brain written by a released Urdyn. Opening and reading never recreate a
+    removed index; the explicit rebuild backfills every pre-existing memory."""
+    root, generated = legacy.release_brain(tmp_path, release)
+    db = legacy.db_path(root)
+    connection = sqlite3.connect(db)
     try:
-        assert not _table_exists(connection, SEARCH_INDEX_TABLE)
+        with connection:
+            connection.execute(f"DROP TABLE {SEARCH_INDEX_TABLE}")
     finally:
         connection.close()
 
-    store = MemoryStore.create_or_open(db_path)
-    with store:
-        assert store.fts_enabled is True
-        candidates = store.search_candidates(frozenset({"exhaustion", "pool"}), ENTITY_MEMORY)
-    assert len(candidates) == 1
+    cx = Urdyn.open(root)
+    assert sorted(m.memory_id for m in cx.timeline()) == sorted(generated["written"])
+    assert cx.search_index_state().status == "missing"
+    assert SEARCH_INDEX_TABLE not in legacy.store_facts(db)["tables"]
+
+    assert cx.rebuild_search_index().status == "usable"
+    with MemoryStore.open_existing(db) as store:
+        found = {entity_id for entity_id, _ in store.search_candidates(frozenset({"synthetic"}), ENTITY_MEMORY)}
+    assert found == set(generated["written"])
+    assert "brain_identity" not in legacy.store_facts(db)["tables"]  # still legacy-unbound
 
 
 def test_rebuild_search_index_recovers_from_a_cleared_index(tmp_path):

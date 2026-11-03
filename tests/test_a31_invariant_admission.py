@@ -116,6 +116,7 @@ def scored_semantic(monkeypatch):
     """Install a `_ScoredModel` built from a caller-supplied cosine map,
     so each test states the exact score geometry it is about."""
     import urdyn._semantic as semantic
+    monkeypatch.setattr(semantic, "default_runtime_available", lambda: True)
 
     def install(cosines: dict[str, float]):
         model = _ScoredModel(cosines)

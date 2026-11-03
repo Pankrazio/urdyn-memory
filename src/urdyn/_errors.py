@@ -22,6 +22,18 @@ class UrdynStorageError(UrdynError):
     unsupported schema version."""
 
 
+class UrdynStorageUnavailableError(UrdynStorageError):
+    """Existing storage cannot be accessed; never create a replacement."""
+
+
+class UrdynStorageCorruptError(UrdynStorageError):
+    """Existing canonical storage fails integrity checks."""
+
+
+class UrdynStorageSchemaError(UrdynStorageError):
+    """Schema requires explicit compatibility review, without migration."""
+
+
 class UrdynSourceError(UrdynError):
     """Raised when a path cannot be seeded as a project Source: it escapes
     the workspace, is not an ordinary text file, is too large, or matches
@@ -42,3 +54,10 @@ class UrdynSemanticUnavailableError(UrdynError):
     optional dependency is not installed. Never raised by `preflight()` or
     `guard()`: those degrade silently to lexical/FTS-only instead, per
     A7.4's "no hidden download, no crash" requirement."""
+
+
+class UrdynStorageIdentityError(UrdynStorageError):
+    """The manifest (or the open handle) and the canonical store
+    name two different Brains. Neither file is corrupt in itself, so this is
+    deliberately not `UrdynStorageCorruptError`; nothing is repaired or
+    rebound automatically. Internal subclass: catch `UrdynStorageError`."""

@@ -78,6 +78,7 @@ class GuardResult:
     applicable_skills: tuple[Skill, ...]
     recommended_validation: tuple[Evidence, ...]
     retrieval: SemanticState | None = None
+    search_index: str | None = None  # see `Preflight.search_index`
 
     def is_empty(self) -> bool:
         return not (self.known_failures or self.applicable_skills or self.recommended_validation)
@@ -94,6 +95,7 @@ def build_guard_result(
     skill_semantic_admitted: frozenset[str] = frozenset(),
     attempt_semantic_admitted: frozenset[str] = frozenset(),
     retrieval: SemanticState | None = None,
+    search_index: str | None = None,
 ) -> GuardResult:
     """Pure selection logic, operating on data already fetched from
     storage. Takes no dependency on SQLite so it can be tested and
@@ -161,4 +163,5 @@ def build_guard_result(
         applicable_skills=applicable_skills,
         recommended_validation=tuple(recommended_validation),
         retrieval=retrieval,
+        search_index=search_index,
     )

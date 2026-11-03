@@ -14,12 +14,13 @@ returning exactly what the caller wrote.
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 import sys
 
 from . import _watcher
 from ._attempt import VALID_OUTCOMES
 from ._context import DEFAULT_CONTEXT_BUDGET
-from ._errors import UrdynError
+from ._errors import UrdynError, UrdynNotFoundError
 from ._evidence import DEFAULT_EVIDENCE_KIND, VALID_EVIDENCE_KINDS
 from ._manifest import CANONICAL_PROFILES, PROFILE_DEV
 from ._memory import DEFAULT_KIND, VALID_KINDS
@@ -118,7 +119,9 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = _SafeArgumentParser(prog="urdyn", description="Urdyn Memory Engine")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    init_parser = subparsers.add_parser("init", help="Initialize a Urdyn workspace")
+    init_parser = subparsers.add_parser(
+        "init", help="Create a Brain in an empty or new directory, or re-open the existing one (use create in a non-empty project)"
+    )
     init_parser.add_argument(
         "profile",
         nargs="?",
@@ -126,6 +129,9 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=sorted(CANONICAL_PROFILES),
         help="Workspace profile (default: general)",
     )
+
+    create_parser = subparsers.add_parser("create", help="Explicitly create a new Brain in a project directory")
+    create_parser.add_argument("profile", nargs="?", default="general", choices=sorted(CANONICAL_PROFILES))
 
     subparsers.add_parser("status", help="Show the current Urdyn workspace status")
 
@@ -313,6 +319,14 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Workspace-relative path of one source to inspect, with its full observation history",
     )
 
+    # The derived FTS5 search index: observe it, rebuild it on request.
+    search_index_parser = subparsers.add_parser(
+        "search-index", help="Check or explicitly rebuild the derived full-text search index"
+    )
+    search_index_subparsers = search_index_parser.add_subparsers(dest="search_index_command", required=True)
+    search_index_subparsers.add_parser("status", help="Check the search index against canonical data (no writes)")
+    search_index_subparsers.add_parser("rebuild", help="Rebuild the search index from canonical data")
+
     semantic_parser = subparsers.add_parser(
         "semantic", help="Manage the optional semantic retrieval channel"
     )
@@ -335,17 +349,35 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _locate_brain_root(start: Path) -> Path:
+    """The nearest directory holding a `.urdyn` directory,
+    found WITHOUT opening the Brain (same walk as `Urdyn.discover`)."""
+    current = start.resolve()
+    for candidate in (current, *current.parents):
+        if (candidate / ".urdyn").is_dir():
+            return candidate
+    raise UrdynNotFoundError(
+        f"No Urdyn workspace found in {current} or any parent directory. "
+        "Create one with 'urdyn create' (or 'urdyn init' in an empty directory)."
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
 
     try:
-        if args.command == "init":
-            cx = Urdyn.init(".", args.profile)
+        if args.command in {"init", "create"}:
+            cx = (Urdyn.create if args.command == "create" else Urdyn.init)(".", args.profile)
             # The path is filesystem-derived, not Urdyn-validated: a
             # directory name can hold anything, so it is data.
             print(f"Initialized Urdyn workspace at {_safe(str(cx.path))}")
             print(f"Profile: {_safe(cx.profile)}")
+            # Say what is actually known about keeping `.urdyn/` out
+            # of Git -- verified, not a repository, or NOT verified -- and
+            # what a .gitignore entry is not. Never a silent success.
+            if cx._git_protection is not None:
+                print(f"Git protection: {_safe(cx._git_protection.describe())}")
             # (A43) `dev` is the only profile that starts a background
             # process automatically, and it says so plainly every time --
             # background observation must never be silent. `general`/`lab`
@@ -386,6 +418,8 @@ def main(argv: list[str] | None = None) -> int:
             # loaded, nothing is embedded, no network is touched and
             # nothing is refreshed -- `status` observes, it never repairs.
             print(f"Semantic: {cx.semantic_state().describe()}")
+            # Same rule: a full check of the derived FTS5 index, no writes, no repair.
+            print(f"Search index: {_safe(cx.search_index_state().describe())}")
             # (A43) One line, `dev` only, derived from a single lock probe
             # -- see `_watcher.status_lines`. Absent entirely outside
             # `dev`, so this command's output is unchanged there.
@@ -695,6 +729,31 @@ def main(argv: list[str] | None = None) -> int:
                 # never on storage).
                 for line in evidence.content.split("\n"):
                     print(f"     | {_safe(line)}")
+            return 0
+
+        if args.command == "search-index":
+            # Never through `Urdyn.open()`: a Brain refused
+            # only because its FTS5 index is damaged must stay diagnosable
+            # and recoverable. `urdyn.maintenance` takes the lifecycle lock
+            # and makes every other check itself.
+            from . import maintenance
+
+            root = _locate_brain_root(Path.cwd())
+            if args.search_index_command == "status":
+                state = maintenance.inspect_search_index(root)
+            elif args.search_index_command == "rebuild":
+                recovery = maintenance.recover_search_index(root)
+                state = recovery.state
+                print("Search index rebuilt from canonical data.")
+                if recovery.backup_path is not None:
+                    print(f"Damaged index recovered; safety copy: {_safe(str(recovery.backup_path))}")
+            else:
+                parser.error(f"unknown search-index command {args.search_index_command!r}")
+                return 2
+            print(f"Search index: {_safe(state.describe())}")
+            for entity_type, expected, indexed in state.entities:
+                shown = "not read" if indexed is None else indexed
+                print(f"  {entity_type}: {shown} indexed / {expected} expected")
             return 0
 
         if args.command == "semantic":

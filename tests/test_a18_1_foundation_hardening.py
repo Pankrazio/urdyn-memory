@@ -286,11 +286,38 @@ def _integrity_check(db_path) -> str:
     return result, user_version
 
 
+def _published_empty_store(db_path):
+    """Under the storage contract (`docs/storage-contract.md`)
+    `Urdyn.init` on an empty location is `create`: manifest and DB are
+    built in staging -- tables, identity binding and version stamp in ONE
+    transaction -- and published by rename. The race PD-1 guarded (two
+    processes building the schema of a missing `memory.db`) can no longer
+    start from an absent file; what the racers below still contend for is
+    the FIRST canonical write into that published, empty store. Pin that
+    starting point precisely, and return the identity binding so the test
+    can prove no racer rebuilt or rebound the store."""
+    assert db_path.exists()
+    integrity, user_version = _integrity_check(db_path)
+    assert integrity == "ok"
+    assert user_version == STORE_SCHEMA_VERSION
+    with sqlite3.connect(db_path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM memories").fetchone() == (0,)
+        assert connection.execute("SELECT COUNT(*) FROM events").fetchone() == (0,)
+        identity = connection.execute("SELECT * FROM brain_identity").fetchall()
+    assert len(identity) == 1
+    return identity
+
+
+def _identity(db_path):
+    with sqlite3.connect(db_path) as connection:
+        return connection.execute("SELECT * FROM brain_identity").fetchall()
+
+
 class TestPD1FirstCreationRace:
     def test_a_identical_first_write_from_many_processes(self, tmp_path):
         cx = Urdyn.init(tmp_path, "dev")
         db_path = db_path_for(tmp_path / ".urdyn")
-        assert not db_path.exists()
+        identity = _published_empty_store(db_path)
 
         results = _run_workers(tmp_path, ["the same first fact"] * _PROC_COUNT)
 
@@ -303,6 +330,7 @@ class TestPD1FirstCreationRace:
         integrity, user_version = _integrity_check(db_path)
         assert integrity == "ok"
         assert user_version == STORE_SCHEMA_VERSION
+        assert _identity(db_path) == identity
 
         reopened = Urdyn.open(tmp_path)
         assert reopened._count_memories() == 1
@@ -313,7 +341,7 @@ class TestPD1FirstCreationRace:
     def test_b_distinct_first_writes_from_many_processes(self, tmp_path):
         cx = Urdyn.init(tmp_path, "dev")
         db_path = db_path_for(tmp_path / ".urdyn")
-        assert not db_path.exists()
+        identity = _published_empty_store(db_path)
 
         contents = [f"distinct first fact number {i}" for i in range(_PROC_COUNT)]
         results = _run_workers(tmp_path, contents)
@@ -326,6 +354,7 @@ class TestPD1FirstCreationRace:
         integrity, user_version = _integrity_check(db_path)
         assert integrity == "ok"
         assert user_version == STORE_SCHEMA_VERSION
+        assert _identity(db_path) == identity
 
         reopened = Urdyn.open(tmp_path)
         assert reopened._count_memories() == _PROC_COUNT
@@ -344,15 +373,24 @@ class TestPD1FirstCreationRace:
         assert cx._count_memories() == 2
 
     def test_d_read_only_does_not_materialize_the_database(self, tmp_path):
+        """The database now exists from `init` on (storage contract), so
+        "reads do not create it" becomes the invariant it protected: reads
+        of an empty Brain answer empty and write nothing -- every file of
+        `.urdyn/` keeps its bytes and no file appears (no journal, no WAL,
+        no index rebuilt). The absent-DB case is pinned in
+        `test_storage_safety.py`: reads refuse, never recreate."""
         Urdyn.init(tmp_path, "dev")
-        db_path = db_path_for(tmp_path / ".urdyn")
+        urdyn_dir = tmp_path / ".urdyn"
+        db_path = db_path_for(urdyn_dir)
+        _published_empty_store(db_path)
+        before = {p.name: p.read_bytes() for p in urdyn_dir.iterdir()}
         cx = Urdyn.open(tmp_path)
 
         assert cx.state() == []
         assert cx.timeline() == []
         assert cx.recall("anything") == []
         assert cx._count_memories() == 0
-        assert not db_path.exists()
+        assert {p.name: p.read_bytes() for p in urdyn_dir.iterdir()} == before
 
     def test_e_existing_db_concurrency_still_works(self, tmp_path):
         """A17's original concurrency guarantee on an ALREADY-created
@@ -380,7 +418,7 @@ class TestPD1FirstCreationRace:
 def test_interaction_first_creation_concurrent_identical_remember(tmp_path):
     Urdyn.init(tmp_path, "dev")
     db_path = db_path_for(tmp_path / ".urdyn")
-    assert not db_path.exists()
+    identity = _published_empty_store(db_path)
 
     results = _run_workers(tmp_path, ["the one true first fact"] * _PROC_COUNT)
 
@@ -393,6 +431,7 @@ def test_interaction_first_creation_concurrent_identical_remember(tmp_path):
     integrity, user_version = _integrity_check(db_path)
     assert integrity == "ok"
     assert user_version == STORE_SCHEMA_VERSION
+    assert _identity(db_path) == identity
 
     cx = Urdyn.open(tmp_path)
     recorded_events = _events(cx, kind=EVENT_KIND_MEMORY_RECORDED)

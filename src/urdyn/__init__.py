@@ -11,6 +11,9 @@ from ._errors import (
     UrdynSemanticUnavailableError,
     UrdynSourceError,
     UrdynStorageError,
+    UrdynStorageUnavailableError,
+    UrdynStorageCorruptError,
+    UrdynStorageSchemaError,
 )
 from ._attempt import Attempt
 from ._conflict import Conflict
@@ -23,6 +26,8 @@ from ._semantic_store import SemanticState
 from ._skill import Skill
 from ._source import SeedResult, Source, SourceObservation
 from ._workspace import Urdyn, SemanticSetupResult
+from .semantic_backend import SemanticBackend, SemanticBackendIdentity
+from ._store import SearchIndexState
 
 __all__ = [
     "Urdyn",
@@ -39,6 +44,9 @@ __all__ = [
     "GuardResult",
     "SemanticSetupResult",
     "SemanticState",
+    "SearchIndexState",
+    "SemanticBackend",
+    "SemanticBackendIdentity",
     "Conflict",
     "Source",
     "SourceObservation",
@@ -48,6 +56,9 @@ __all__ = [
     "UrdynAlreadyInitializedError",
     "UrdynManifestError",
     "UrdynStorageError",
+    "UrdynStorageUnavailableError",
+    "UrdynStorageCorruptError",
+    "UrdynStorageSchemaError",
     "UrdynSourceError",
     "UrdynSemanticUnavailableError",
 ]

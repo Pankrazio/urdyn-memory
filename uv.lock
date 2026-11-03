@@ -417,6 +417,9 @@ semantic = [
     { name = "onnxruntime" },
     { name = "tokenizers" },
 ]
+semantic-backend = [
+    { name = "numpy" },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -426,11 +429,12 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "huggingface-hub", marker = "extra == 'semantic'", specifier = ">=0.20,<2.0" },
+    { name = "numpy", marker = "extra == 'semantic-backend'", specifier = ">=1.26" },
     { name = "numpy", marker = "extra == 'semantic'", specifier = ">=1.26" },
     { name = "onnxruntime", marker = "extra == 'semantic'", specifier = ">=1.17.0" },
     { name = "tokenizers", marker = "extra == 'semantic'", specifier = ">=0.15,<1.0" },
 ]
-provides-extras = ["semantic"]
+provides-extras = ["semantic", "semantic-backend"]
 
 [package.metadata.requires-dev]
 dev = [{ name = "pytest", specifier = ">=8.0.0" }]

@@ -45,9 +45,28 @@ Schema history:
        to guess a path, which is precisely what the structured columns
        here exist to make unnecessary.
 
-A v1, v2, v3, v4, v5, or v6 database opened by this module is migrated
-forward to v7 in place, one step at a time, without touching existing
-rows.
+Opening an existing store rejects historical schemas: there is no implicit migration.
+The legacy migration helpers remain internal; ordinary opens never call them.
+Schema creation is restricted to a new file in unpublished staging.
+
+Identity binding (additive, deliberately not versioned):
+  A store created by this build carries `brain_identity`: one immutable
+  row binding it to the Brain's logical identity -- the same 32-hex value
+  the manifest carries as `cortex_id`. Created only by
+  `MemoryStore.create_new`, in unpublished staging, from the manifest
+  written next to it, in the SAME transaction as the v7 tables. It does
+  NOT raise `STORE_SCHEMA_VERSION`: no v7 table changes meaning, and the
+  earlier builds (including 0.4.0) must keep opening such a store -- a
+  rollback to an earlier build is a rebuild of derived data, canonical data
+  never moves -- and any unknown `user_version` is refused by every earlier
+  build. The table's PRESENCE
+  is the contract marker: present, it must be valid and must match the
+  manifest / the open handle; absent, the store is legacy-unbound and is
+  opened exactly as before -- never bound, converted or rewritten by an
+  ordinary open. Consequence, documented as a limit: a binding removed by
+  deliberate SQL is indistinguishable from a legacy store. Binding an
+  existing legacy store would be a separate, explicit operation (see
+  docs/storage-contract.md, "Brain identity").
 
 Search index (derived, not versioned):
   A FTS5 virtual table `search_index` provides candidate widening for
@@ -68,15 +87,21 @@ Search index (derived, not versioned):
 
 from __future__ import annotations
 
+import dataclasses
 import datetime as dt
+import re
 import sqlite3
 import uuid
+from collections import Counter
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from ._attempt import ATTEMPT_ID_PATTERN, VALID_OUTCOMES, Attempt
 from ._conflict import Conflict, canonical_pair
-from ._errors import UrdynStorageError
+from ._errors import (UrdynStorageError, UrdynStorageUnavailableError,
+                      UrdynStorageCorruptError, UrdynStorageSchemaError,
+                      UrdynStorageIdentityError)
+from ._manifest import LEGACY_WORKSPACE_ID_KEY, read_manifest
 from ._event import EVENT_KIND_ATTEMPT_RECORDED, EVENT_KIND_MEMORY_RECORDED, EVENT_KIND_SKILL_PROMOTED, Event
 from ._evidence import (
     EVIDENCE_ID_PATTERN,
@@ -124,6 +149,88 @@ _V5_TABLES = _V4_TABLES
 _V6_TABLES = _V5_TABLES + ("memory_conflicts",)
 _V7_TABLES = _V6_TABLES + ("sources", "source_observations")
 
+
+_REQUIRED_COLUMNS = {'memories': ('memory_id', 'content', 'kind', 'epistemic_state', 'recorded_at', 'supersedes'), 'evidence': ('evidence_id', 'content', 'kind', 'recorded_at'), 'memory_evidence': ('memory_id', 'evidence_id', 'position', 'role'), 'events': ('sequence', 'event_id', 'kind', 'subject_id', 'occurred_at'), 'attempts': ('attempt_id', 'task', 'approach', 'outcome', 'recorded_at'), 'attempt_evidence': ('attempt_id', 'evidence_id', 'position'), 'skills': ('skill_id', 'name', 'purpose', 'verification_state', 'source_lesson_id', 'recorded_at'), 'skill_steps': ('skill_id', 'step', 'position'), 'skill_conditions': ('skill_id', 'condition', 'position'), 'skill_evidence': ('skill_id', 'evidence_id', 'position'), 'memory_conflicts': ('memory_id_a', 'memory_id_b', 'recorded_at'), 'sources': ('source_id', 'path', 'first_observed_at'), 'source_observations': ('sequence', 'source_id', 'evidence_id', 'digest', 'size_bytes', 'observed_at')}
+
+def _verify_columns(connection):
+    for table, required in _REQUIRED_COLUMNS.items():
+        actual = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
+        if not set(required) <= actual:
+            raise UrdynStorageCorruptError("Canonical storage columns are missing")
+
+
+# The identity binding. The CHECKs and triggers keep Urdyn's own code
+# (and accidental SQL) from changing or removing it once written; they are a
+# consistency guard, not a proof of authenticity: anyone able to write both
+# files can rewrite both coherently. INSERT is refused once a row exists --
+# that also covers `INSERT OR REPLACE`, whose implicit delete would not fire a
+# DELETE trigger.
+IDENTITY_TABLE = "brain_identity"
+_IDENTITY_RE = re.compile(r"[0-9a-f]{32}")
+_CREATE_IDENTITY_SQL = (
+    f"""CREATE TABLE {IDENTITY_TABLE} (
+        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+        brain_id TEXT NOT NULL CHECK (typeof(brain_id) = 'text' AND length(brain_id) = 32
+                                      AND brain_id NOT GLOB '*[^0-9a-f]*')
+    )""",
+    f"""CREATE TRIGGER {IDENTITY_TABLE}_insert_once BEFORE INSERT ON {IDENTITY_TABLE}
+        WHEN (SELECT count(*) FROM {IDENTITY_TABLE}) > 0
+        BEGIN SELECT RAISE(ABORT, 'Brain identity binding is immutable'); END""",
+    f"""CREATE TRIGGER {IDENTITY_TABLE}_no_update BEFORE UPDATE ON {IDENTITY_TABLE}
+        BEGIN SELECT RAISE(ABORT, 'Brain identity binding is immutable'); END""",
+    f"""CREATE TRIGGER {IDENTITY_TABLE}_no_delete BEFORE DELETE ON {IDENTITY_TABLE}
+        BEGIN SELECT RAISE(ABORT, 'Brain identity binding is immutable'); END""",
+)
+
+
+def _bind_identity(connection: sqlite3.Connection, brain_id: str) -> None:
+    """Create the binding inside the caller's open transaction."""
+    if not isinstance(brain_id, str) or not _IDENTITY_RE.fullmatch(brain_id):
+        raise UrdynStorageError("Invalid Brain identity for a new canonical store")
+    for statement in _CREATE_IDENTITY_SQL:
+        connection.execute(statement)
+    connection.execute(f"INSERT INTO {IDENTITY_TABLE} (singleton, brain_id) VALUES (1, ?)", (brain_id,))
+
+
+def _expected_identity(db_path: Path, brain_id: str | None) -> str:
+    """The identity a bound store must carry: the caller's (an open handle's)
+    or, when none is given, the manifest stored next to the database."""
+    if brain_id is not None:
+        return brain_id
+    return read_manifest(Path(db_path).parent)[LEGACY_WORKSPACE_ID_KEY]
+
+
+def _verify_identity_binding(connection: sqlite3.Connection, db_path: Path,
+                             brain_id: str | None) -> str | None:
+    """Check the binding of a store already at `STORE_SCHEMA_VERSION`;
+    return the bound identity, or None for a legacy unbound store.
+
+    A few catalog/single-row reads, no scan. Three distinct outcomes, none
+    of which writes anything: no binding table is the legacy contract
+    (accepted as before); a binding table that is empty, ambiguous or
+    malformed is corruption of this store; a well-formed binding naming
+    another Brain is a discordance (`UrdynStorageIdentityError`), never
+    repaired or rebound."""
+    if not _table_exists(connection, IDENTITY_TABLE):
+        return None
+    columns = {row[1] for row in connection.execute(f"PRAGMA table_info({IDENTITY_TABLE})")}
+    if not {"singleton", "brain_id"} <= columns:
+        raise UrdynStorageCorruptError("Canonical storage identity binding is malformed")
+    rows = connection.execute(f"SELECT singleton, brain_id FROM {IDENTITY_TABLE} LIMIT 2").fetchall()
+    if not rows:
+        raise UrdynStorageCorruptError("Canonical storage identity binding is missing")
+    if len(rows) != 1:
+        raise UrdynStorageCorruptError("Canonical storage identity binding is ambiguous")
+    singleton, bound = rows[0]
+    if singleton != 1 or not isinstance(bound, str) or not _IDENTITY_RE.fullmatch(bound):
+        raise UrdynStorageCorruptError("Canonical storage identity binding is malformed")
+    if bound != _expected_identity(db_path, brain_id):
+        raise UrdynStorageIdentityError(
+            "Manifest and canonical storage belong to different Brains; nothing was read or "
+            "changed. Restore the matching manifest/database pair, or move this one aside.")
+    return bound
+
+
 # Canonical values for `memory_evidence.role` (A12.1). Internal storage
 # vocabulary only -- never exposed as SQL or as these literal strings in
 # the public API; the public model expresses the same distinction via
@@ -144,6 +251,60 @@ _CREATE_SEARCH_INDEX_SQL = f"""
         text
     )
 """
+
+# Public diagnostic of the derived search index (see
+# docs/search-index.md).
+SEARCH_INDEX_MISSING = "missing"      # no `search_index` object in the store
+SEARCH_INDEX_USABLE = "usable"        # expected definition, FTS5 integrity ok, rows == canonical projection
+SEARCH_INDEX_INVALID = "invalid"      # present, but not verifiably the projection of canonical data
+SEARCH_INDEX_UNCHECKED = "unchecked"  # present, not verified (runtime without FTS5, or a retrieval call)
+SEARCHABLE_ENTITY_TYPES = (ENTITY_MEMORY, ENTITY_ATTEMPT, ENTITY_SKILL, ENTITY_SOURCE)
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class SearchIndexState:
+    """What the derived FTS5 search index is, relative to canonical
+    data, and whether this SQLite runtime can use FTS5 at all -- two
+    separate facts. Computed on every call, never stored; computing it
+    never writes.
+
+    `entities` holds `(entity_type, expected, indexed)` for every indexed
+    entity type: `expected` rows are the projection of canonical data,
+    `indexed` the rows the index holds (`None` when they could not be read:
+    unchecked, or an index too broken to read)."""
+
+    runtime_fts5: bool
+    status: str
+    detail: str | None = None
+    entities: tuple[tuple[str, int, int | None], ...] = ()
+
+    def is_usable(self) -> bool:
+        return self.status == SEARCH_INDEX_USABLE
+
+    def describe(self) -> str:
+        text = self.status if self.detail is None else f"{self.status} ({self.detail})"
+        return f"{text}; FTS5 runtime: {'yes' if self.runtime_fts5 else 'no'}"
+
+
+def fts5_runtime_available() -> bool:
+    """Whether this process's SQLite runtime provides FTS5, probed
+    on a private in-memory database (never on a Brain). Only SQLite's own
+    "no such module" answer means "no"; any other failure propagates."""
+    connection = sqlite3.connect(":memory:")
+    try:
+        try:
+            connection.execute("CREATE VIRTUAL TABLE temp.fts5_probe USING fts5(x)")
+        except sqlite3.OperationalError as exc:
+            if "no such module" in str(exc).lower():
+                return False
+            raise
+        return True
+    finally:
+        connection.close()
+
+
+def _normalized_sql(sql: str | None) -> str:
+    return " ".join((sql or "").split())
 
 _CREATE_MEMORIES_V2_SQL = """
     CREATE TABLE memories (
@@ -357,29 +518,107 @@ class MemoryStore:
         return self._fts_enabled
 
     @classmethod
-    def create_or_open(cls, db_path: Path) -> "MemoryStore":
-        """Open the store at `db_path`, creating it if it does not exist."""
-        connection = sqlite3.connect(db_path)
+    def verify_existing(cls, db_path: Path, *, brain_id: str | None = None) -> None:
+        """Inspect current-schema storage without creating or migrating it.
+
+        Missing legacy empty stores are ambiguous and require an explicit
+        creation/recovery decision. This is a point-in-time check, not a lock
+        protecting subsequent operations against external file removal.
+
+        A bound store must carry `brain_id` (default: the identity
+        in the manifest next to it); an unbound (legacy) store is accepted
+        and left untouched.
+        """
+        connection = None
         try:
-            _ensure_schema(connection)
-        except sqlite3.DatabaseError as exc:
-            connection.close()
-            raise UrdynStorageError(f"Urdyn memory store at {db_path} is corrupted: {exc}") from exc
-        except Exception:
-            connection.close()
-            raise
-        return cls(connection)
+            if db_path.is_symlink() or db_path.parent.is_symlink():
+                raise UrdynStorageUnavailableError("Canonical symlinks are not supported")
+            connection = sqlite3.connect(db_path.resolve().as_uri() + "?mode=ro", uri=True)
+            connection.execute("BEGIN")
+            version = connection.execute("PRAGMA user_version").fetchone()[0]
+            if version != STORE_SCHEMA_VERSION:
+                raise UrdynStorageSchemaError("Storage requires explicit schema review")
+            # Before the integrity scan: another Brain's store is
+            # refused before the rest of its pages are read.
+            _verify_identity_binding(connection, db_path, brain_id)
+            if connection.execute("PRAGMA quick_check").fetchall() != [("ok",)]:
+                raise UrdynStorageCorruptError("Storage integrity check failed")
+            missing = [name for name in _V7_TABLES if not _table_exists(connection, name)]
+            if missing:
+                raise UrdynStorageCorruptError("Canonical storage tables are missing")
+            _verify_columns(connection)
+        except (sqlite3.DatabaseError, OSError) as exc:
+            error = UrdynStorageUnavailableError if isinstance(exc, (sqlite3.OperationalError, OSError)) else UrdynStorageCorruptError
+            raise error("Existing canonical storage is unavailable or invalid") from exc
+        finally:
+            if connection is not None:
+                connection.close()
 
     @classmethod
-    def open_if_exists(cls, db_path: Path) -> "MemoryStore | None":
-        """Open the store at `db_path`, or return None if it does not exist.
+    def create_new(cls, db_path: Path) -> "MemoryStore":
+        """Create storage only in a reserved, unpublished workspace.
 
-        Used by read-only operations so they never have the side effect
-        of materializing an empty database file.
+        The new store is bound to the identity of the manifest that
+        must already sit next to it (the staging area `create`, `restore` and
+        `inspect_backup` fill): no manifest, no store -- an identity is never
+        invented here. Tables, binding and version stamp are one transaction.
+
+        A SQLite or OS failure while creating is reported as
+        `UrdynStorageError`, as `open_existing` does for existing storage,
+        with the original exception kept as `__cause__` and no path or SQL
+        text in the message. The partial file stays where it is: the caller
+        owns the staging area and never publishes it after a failure.
         """
-        if not db_path.exists():
-            return None
-        return cls.create_or_open(db_path)
+        brain_id = read_manifest(Path(db_path).parent)[LEGACY_WORKSPACE_ID_KEY]
+        connection = None
+        try:
+            with db_path.open("xb"):
+                pass
+            connection = sqlite3.connect(db_path)
+            _create_bound_schema(connection, brain_id)
+            return cls(connection)
+        except (sqlite3.DatabaseError, OSError) as exc:
+            if connection is not None: connection.close()
+            raise UrdynStorageError("New canonical store could not be created") from exc
+        except Exception:
+            if connection is not None: connection.close()
+            raise
+
+    @classmethod
+    def open_existing(cls, db_path: Path, *, brain_id: str | None = None) -> "MemoryStore":
+        """Open existing storage only; never create or migrate.
+
+        The binding is checked on THIS connection -- the one the
+        canonical operation then uses -- against `brain_id` (an open handle's
+        identity; default: the manifest next to the database)."""
+        connection = None
+        try:
+            if db_path.is_symlink() or db_path.parent.is_symlink():
+                raise UrdynStorageUnavailableError("Canonical symlinks are not supported")
+            connection = sqlite3.connect(db_path.resolve().as_uri() + "?mode=rw", uri=True)
+            version = connection.execute("PRAGMA user_version").fetchone()[0]
+            if version != STORE_SCHEMA_VERSION:
+                raise UrdynStorageSchemaError("Explicit schema review required")
+            _verify_identity_binding(connection, db_path, brain_id)
+            if any(not _table_exists(connection, name) for name in _V7_TABLES):
+                raise UrdynStorageCorruptError("Canonical tables missing")
+            _verify_columns(connection)
+            return cls(connection)
+        except (sqlite3.DatabaseError, OSError) as exc:
+            if connection is not None: connection.close()
+            error = UrdynStorageUnavailableError if isinstance(exc, (sqlite3.OperationalError, OSError)) else UrdynStorageCorruptError
+            raise error("Existing storage unavailable or invalid") from exc
+        except Exception:
+            if connection is not None: connection.close()
+            raise
+
+    # Deprecated internal compatibility alias; existing storage only.
+    create_or_open = open_existing
+
+    @classmethod
+    def open_if_exists(cls, db_path: Path, *, brain_id: str | None = None) -> "MemoryStore":
+        """Existing storage is mandatory even on a read path."""
+        return cls.open_existing(db_path, brain_id=brain_id)
 
     def close(self) -> None:
         self._connection.close()
@@ -1364,6 +1603,69 @@ class MemoryStore:
         except sqlite3.DatabaseError as exc:
             raise UrdynStorageError(f"Failed to rebuild Urdyn search index: {exc}") from exc
 
+    # -- public diagnostic and explicit recovery -----------------
+
+    def search_index_presence(self) -> str:
+        """Cheap per-call signal for the retrieval paths: `missing` when the
+        index does not exist (the FTS channel cannot contribute), otherwise
+        `unchecked` -- present, used as is, not verified by this call (a
+        full check is `inspect_search_index`, O(records))."""
+        return SEARCH_INDEX_UNCHECKED if self._fts_enabled else SEARCH_INDEX_MISSING
+
+    def inspect_search_index(self) -> SearchIndexState:
+        """Compare the derived index with the projection of canonical data,
+        for every indexed entity type. Never writes: the shared validator
+        (`_validate_search_index`) runs in one read transaction that is
+        always rolled back.
+
+        A failure reading CANONICAL data is a storage error and raises; a
+        failure reading the INDEX only makes it `invalid`."""
+        connection = self._connection
+        runtime = fts5_runtime_available()
+        connection.execute("BEGIN")
+        try:
+            return _validate_search_index(connection, runtime=runtime)
+        finally:
+            connection.rollback()
+
+    def recreate_search_index(self) -> SearchIndexState:
+        """Explicit recovery: drop whatever `search_index` is (if anything),
+        create it with the expected definition, project canonical data into
+        it AND validate the result (FTS5 integrity check + comparison with
+        the canonical projection) -- all inside ONE `BEGIN IMMEDIATE`
+        transaction, committed only if the result is `usable`. Any failure
+        or any other verdict before the commit rolls everything back to the
+        exact previous state (absent stays absent, a damaged index stays as
+        it was); a process dying mid-way leaves a hot journal SQLite rolls
+        back. Canonical tables are only read. Returns the state validated
+        before the commit.
+
+        Refused, with nothing written, when the runtime has no FTS5. The
+        caller holds the lifecycle lock (see `Urdyn.rebuild_search_index`)."""
+        if not fts5_runtime_available():
+            raise UrdynStorageUnavailableError("This SQLite runtime has no FTS5: the search index cannot be rebuilt")
+        connection = self._connection
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            with connection:
+                _require_recognized_projection(_index_objects(connection))
+                if _table_exists(connection, SEARCH_INDEX_TABLE):
+                    connection.execute(f"DROP TABLE {SEARCH_INDEX_TABLE}")
+                connection.execute(_CREATE_SEARCH_INDEX_SQL)
+                _rebuild_search_index(connection)
+                state = _validate_search_index(connection, runtime=True)
+                if not state.is_usable():
+                    raise _RebuiltIndexRejected(state)
+        except _RebuiltIndexRejected as rejected:
+            raise UrdynStorageError(
+                f"Rebuilt search index failed validation ({rejected.state.detail}); "
+                "rolled back, the previous index state is unchanged"
+            ) from None
+        except sqlite3.DatabaseError as exc:
+            raise UrdynStorageError("Search index rebuild failed; the previous index state is unchanged") from exc
+        self._fts_enabled = True
+        return state
+
     def _memory_evidence_ids(self, memory_id: str) -> tuple[str, ...]:
         try:
             rows = self._connection.execute(
@@ -1830,6 +2132,24 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
     _ensure_search_index(connection)
 
 
+def _create_bound_schema(connection: sqlite3.Connection, brain_id: str) -> None:
+    """A brand-new, empty file: v7 tables, identity binding and the
+    version stamp in ONE transaction -- an interruption leaves either nothing
+    (rolled back by SQLite on the next read-write open) or the complete bound
+    store, never tables without their binding. Then the derived search
+    index, as for every store, in its own transaction. `_ensure_schema` stays
+    the legacy path (unbound stores, internal migration chain)."""
+    connection.execute("BEGIN IMMEDIATE")
+    with connection:
+        (version,) = connection.execute("PRAGMA user_version").fetchone()
+        if version != 0 or any(_table_exists(connection, name) for name in (*_V7_TABLES, IDENTITY_TABLE)):
+            raise UrdynStorageError("A new canonical store must start from an empty file")
+        _create_v7_schema(connection)
+        _bind_identity(connection, brain_id)
+        connection.execute(f"PRAGMA user_version = {STORE_SCHEMA_VERSION}")
+    _ensure_search_index(connection)
+
+
 def _ensure_search_index(connection: sqlite3.Connection) -> None:
     """Create and backfill the derived FTS5 search index if it does not
     already exist, in its own transaction, separate from and after the
@@ -1875,7 +2195,7 @@ def _ensure_search_index(connection: sqlite3.Connection) -> None:
     open. A failure while creating the index in some other way (e.g.
     disk I/O) is not swallowed here; it propagates like any other
     `sqlite3.DatabaseError` in this module, to be wrapped by the
-    `UrdynStorageError` handling in `MemoryStore.create_or_open`.
+    `UrdynStorageError` handling in `MemoryStore.open_existing`.
     """
     if _table_exists(connection, SEARCH_INDEX_TABLE):
         return
@@ -1916,6 +2236,130 @@ def _try_create_search_index(connection: sqlite3.Connection) -> bool:
     return True
 
 
+_SHADOW_TABLES = tuple(f"{SEARCH_INDEX_TABLE}_{suffix}" for suffix in ("data", "idx", "content", "docsize", "config"))
+_VIRTUAL_TABLE_SQL = re.compile(
+    rf"^\s*CREATE\s+VIRTUAL\s+TABLE\s+[\"`\[]?{SEARCH_INDEX_TABLE}[\"`\]]?\s+USING\s+fts5\s*\(", re.IGNORECASE
+)
+
+
+def _index_objects(connection: sqlite3.Connection):
+    """Every schema object named like the search index or attached to one."""
+    return connection.execute(
+        "SELECT type, name, tbl_name, sql FROM sqlite_master WHERE name GLOB ? OR tbl_name GLOB ? ORDER BY name",
+        (SEARCH_INDEX_TABLE + "*", SEARCH_INDEX_TABLE + "*"),
+    ).fetchall()
+
+
+def _require_recognized_projection(objects) -> None:
+    """Only the FTS5 virtual table `search_index` and its
+    shadow tables may ever be dropped. Absent is fine. Anything else -- an
+    ordinary table with that name, orphan shadow tables, an index, trigger
+    or view, an unknown `search_index*` table -- is refused: nothing removed."""
+    if not objects:
+        return
+    main = [o for o in objects if o[1] == SEARCH_INDEX_TABLE]
+    if len(main) != 1 or main[0][0] != "table" or not _VIRTUAL_TABLE_SQL.match(main[0][3] or ""):
+        raise UrdynStorageCorruptError(
+            "An object named like the search index is not a recognized FTS5 projection; nothing removed")
+    for type_, name, tbl_name, _sql in objects:
+        if name == SEARCH_INDEX_TABLE:
+            continue
+        if type_ != "table" or name not in _SHADOW_TABLES or tbl_name != name:
+            raise UrdynStorageCorruptError("Unexpected object next to the search index; nothing removed")
+
+
+class _RebuiltIndexRejected(Exception):
+    """Internal: a rebuilt index did not validate; raised INSIDE the rebuild
+    transaction so `with connection` rolls it back, then reported typed."""
+
+    def __init__(self, state: SearchIndexState) -> None:
+        super().__init__(state.detail)
+        self.state = state
+
+
+def _validate_search_index(connection: sqlite3.Connection, *, runtime: bool) -> SearchIndexState:
+    """The search-index validator, WITHOUT transaction management of
+    its own: it runs inside whatever transaction the caller has open --
+    `inspect_search_index`'s read transaction (always rolled back), or the
+    rebuild's `BEGIN IMMEDIATE` (validated before commit). It never
+    modifies data: FTS5's `integrity-check` command only reads.
+
+    A failure reading canonical data raises `UrdynStorageError` (cause
+    kept); a failure reading the index makes it `invalid`."""
+    try:
+        expected = Counter(_search_index_projection(connection))
+        present = _table_exists(connection, SEARCH_INDEX_TABLE)
+        definition = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE name = ?", (SEARCH_INDEX_TABLE,)
+        ).fetchone()
+    except sqlite3.DatabaseError as exc:
+        raise UrdynStorageError("Canonical storage could not be read to check the search index") from exc
+    expected_by_type = Counter(entity_type for entity_type, _, _ in expected.elements())
+
+    def entities(indexed_by_type):
+        return tuple(
+            (t, expected_by_type[t], None if indexed_by_type is None else indexed_by_type[t])
+            for t in SEARCHABLE_ENTITY_TYPES
+        )
+
+    if not present:
+        detail = None if runtime else "this SQLite runtime has no FTS5"
+        return SearchIndexState(runtime, SEARCH_INDEX_MISSING, detail, entities(Counter()))
+    if not runtime:
+        return SearchIndexState(runtime, SEARCH_INDEX_UNCHECKED,
+                                "this SQLite runtime has no FTS5: the index cannot be read", entities(None))
+    if _normalized_sql(definition[0]) != _normalized_sql(_CREATE_SEARCH_INDEX_SQL):
+        return SearchIndexState(runtime, SEARCH_INDEX_INVALID, "unexpected index definition", entities(None))
+    try:
+        connection.execute(f"INSERT INTO {SEARCH_INDEX_TABLE} ({SEARCH_INDEX_TABLE}) VALUES ('integrity-check')")
+        indexed = Counter(
+            connection.execute(f"SELECT entity_type, entity_id, text FROM {SEARCH_INDEX_TABLE}").fetchall()
+        )
+    except sqlite3.DatabaseError as exc:
+        return SearchIndexState(runtime, SEARCH_INDEX_INVALID, f"index failed its integrity check: {exc}",
+                                entities(None))
+    indexed_by_type = Counter(entity_type for entity_type, _, _ in indexed.elements())
+    if indexed != expected:
+        missing_rows = sum((expected - indexed).values())
+        extra_rows = sum((indexed - expected).values())
+        return SearchIndexState(
+            runtime, SEARCH_INDEX_INVALID,
+            f"{missing_rows} expected row(s) absent, {extra_rows} row(s) not backed by canonical data",
+            entities(indexed_by_type),
+        )
+    return SearchIndexState(runtime, SEARCH_INDEX_USABLE, None, entities(indexed_by_type))
+
+
+def _search_index_projection(connection: sqlite3.Connection):
+    """The rows the derived index must hold, computed from canonical
+    data only: `(entity_type, entity_id, text)` for every memory (superseded
+    ones included), attempt, skill and Source observation. The ONE
+    definition shared by `_rebuild_search_index` (which writes it) and
+    `MemoryStore.inspect_search_index` (which compares against it)."""
+    for memory_id, content in connection.execute("SELECT memory_id, content FROM memories").fetchall():
+        yield ENTITY_MEMORY, memory_id, memory_search_text(content)
+
+    for attempt_id, task, approach in connection.execute("SELECT attempt_id, task, approach FROM attempts").fetchall():
+        yield ENTITY_ATTEMPT, attempt_id, attempt_search_text(task, approach)
+
+    for skill_id, name, purpose in connection.execute("SELECT skill_id, name, purpose FROM skills").fetchall():
+        condition_rows = connection.execute(
+            "SELECT condition FROM skill_conditions WHERE skill_id = ? ORDER BY position", (skill_id,)
+        ).fetchall()
+        conditions = tuple(row[0] for row in condition_rows)
+        yield ENTITY_SKILL, skill_id, skill_search_text(name, purpose, conditions)
+
+    # Every observation of every Source, not just the current one --
+    # matching the `memories` loop above, which also indexes superseded
+    # rows. `list_current_source_evidence` is where "current" filtering
+    # happens, not here.
+    for evidence_id, content in connection.execute(
+        "SELECT so.evidence_id, e.content FROM source_observations so "
+        "JOIN evidence e ON e.evidence_id = so.evidence_id"
+    ).fetchall():
+        yield ENTITY_SOURCE, evidence_id, content
+
+
 def _rebuild_search_index(connection: sqlite3.Connection) -> None:
     """(Re)populate `search_index` from canonical data. Must be called
     only when the table exists and from inside an already-open
@@ -1925,44 +2369,9 @@ def _rebuild_search_index(connection: sqlite3.Connection) -> None:
     than leaving a half-populated one.
     """
     connection.execute(f"DELETE FROM {SEARCH_INDEX_TABLE}")
-
-    memory_rows = connection.execute("SELECT memory_id, content FROM memories").fetchall()
-    for memory_id, content in memory_rows:
+    for row in list(_search_index_projection(connection)):
         connection.execute(
-            f"INSERT INTO {SEARCH_INDEX_TABLE} (entity_type, entity_id, text) VALUES (?, ?, ?)",
-            (ENTITY_MEMORY, memory_id, memory_search_text(content)),
-        )
-
-    attempt_rows = connection.execute("SELECT attempt_id, task, approach FROM attempts").fetchall()
-    for attempt_id, task, approach in attempt_rows:
-        connection.execute(
-            f"INSERT INTO {SEARCH_INDEX_TABLE} (entity_type, entity_id, text) VALUES (?, ?, ?)",
-            (ENTITY_ATTEMPT, attempt_id, attempt_search_text(task, approach)),
-        )
-
-    skill_rows = connection.execute("SELECT skill_id, name, purpose FROM skills").fetchall()
-    for skill_id, name, purpose in skill_rows:
-        condition_rows = connection.execute(
-            "SELECT condition FROM skill_conditions WHERE skill_id = ? ORDER BY position", (skill_id,)
-        ).fetchall()
-        conditions = tuple(row[0] for row in condition_rows)
-        connection.execute(
-            f"INSERT INTO {SEARCH_INDEX_TABLE} (entity_type, entity_id, text) VALUES (?, ?, ?)",
-            (ENTITY_SKILL, skill_id, skill_search_text(name, purpose, conditions)),
-        )
-
-    # Every observation of every Source, not just the current one --
-    # matching the `memories` loop above, which also indexes superseded
-    # rows. `list_current_source_evidence` is where "current" filtering
-    # happens, not here.
-    source_rows = connection.execute(
-        "SELECT so.evidence_id, e.content FROM source_observations so "
-        "JOIN evidence e ON e.evidence_id = so.evidence_id"
-    ).fetchall()
-    for evidence_id, content in source_rows:
-        connection.execute(
-            f"INSERT INTO {SEARCH_INDEX_TABLE} (entity_type, entity_id, text) VALUES (?, ?, ?)",
-            (ENTITY_SOURCE, evidence_id, content),
+            f"INSERT INTO {SEARCH_INDEX_TABLE} (entity_type, entity_id, text) VALUES (?, ?, ?)", row
         )
 
 

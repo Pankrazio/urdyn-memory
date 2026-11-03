@@ -1,130 +1,103 @@
-"""Backward-compatibility tests: opening and upgrading an A2 (schema v1) store.
+"""Backward compatibility with an A2 (schema v1) store.
 
-These tests build the v1 database file by hand (mirroring the exact v1
-`_ensure_schema` layout from before A3), rather than trusting current code
-to simulate it, so that a real migration path is exercised.
+Schema v1 only ever existed in unreleased Cortex development builds, and
+Urdyn never migrates a legacy schema implicitly (see
+`docs/compatibility.md`). These tests run on the AUTHENTIC v1 Brain written
+by the historical code (tests/legacy_brains.py, SHA-256 checked) and pin that
+the store is refused fail-closed while the old memory is preserved exactly:
+nothing is invented, repeating is harmless, nothing is written, and a
+sabotaged store fails closed without being touched.
 """
 
-import datetime as dt
 import sqlite3
-import uuid
 
 import pytest
 
-from urdyn import Urdyn, UrdynStorageError
-
-_V1_CREATE_MEMORIES_SQL = """
-    CREATE TABLE memories (
-        memory_id TEXT PRIMARY KEY,
-        content TEXT NOT NULL,
-        kind TEXT NOT NULL,
-        epistemic_state TEXT NOT NULL,
-        recorded_at TEXT NOT NULL
-    )
-"""
+import legacy_brains as legacy
+from urdyn import Urdyn, UrdynStorageError, UrdynStorageSchemaError
+from urdyn import maintenance
 
 
-def _build_v1_database(db_path, *, memory_id=None, content="a memory from before A3"):
-    memory_id = memory_id or uuid.uuid4().hex
-    connection = sqlite3.connect(db_path)
-    try:
-        with connection:
-            connection.execute(_V1_CREATE_MEMORIES_SQL)
-            connection.execute(
-                "INSERT INTO memories (memory_id, content, kind, epistemic_state, recorded_at) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (memory_id, content, "decision", "user_asserted", dt.datetime.now(dt.timezone.utc).isoformat()),
-            )
-            connection.execute("PRAGMA user_version = 1")
-    finally:
-        connection.close()
-    return memory_id
+def _v1(tmp_path):
+    root, generated = legacy.cortex_brain(tmp_path, 1)
+    return root, generated, legacy.db_path(root)
 
 
-def test_v1_database_opens_and_memory_survives(tmp_path):
-    cx = Urdyn.init(tmp_path, "dev")
-    memory_id = _build_v1_database(cx._db_path)
+def test_v1_brain_is_refused_and_its_memories_survive_exactly(tmp_path):
+    root, generated, db = _v1(tmp_path)
+    facts = legacy.store_facts(db)
+    before = legacy.snapshot(root)
 
-    results = cx.recall("a memory from before A3")
+    with pytest.raises(UrdynStorageSchemaError):
+        Urdyn.open(root).recall("synthetic")
 
-    assert len(results) == 1
-    assert results[0].memory_id == memory_id
-    assert results[0].content == "a memory from before A3"
-    assert results[0].kind == "decision"
-    assert results[0].epistemic_state == "user_asserted"
-
-
-def test_v1_migration_preserves_a3_defaults_for_old_memory(tmp_path):
-    cx = Urdyn.init(tmp_path, "dev")
-    _build_v1_database(cx._db_path)
-
-    (memory,) = cx.recall("a memory from before A3")
-
-    assert memory.supersedes is None
-    assert memory.evidence_ids == ()
+    assert legacy.snapshot(root) == before
+    assert legacy.store_facts(db) == facts
+    assert facts["user_version"] == 1 and facts["integrity"] == "ok"
+    assert {row[0] for row in facts["memories"]} == set(generated["written"])
+    # Exactly the v1 row shape the historical code wrote: no column added.
+    assert facts["columns"]["memories"] == ["memory_id", "content", "kind", "epistemic_state", "recorded_at"]
 
 
-def test_v1_migration_preserves_memory_count(tmp_path):
-    cx = Urdyn.init(tmp_path, "dev")
-    _build_v1_database(cx._db_path)
-
-    assert cx._count_memories() == 1
-
-
-def test_v1_migration_is_safe_to_repeat(tmp_path):
-    cx = Urdyn.init(tmp_path, "dev")
-    memory_id = _build_v1_database(cx._db_path)
-
-    first_open_results = cx.recall("a memory from before A3")
-    second_open_results = cx.recall("a memory from before A3")
-
-    assert [m.memory_id for m in first_open_results] == [memory_id]
-    assert [m.memory_id for m in second_open_results] == [memory_id]
+def test_v1_refusal_invents_no_supersession_and_no_evidence(tmp_path):
+    root, _, db = _v1(tmp_path)
+    with pytest.raises(UrdynStorageSchemaError):
+        Urdyn.open(root)
+    facts = legacy.store_facts(db)
+    assert "supersedes" not in facts["columns"]["memories"]
+    assert not {"evidence", "memory_evidence", "events"} & set(facts["tables"])
 
 
-def test_v1_migrated_memory_participates_in_new_supersession(tmp_path):
-    cx = Urdyn.init(tmp_path, "dev")
-    old_id = _build_v1_database(cx._db_path, content="PostgreSQL was selected.")
-
-    new = cx.remember("SQLite was selected for V1.", kind="decision", supersedes=old_id)
-
-    history = cx.timeline(kind="decision")
-    assert [m.memory_id for m in history] == [old_id, new.memory_id]
-    current = cx.state(kind="decision")
-    assert [m.memory_id for m in current] == [new.memory_id]
+def test_v1_memory_count_is_unchanged_by_every_entry(tmp_path):
+    root, generated, db = _v1(tmp_path)
+    for entry in (lambda: Urdyn.open(root), lambda: Urdyn.init(root, "general"),
+                  lambda: maintenance.inspect_search_index(root)):
+        with pytest.raises(UrdynStorageSchemaError):
+            entry()
+    assert len(legacy.store_facts(db)["memories"]) == len(generated["written"])
 
 
-def test_v1_migration_does_not_destroy_data_on_failure(tmp_path):
-    cx = Urdyn.init(tmp_path, "dev")
-    memory_id = _build_v1_database(cx._db_path, content="must survive a failed migration")
+def test_v1_refusal_is_safe_to_repeat(tmp_path):
+    root, _, db = _v1(tmp_path)
+    before = legacy.snapshot(root)
+    errors = []
+    for _ in range(3):
+        with pytest.raises(UrdynStorageSchemaError) as refused:
+            Urdyn.open(root)
+        errors.append(str(refused.value))
+    assert len(set(errors)) == 1
+    assert legacy.snapshot(root) == before
 
-    # Sabotage the migration: pre-create a colliding 'evidence' table so the
-    # migration's own CREATE TABLE fails partway through the transaction.
-    connection = sqlite3.connect(cx._db_path)
-    try:
-        connection.execute("CREATE TABLE evidence (bogus_column TEXT)")
-        connection.commit()
-    finally:
-        connection.close()
 
+def test_v1_brain_cannot_be_written_into(tmp_path):
+    """The original wrote a NEW memory superseding the migrated one. A v1 store
+    must never receive a write from this build: no handle exists to write with,
+    and the FTS maintenance entry (the one write path that bypasses open) is
+    refused as well; the history stays exactly what the historical code wrote."""
+    root, generated, db = _v1(tmp_path)
+    before = legacy.snapshot(root)
+    with pytest.raises(UrdynStorageSchemaError):
+        Urdyn.open(root).remember("SQLite was selected for V1.", kind="decision")
+    with pytest.raises(UrdynStorageSchemaError):
+        maintenance.recover_search_index(root)
+    assert legacy.snapshot(root) == before
+    assert {row[0] for row in legacy.store_facts(db)["memories"]} == set(generated["written"])
+
+
+def test_v1_sabotaged_store_fails_closed_untouched(tmp_path):
+    """Original: a colliding `evidence` table made the v1->v2 step fail, and the
+    step had to roll back entirely (still v1, no `supersedes`, row intact).
+    Now refused before any step, with the same three facts and every byte kept."""
+    root, generated, db = _v1(tmp_path)
+    legacy.sabotage(db, "CREATE TABLE evidence (bogus_column TEXT)")
+    before = legacy.snapshot(root)
     with pytest.raises(UrdynStorageError):
-        cx.recall("must survive")
-
-    # the transaction must have rolled back entirely: no supersedes column,
-    # original row untouched, still stamped as v1.
-    connection = sqlite3.connect(cx._db_path)
-    try:
-        (version,) = connection.execute("PRAGMA user_version").fetchone()
-        columns = [row[1] for row in connection.execute("PRAGMA table_info(memories)").fetchall()]
-        row = connection.execute(
-            "SELECT memory_id, content FROM memories WHERE memory_id = ?", (memory_id,)
-        ).fetchone()
-    finally:
-        connection.close()
-
-    assert version == 1
-    assert "supersedes" not in columns
-    assert row == (memory_id, "must survive a failed migration")
+        Urdyn.open(root).recall("must survive")
+    assert legacy.snapshot(root) == before
+    facts = legacy.store_facts(db)
+    assert facts["user_version"] == 1
+    assert "supersedes" not in facts["columns"]["memories"]
+    assert {row[0] for row in facts["memories"]} == set(generated["written"])
 
 
 def test_future_schema_version_is_rejected_without_data_loss(tmp_path):

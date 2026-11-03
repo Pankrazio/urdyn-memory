@@ -370,7 +370,10 @@ def test_setup_records_the_full_effective_identity(tmp_path):
         with SemanticIndexStore.create_or_open(cx._semantic_db_path) as store:
             meta = store.meta()
 
-    assert meta.provider == _semantic.SEMANTIC_PROVIDER
+    # The stored provider is the base provider plus the index's
+    # representation reference (so that older builds refuse the index).
+    from urdyn._representation import base_provider
+    assert base_provider(meta.provider) == _semantic.SEMANTIC_PROVIDER != meta.provider
     assert meta.model_revision == _semantic.SEMANTIC_MODEL_REVISION
     assert len(meta.model_revision) == 40  # a real git commit hash
     assert _semantic.SEMANTIC_MODEL_REPO in meta.model_id

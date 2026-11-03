@@ -673,6 +673,13 @@ class Preflight:
     empty result with a healthy substrate and an empty result with no
     substrate are both empty, and that is the point of reporting it
     separately.
+
+    `search_index` () reports the derived FTS5 index this call
+    could use: `missing` (the FTS channel could not contribute any
+    candidate) or `unchecked` (present and used, not verified by this
+    call; `Urdyn.search_index_state()` verifies it). Like `retrieval`, it
+    describes HOW the answer was produced and never changes WHAT was
+    selected. `None` when built directly instead of through `Urdyn`.
     """
 
     task: str
@@ -685,6 +692,7 @@ class Preflight:
     open_conflicts: tuple[PreflightConflict, ...] = ()
     pending: tuple[Memory, ...] = ()
     retrieval: SemanticState | None = None
+    search_index: str | None = None
 
     def is_empty(self) -> bool:
         return not (
@@ -716,6 +724,7 @@ def build_preflight(
     open_conflicts: list[Conflict] = (),
     conflict_participants: Mapping[str, Memory] = {},  # noqa: B006 -- never mutated, see below
     retrieval: SemanticState | None = None,
+    search_index: str | None = None,
 ) -> Preflight:
     """Pure selection logic, operating on data already fetched from
     storage. Takes no dependency on SQLite so it can be tested and
@@ -890,4 +899,5 @@ def build_preflight(
         open_conflicts=preflight_conflicts,
         pending=pending,
         retrieval=retrieval,
+        search_index=search_index,
     )
